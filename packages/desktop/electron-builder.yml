@@ -1,0 +1,35 @@
+appId: app.smaltcode.desktop
+productName: SmaltCode
+copyright: Copyright © 2026 SmaltCode contributors
+afterPack: after-pack.cjs
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+  - LICENSE
+  - NOTICE
+
+win:
+  icon: assets/smalt.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+  requestedExecutionLevel: asInvoker
+  # afterPack embeds icons/version resources directly; signing is independent.
+  signAndEditExecutable: false
+
+nsis:
+  installerIcon: assets/smalt.ico
+  uninstallerIcon: assets/smalt.ico
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: SmaltCode
+  artifactName: SmaltCode-Setup-${version}.${ext}

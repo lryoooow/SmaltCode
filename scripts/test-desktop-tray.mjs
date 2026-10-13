@@ -1,0 +1,14 @@
+import { spawnSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const packaged = process.argv.includes('--packaged');
+const app = join(root, 'packages/desktop');
+const home = join(root, '.qa-work', packaged ? 'packaged-tray' : 'tray-smoke');
+mkdirSync(home, { recursive: true });
+const env = { ...process.env, SMALT_HOME: home };
+delete env.ELECTRON_RUN_AS_NODE;
+const result = spawnSync(packaged ? join(app, 'release/win-unpacked/SmaltCode.exe') : join(root, 'node_modules/electron/dist/electron.exe'), [...(packaged ? [] : [app]), '--tray-smoke-test'], { env, encoding: 'utf8', timeout: 25_000, windowsHide: true });
+if (result.status !== 0 || !result.stdout.includes('[tray-smoke] passed')) throw new Error('Tray lifecycle failed: ' + result.status + '\n' + result.stdout + result.stderr);
+console.log('PASS: native tray retains a closed window, restores it, and explicit tray quit exits.');

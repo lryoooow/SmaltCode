@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+    />
+    <title>SmaltCode</title>
+    <link rel="icon" href="./smalt.svg" type="image/svg+xml" />
+    <style>
+      /* first-paint background matches dark theme before React mounts */
+      html { background: #eef0f4; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <link rel="stylesheet" href="./main.css" />
+    <script src="./main.js"></script>
+  </body>
+</html>

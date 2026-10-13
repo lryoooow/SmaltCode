@@ -1,0 +1,48 @@
+{
+  "name": "smaltcode-monorepo",
+  "private": true,
+  "version": "0.0.1",
+  "description": "SmaltCode — a multi-model desktop coding and workspace assistant.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @smalt/kernel build && npm run -w @smalt/cli build && npm run -w @smalt/desktop bundle",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p packages/kernel/tsconfig.json --noEmit && tsc -p packages/cli/tsconfig.typecheck.json && tsc -p packages/desktop/tsconfig.json --noEmit && tsc -p packages/desktop/tsconfig.renderer.json",
+    "cli": "npm run -w @smalt/cli start",
+    "bundle": "npm run -w @smalt/cli bundle",
+    "package": "node scripts/package.mjs",
+    "package:desktop": "node scripts/build-desktop.mjs",
+    "desktop": "npm run -w @smalt/desktop start",
+    "postinstall": "node node_modules/electron/install.js"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@tailwindcss/node": "^4.3.3",
+    "@tailwindcss/oxide": "^4.3.3",
+    "@types/node": "^22.10.0",
+    "app-builder-bin": "5.0.0-alpha.11",
+    "esbuild": "^0.25.0",
+    "pe-library": "^2.0.1",
+    "postject": "^1.0.0-alpha.6",
+    "resedit": "^3.1.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lryoooow/SmaltCode.git"
+  },
+  "homepage": "https://github.com/lryoooow/SmaltCode#readme",
+  "bugs": {
+    "url": "https://github.com/lryoooow/SmaltCode/issues"
+  }
+}

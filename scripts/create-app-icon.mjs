@@ -1,0 +1,13 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Resvg } from '@resvg/resvg-js';
+import { Data } from 'resedit';
+const assets = join(dirname(fileURLToPath(import.meta.url)), '../packages/desktop/assets');
+const svg = readFileSync(join(assets, 'smalt.svg'));
+const png = size => new Resvg(svg, { fitTo: { mode: 'width', value: size } }).render().asPng();
+const icon = new Data.IconFile();
+for (const size of [16, 24, 32, 48, 64, 128, 256]) icon.icons.push({ data: new Data.RawIconItem(png(size), size, size, 32) });
+writeFileSync(join(assets, 'smalt.ico'), Buffer.from(icon.generate()));
+writeFileSync(join(assets, 'smalt.png'), png(256));
+console.log('Generated PNG and multi-resolution ICO from the canonical smalt.svg');

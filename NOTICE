@@ -1,0 +1,27 @@
+SmaltCode
+Copyright 2026 SmaltCode contributors
+https://github.com/lryoooow/SmaltCode
+
+=== Retained component notices ===
+
+smalt
+Copyright 2026 smalt contributors
+
+This product includes software developed as part of the smalt project
+(https://github.com/smalt-agent/smalt), licensed under the Apache
+License, Version 2.0.
+
+=== Third-party notices ===
+
+The apply_patch file-editing format and parser design in
+packages/kernel/src/tools/defs/apply-patch/ is derived from the
+openai/codex project (https://github.com/openai/codex),
+Copyright OpenAI, licensed under the Apache License, Version 2.0.
+The implementation was written from scratch for smalt, but follows
+the same wire format so models trained on that format work unchanged.
+
+The hook event vocabulary (PreToolUse, PostToolUse, UserPromptSubmit,
+Stop, SessionStart, SessionEnd, SubagentStop, PreCompact, PostCompact,
+PermissionRequest) and the permission-mode names (default, plan,
+acceptEdits, bypassPermissions) follow the de-facto conventions shared
+by open-source coding agents.

@@ -1,0 +1,45 @@
+name: 问题反馈
+description: 报告 SmaltCode 测试版中可以复现的问题。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "感谢参与测试！请先搜索现有 Issue，截图和日志中请移除密钥、令牌及私人资料。"
+  - type: input
+    id: version
+    attributes:
+      label: SmaltCode 版本
+      placeholder: "0.0.1"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 系统与模型环境
+      description: 操作系统、模型服务商及模型 ID。不要填写 API Key。
+      placeholder: "Windows 11 x64 / 服务商 / 模型 ID"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开…
+        2. 点击…
+        3. 出现…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 可附截图、经过脱敏的错误消息或日志。
+    validations:
+      required: true

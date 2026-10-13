@@ -1,0 +1,41 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.vitest/
+coverage/
+
+# local agent state
+.smalt/
+*.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.tmp-e2e/
+dist-pkg/
+dist-bundle/
+.pack-stage/
+
+.qa-work/
+.qa-python/
+
+# Build outputs are distributed through GitHub Releases.
+packages/desktop/release/
+packages/desktop/.build-stage/
+
+# Local QA fixtures and reports; selected public images live in docs/images/.
+docs/screenshots/
+docs/AUDIT-*.md
+docs/RELEASE-0.0.4.md
+docs/RELEASE-0.0.5.md
+docs/RELEASE-0.0.6.md
+
+# Local credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.pfx
+*.key

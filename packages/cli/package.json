@@ -1,0 +1,26 @@
+{
+  "name": "@smalt/cli",
+  "version": "0.0.1",
+  "description": "smalt — an open, model-agnostic coding agent (CLI)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "smalt": "./dist/main.js"
+  },
+  "main": "./dist/main.js",
+  "files": [
+    "dist-bundle"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "bundle": "node bundle.mjs",
+    "pack:tgz": "node prepare-pack.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@smalt/kernel": "0.0.1"
+  }
+}

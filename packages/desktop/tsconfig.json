@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@smalt/kernel": [
+        "../kernel/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/main",
+    "src/preload"
+  ]
+}

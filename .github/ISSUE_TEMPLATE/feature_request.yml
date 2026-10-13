@@ -1,0 +1,25 @@
+name: 功能与体验建议
+description: 分享真实使用场景和你希望改善的体验。
+title: "[建议] "
+body:
+  - type: markdown
+    attributes:
+      value: "欢迎一起建设 SmaltCode。一个具体的使用场景，比一份长功能清单更容易帮助我们改进。"
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景与遇到的问题
+      description: 你正在完成什么任务？现在的流程有什么不便？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 希望怎样改善
+      description: 可提供交互建议、示意图或现有软件的参考体验。
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息

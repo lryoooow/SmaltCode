@@ -1,0 +1,36 @@
+{
+  "passed": true,
+  "packaged": true,
+  "checks": [
+    "SmaltCode branding and actual app version match the manifest",
+    "native bridge connected; onboarding persists",
+    "settings saved encrypted; real connection test completed",
+    "composer has one rounded focus treatment in light/dark, keyboard, bypass and multiline states; button keyboard focus stays visible",
+    "read/shell/ask_user/write/multi-file apply_patch completed via real IPC; actual file and diff previews",
+    "rename, dark theme and persisted conversation reload",
+    "denial reason returned to model; command blocked",
+    "streaming request interrupted without waiting for provider",
+    "project context and persistence; batch approval; archive/restore; project removal preserves chats; conversation deletion preserves workspace files",
+    "category approval applies across model requests and can be revoked; permissions editable and effective during pending approval",
+    "desktop task completes 64 tools beyond the former 50-step limit",
+    "thinking and execution fold into one process; real milestones update; user expansion survives completion; approvals and blocked warnings stay visible; keyboard expansion and restored history work",
+    "model milestone replies remain visible and chronological between collapsed execution groups",
+    "streaming allows small upward scroll, Home/PageDown, independent file preview and conversation switching with saved position; explicit return resumes following; completion respects history browsing",
+    "native close hides to tray and live model task completes while hidden",
+    "provider auth error shown, no renderer errors"
+  ],
+  "modelRequests": 96,
+  "rendererErrors": [],
+  "version": "0.0.1",
+  "productName": "SmaltCode",
+  "unitTests": {
+    "passed": 179,
+    "files": 20
+  },
+  "installer": {
+    "name": "SmaltCode-Setup-0.0.1.exe",
+    "size": 114888455,
+    "sha256": "30b49c827388808bd15ad42deb4bb2505d25f6234f62c3df73916fcbd67546d9"
+  },
+  "scope": "Windows x64; real packaged Electron with local simulated model service"
+}
