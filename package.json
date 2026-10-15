@@ -1,7 +1,7 @@
 {
   "name": "smaltcode-monorepo",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "SmaltCode — a multi-model desktop coding and workspace assistant.",
   "license": "Apache-2.0",
   "type": "module",

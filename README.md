@@ -1,18 +1,21 @@
 # SmaltCode
 
 <div align="center">
-  <img src="packages/desktop/assets/smalt.svg" width="80" height="80" alt="SmaltCode Logo" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/smaltcode-wordmark-dark.svg" />
+    <img src="docs/brand/smaltcode-wordmark-light.svg" width="400" height="115" alt="SmaltCode · S Fox 狐狸 Logo" />
+  </picture>
   <p><strong>让 AI 的思考、执行与项目管理，回到一个清爽的工作区。</strong></p>
   <p>多模型 AI 编程与办公桌面助手 · 中文界面 · 本地项目 · 可控执行</p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.1%20preview-2F4FD0" alt="0.0.1 公开测试版" />
+    <img src="https://img.shields.io/badge/version-0.0.2%20preview-2F4FD0" alt="0.0.2 公开测试版" />
     <img src="https://img.shields.io/badge/platform-Windows%20x64-5B6475" alt="Windows x64" />
     <img src="https://img.shields.io/badge/license-Apache--2.0-23A075" alt="Apache-2.0" />
   </p>
-  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.1">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a> · <a href="CONTRIBUTING.md">参与贡献</a></p>
+  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.2">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a> · <a href="CONTRIBUTING.md">参与贡献</a></p>
 </div>
 
-> **v0.0.1 是首次公开的测试版本。** 我们希望和大家一起把 SmaltCode 做好：欢迎试用、报告 Bug、提出交互和功能建议，也欢迎提交代码与文档改进。功能、兼容性和模型适配仍在持续打磨，请先在可以备份和恢复的项目中体验。
+> **v0.0.2 是公开测试版本。** 我们希望和大家一起把 SmaltCode 做好：欢迎试用、报告 Bug、提出交互和功能建议，也欢迎提交代码与文档改进。功能、兼容性和模型适配仍在持续打磨，请先在可以备份和恢复的项目中体验。
 
 ![SmaltCode 对话与执行界面](docs/images/conversation.png)
 
@@ -23,6 +26,7 @@
 - [下载与安装](#下载与安装)
 - [快速开始](#快速开始)
 - [权限与运行体验](#权限与运行体验)
+- [v0.0.2 更新内容](#v002-更新内容)
 - [v0.0.1 更新内容](#v001-更新内容)
 - [测试版的边界](#测试版的边界)
 - [常见问题](#常见问题)
@@ -70,21 +74,21 @@ SmaltCode 把模型对话连接到实际工作文件夹。你可以让它理解�
 
 </details>
 
-截图来自真实桌面程序的本地演示与验收场景，使用模拟模型服务和测试资料；截图中的模型名称、路径与任务内容仅用于展示。
+截图来自 v0.0.2 更新内容的真实桌面验收场景，使用模拟模型服务和测试资料；截图中的模型名称、路径与任务内容仅用于展示。
 
 ## 下载与安装
 
-**当前安装包：Windows x64，版本 0.0.1。**
+**当前安装包：Windows x64，版本 0.0.2，S Fox 狐狸图标。**
 
-1. 打开 [v0.0.1 Release](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.1)。
-2. 下载 [SmaltCode-Setup-0.0.1.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.1/SmaltCode-Setup-0.0.1.exe)。
+1. 打开 [v0.0.2 Release](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.2)。
+2. 下载 [SmaltCode-Setup-0.0.2-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.2/SmaltCode-Setup-0.0.2-SFox.exe)。
 3. 按安装向导选择目录，使用桌面或开始菜单中的 **SmaltCode** 打开程序。
 4. 在设置中配置模型服务，选择工作文件夹，即可开始。
 
-Release 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.1/SHA256SUMS.txt) 供校验安装包。PowerShell 示例：
+Release 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.2/SHA256SUMS.txt) 供校验安装包。PowerShell 示例：
 
 ```powershell
-Get-FileHash .\SmaltCode-Setup-0.0.1.exe -Algorithm SHA256
+Get-FileHash .\SmaltCode-Setup-0.0.2-SFox.exe -Algorithm SHA256
 ```
 
 安装包目前未做代码签名，Windows 可能显示发布者未验证的提示。请从本仓库的 Release 下载，并核对文件哈希。macOS、Linux 暂未提供经过桌面验收的安装包。
@@ -147,6 +151,20 @@ Get-FileHash .\SmaltCode-Setup-0.0.1.exe -Algorithm SHA256
 - 思考与执行详情默认折叠；用户手动展开的内容保持展开。
 - 上翻、键盘翻页、查看输出、选取文字和切换对话时，可以保留阅读位置。
 - 关闭窗口后程序驻留托盘。单击托盘恢复窗口，右键选择 **“退出 SmaltCode”** 完全退出并结束工具子进程。
+
+## v0.0.2 更新内容
+
+相较于 0.0.1，本次新增：
+
+| 更新 | 带来的体验 |
+| --- | --- |
+| 任务中心与桌面通知 | 集中查看运行、待处理、未读和失败任务，点击回到对应对话 |
+| 多标签预览与文本选区修改 | 同时打开多个文本文件，选中片段后提出修改要求 |
+| @ 文件引用 | 搜索工作区文件加入上下文，各对话引用草稿独立 |
+| 变更审查与检查点 | 查看实际差异，按文件撤销，冲突时保护后续手动修改 |
+| S Fox 品牌图标 | 狐狸轮廓结合字母 S，界面、窗口、托盘、应用和安装包统一 |
+
+安装包统一为 **SmaltCode-Setup-0.0.2-SFox.exe**；旧安装包已清理，旧版本页面保留更新历史。功能使用、截图、恢复范围和测试说明见 [0.0.2 发布说明](docs/releases/v0.0.2.md)，图标源文件见 [品牌资源](docs/brand/README.md)。
 
 ## v0.0.1 更新内容
 
@@ -223,9 +241,9 @@ python -m pip install --target .qa-python playwright
 python scripts/test-desktop-ui.py --packaged
 ```
 
-安装包输出到 `packages/desktop/release/SmaltCode-Setup-0.0.1.exe`。UI 验收使用 Electron 自带浏览器、本地模拟模型与隔离临时目录，无需真实 API Key；截图和报告生成到 `docs/screenshots/`。
+当前源码的安装包输出到 `packages/desktop/release/SmaltCode-Setup-0.0.2-SFox.exe`。UI 验收使用 Electron 自带浏览器、本地模拟模型与隔离临时目录，无需真实 API Key；截图和报告生成到 `docs/screenshots/`。
 
-本次公开版本的验收结果与范围见 [发布说明](docs/releases/v0.0.1.md)。模拟服务测试覆盖实际执行链路，不代表已对所有外部服务商做真实 API 兼容测试。
+本次公开版本的验收结果与范围见 [发布说明](docs/releases/v0.0.2.md)。模拟服务测试覆盖实际执行链路，不代表已对所有外部服务商做真实 API 兼容测试。
 
 ## 项目结构
 

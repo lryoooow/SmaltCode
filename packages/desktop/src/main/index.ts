@@ -8,6 +8,7 @@ import { DesktopBridge } from './bridge.js';
 import { DesktopTray } from './tray.js';
 
 app.setName('SmaltCode');
+if (process.platform === 'win32') app.setAppUserModelId('app.smaltcode.desktop');
 
 let tray: DesktopTray | undefined;
 

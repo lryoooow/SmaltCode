@@ -20,9 +20,13 @@ export interface ItemBase {
   status: ItemStatus;
 }
 
+export type UserReference = { path: string; label?: string };
+export type UserPrompt = string | { text: string; displayText?: string; references?: UserReference[] };
+
 export interface UserMessageItem extends ItemBase {
   kind: 'userMessage';
   text: string;
+  references?: UserReference[];
 }
 
 export interface AgentMessageItem extends ItemBase {
@@ -106,6 +110,8 @@ export interface ThreadMeta {
   approvedCategories?: Array<'edit' | 'read' | 'shell'>;
   permissionMode?: import('../permissions/rules.js').PermissionMode;
   lastOutcome?: 'completed' | 'failed' | 'interrupted';
+  restoredFiles?: Record<string, string>;
+  restoredChanges?: Record<string, string[]>;
 }
 
 export interface ProjectMeta {

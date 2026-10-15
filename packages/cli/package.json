@@ -1,6 +1,6 @@
 {
   "name": "@smalt/cli",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "smalt — an open, model-agnostic coding agent (CLI)",
   "license": "Apache-2.0",
   "type": "module",
@@ -21,6 +21,6 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@smalt/kernel": "0.0.1"
+    "@smalt/kernel": "0.0.2"
   }
 }

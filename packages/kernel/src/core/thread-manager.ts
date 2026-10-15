@@ -180,7 +180,7 @@ export class ThreadManager {
   }
 
   /** Start a turn. If one is running, the input is queued and drained later. */
-  runTurn(threadId: string, input: string): Promise<import('./turn-runner.js').TurnOutcome> {
+  runTurn(threadId: string, input: import('../protocol/types.js').UserPrompt): Promise<import('./turn-runner.js').TurnOutcome> {
     const rt = this.require(threadId);
     if (rt.meta.archived) throw new Error('Restore the archived conversation before continuing it');
     if (rt.stateMachine.isRunning() || this.chains.has(threadId)) {
@@ -199,7 +199,7 @@ export class ThreadManager {
   }
 
   /** Steer a running turn; when idle it behaves like starting a new turn. */
-  steer(threadId: string, message: string): { queued: boolean } {
+  steer(threadId: string, message: import('../protocol/types.js').UserPrompt): { queued: boolean } {
     const rt = this.require(threadId);
     if (rt.meta.archived) throw new Error('Restore the archived conversation before continuing it');
     if (rt.stateMachine.isRunning()) {
@@ -220,7 +220,7 @@ export class ThreadManager {
     return true;
   }
 
-  private enqueueTurn(rt: ThreadRuntime, input: string): Promise<import('./turn-runner.js').TurnOutcome> {
+  private enqueueTurn(rt: ThreadRuntime, input: import('../protocol/types.js').UserPrompt): Promise<import('./turn-runner.js').TurnOutcome> {
     rt.abort = new AbortController();
     rt.stateMachine.transition('RUN_PREPARING');
     const run = () => {
@@ -330,7 +330,7 @@ function replayItems(events: StoreEvent[], threadId: string): Item[] {
         turnId = ev.turnId;
         break;
       case 'user-msg':
-        items.push({ kind: 'userMessage', id: ev.id, threadId, turnId, createdAt: at, status: 'completed', text: ev.text });
+        items.push({ kind: 'userMessage', id: ev.id, threadId, turnId, createdAt: at, status: 'completed', text: ev.displayText ?? ev.text, references: ev.references });
         break;
       case 'agent-msg':
         items.push({ kind: 'agentMessage', id: ev.id, threadId, turnId, createdAt: at, status: ev.status ?? 'completed', text: ev.text });

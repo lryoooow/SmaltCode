@@ -32,4 +32,4 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: SmaltCode
-  artifactName: SmaltCode-Setup-${version}.${ext}
+  artifactName: SmaltCode-Setup-${version}-SFox.${ext}

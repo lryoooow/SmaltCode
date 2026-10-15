@@ -42,6 +42,14 @@ contextBridge.exposeInMainWorld('smalt', {
   saveSettings: (patch: Record<string, unknown>) => ipcRenderer.invoke('smalt:settings:save', patch) as Promise<{ ok: boolean }>,
   testProvider: (provider: string, model: string) => ipcRenderer.invoke('smalt:settings:test', provider, model),
   pickFiles: () => ipcRenderer.invoke('smalt:pick-files'),
+  searchFiles: (cwd: string, query: string) => ipcRenderer.invoke('smalt:context', cwd, 'search', query),
+  resolveContext: (cwd: string, refs: unknown[]) => ipcRenderer.invoke('smalt:context', cwd, 'resolve', refs),
+  activity: (threadId: string | null, enabled: boolean) => ipcRenderer.invoke('smalt:activity', threadId, enabled),
+  onNavigate: (cb: (threadId: string) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: { threadId: string }) => cb(payload.threadId);
+    ipcRenderer.on('smalt:navigate', listener);
+    return () => ipcRenderer.removeListener('smalt:navigate', listener);
+  },
   file: (threadId: string, path: string, action: 'read' | 'reveal') => ipcRenderer.invoke('smalt:file', threadId, path, action),
   windowControl: (action: 'minimize' | 'maximize' | 'close') => ipcRenderer.invoke('smalt:window', action),
   onResolved: (cb: (id: string) => void) => {

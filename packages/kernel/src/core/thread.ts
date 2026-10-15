@@ -2,15 +2,15 @@
 
 import type { ChatMessage } from '../models/types.js';
 import type { ModelRef } from '../config/settings.js';
-import type { Item, ThreadMeta } from '../protocol/types.js';
+import type { Item, ThreadMeta, UserPrompt } from '../protocol/types.js';
 import { SessionRunStateMachine } from './state-machine.js';
 
 export class ThreadRuntime {
   readonly stateMachine = new SessionRunStateMachine();
   /** steer messages queued while a turn is running */
-  readonly steerQueue: string[] = [];
+  readonly steerQueue: UserPrompt[] = [];
   /** user inputs queued while a turn is running (drained when idle) */
-  readonly turnQueue: string[] = [];
+  readonly turnQueue: UserPrompt[] = [];
   items: Item[] = [];
   history: ChatMessage[];
   abort: AbortController | null = null;

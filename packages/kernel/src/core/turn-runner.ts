@@ -80,15 +80,16 @@ export class TurnRunner {
       modelRef: ModelRef;
       history: ChatMessage[];
       items: Item[];
-      steerQueue: string[];
+      steerQueue: import('../protocol/types.js').UserPrompt[];
       signal: AbortSignal;
       onHistoryReplaced(history: ChatMessage[]): void;
       addUsage(input: number, output: number): void;
       usageTotals(): { inputTokens: number; outputTokens: number };
       contextWindow(): number;
     },
-    input: string,
+    prompt: import('../protocol/types.js').UserPrompt,
   ): Promise<TurnOutcome> {
+    const { text: input, displayText, references } = typeof prompt === 'string' ? { text: prompt, displayText: undefined, references: undefined } : prompt;
     const { threadId } = runtime;
     const startedAt = Date.now();
     const firstItem = runtime.items.length;
@@ -115,11 +116,12 @@ export class TurnRunner {
       turnId,
       createdAt: nowIso(),
       status: 'completed',
-      text: input,
+      text: displayText ?? input,
+      references,
     };
     runtime.items.push(userItem);
     runtime.history.push({ role: 'user', content: input });
-    this.deps.store.append(threadId, { t: 'user-msg', id: userItem.id, text: input, at: nowIso() });
+    this.deps.store.append(threadId, { t: 'user-msg', id: userItem.id, text: input, displayText, references, at: nowIso() });
     this.deps.notify(Notifications.itemStarted, { item: userItem });
     this.deps.notify(Notifications.itemCompleted, { item: userItem });
 
@@ -142,7 +144,8 @@ export class TurnRunner {
 
         // fold steering messages into the history before the next sample
         while (runtime.steerQueue.length) {
-          const msg = runtime.steerQueue.shift()!;
+          const queued = runtime.steerQueue.shift()!;
+          const { text: msg, displayText, references } = typeof queued === 'string' ? { text: queued, displayText: undefined, references: undefined } : queued;
           runtime.history.push({ role: 'user', content: msg });
           const steerItem: Item = {
             kind: 'userMessage',
@@ -151,10 +154,11 @@ export class TurnRunner {
             turnId,
             createdAt: nowIso(),
             status: 'completed',
-            text: msg,
+            text: displayText ?? msg,
+            references,
           };
           runtime.items.push(steerItem);
-          this.deps.store.append(threadId, { t: 'user-msg', id: steerItem.id, text: msg, at: nowIso() });
+          this.deps.store.append(threadId, { t: 'user-msg', id: steerItem.id, text: msg, displayText, references, at: nowIso() });
           this.deps.notify(Notifications.itemStarted, { item: steerItem });
           this.deps.notify(Notifications.itemCompleted, { item: steerItem });
         }

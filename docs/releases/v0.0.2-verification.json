@@ -1,0 +1,141 @@
+{
+  "passed": true,
+  "packaged": true,
+  "checks": [
+    "SmaltCode branding and actual app version match the manifest",
+    "native bridge connected; onboarding persists",
+    "settings saved encrypted; real connection test completed",
+    "composer has one rounded focus treatment in light/dark, keyboard, bypass and multiline states; button keyboard focus stays visible",
+    "read/shell/ask_user/write/multi-file apply_patch completed via real IPC; actual file and diff previews",
+    "rename, dark theme and persisted conversation reload",
+    "denial reason returned to model; command blocked",
+    "streaming request interrupted without waiting for provider",
+    "project context and persistence; batch approval; archive/restore; project removal preserves chats; conversation deletion preserves workspace files",
+    "category approval applies across model requests and can be revoked; permissions editable and effective during pending approval",
+    "desktop task completes 64 tools beyond the former 50-step limit",
+    "thinking and execution fold into one process; real milestones update; user expansion survives completion; approvals and blocked warnings stay visible; keyboard expansion and restored history work",
+    "model milestone replies remain visible and chronological between collapsed execution groups",
+    "streaming allows small upward scroll, Home/PageDown, independent file preview and conversation switching with saved position; explicit return resumes following; completion respects history browsing",
+    "multiple file tabs, per-file scroll positions and conversation restoration; exact selected text reaches model; actual scoped patch and checkpoint rollback preserve other content and conversation history",
+    "keyboard @ file search adds visible validated context without premature send; reference drafts remain isolated and survive conversation switching",
+    "task center filters live/background/unread/waiting tasks; streaming completes while browsing; mark-read and deep navigation to pending approval work",
+    "native close hides to tray and live model task completes while hidden",
+    "provider auth error shown, no renderer errors"
+  ],
+  "modelRequests": 105,
+  "rendererErrors": [],
+  "fixture": ".qa-work/desktop-1792050646469742800",
+  "version": "0.0.2",
+  "verifiedAt": "2026-10-15T07:52:14.483Z",
+  "automatedTests": {
+    "files": 24,
+    "passed": 202,
+    "failed": 0
+  },
+  "nativeChecks": {
+    "startup": true,
+    "trayCloseRestoreQuit": true,
+    "iconAndVersion": {
+      "win-unpacked/SmaltCode.exe": {
+        "matched": true,
+        "primaryIconId": 1,
+        "iconGroups": [
+          {
+            "id": 1,
+            "lang": 1033,
+            "matched": true
+          }
+        ],
+        "version": "0.0.2",
+        "productName": "SmaltCode",
+        "sizes": [
+          16,
+          24,
+          32,
+          48,
+          64,
+          128,
+          256
+        ]
+      },
+      "SmaltCode-Setup-0.0.2-SFox.exe": {
+        "matched": true,
+        "primaryIconId": 103,
+        "iconGroups": [
+          {
+            "id": 103,
+            "lang": 1033,
+            "matched": true
+          }
+        ],
+        "version": "0.0.2",
+        "productName": "SmaltCode",
+        "sizes": [
+          16,
+          24,
+          32,
+          48,
+          64,
+          128,
+          256
+        ]
+      }
+    },
+    "packagedBundleMatches": {
+      "main/index.js": true,
+      "main/smalt.png": true,
+      "preload/index.js": true,
+      "renderer/main.js": true,
+      "renderer/main.css": true,
+      "renderer/smalt.svg": true
+    },
+    "windowsShellFileIcons": [
+      {
+        "file": "SmaltCode-Setup-0.0.2-SFox.exe",
+        "size": 32,
+        "pngSha256": "1e8decd2e943209f6a8fda29b0b070bd0481d923ceaea65567e232cdb1c3369f"
+      },
+      {
+        "file": "SmaltCode-Setup-0.0.2-SFox.exe",
+        "size": 16,
+        "pngSha256": "cd2ac0c34cc073161d07138b58efb699324d5b6a0df9db25a707ae62b05ac495"
+      }
+    ]
+  },
+  "installer": {
+    "file": "SmaltCode-Setup-0.0.2-SFox.exe",
+    "bytes": 114776714,
+    "sha256": "d5c60a005592606b40c8e9282cdfe57c9c2f663176dd1226939b419a8a5851c9"
+  },
+  "brand": {
+    "name": "S Fox",
+    "canonicalSvgSha256": "fb8f683255e14487379d393c719f8dc9a38ccf3c16f34da3951c89d1a4b4cd2d",
+    "smallSizes": [
+      16,
+      24,
+      32,
+      48,
+      64,
+      128,
+      256
+    ],
+    "resourceConsistency": true
+  },
+  "testScope": "Actual Windows Electron executable, IPC and kernel with a local simulated model service; system notification events are logged in UI-test mode, native Notification click/cancellation behavior is unit-tested with an Electron mock. No third-party provider or OS notification-center policy certification.",
+  "cleanup": {
+    "obsoleteInstallersRemoved": [
+      "smalt-Setup-0.0.6.exe",
+      "SmaltCode-Setup-0.0.1.exe",
+      "SmaltCode-Setup-0.0.2.exe"
+    ],
+    "obsoleteOutputDirectoriesRemoved": [
+      "dist-pkg",
+      "packages/desktop/.build-stage"
+    ],
+    "currentReleaseFiles": [
+      "SmaltCode-Setup-0.0.2-SFox.exe",
+      "SHA256SUMS.txt"
+    ],
+    "currentUnpackedAppKept": true
+  }
+}

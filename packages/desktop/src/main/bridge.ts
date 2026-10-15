@@ -10,7 +10,7 @@
 
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, type WebContents, type IpcMainInvokeEvent } from 'electron';
 import { readFileSync, statSync } from 'node:fs';
-import { resolve, extname } from 'node:path';
+import { resolve } from 'node:path';
 import {
   Kernel,
   ensureProjectTrust,
@@ -23,6 +23,8 @@ import {
   type UserInputRequest,
 } from '@smalt/kernel';
 import { isValidWorkspace } from './workspace.js';
+import { readContextFile, resolveContext, searchContextFiles, type ContextReference } from './context-files.js';
+import { DesktopNotifications } from './notifications.js';
 
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
 
@@ -43,6 +45,7 @@ const KERNEL_METHODS = new Set([
   'thread/pin',
   'thread/settings/update',
   'thread/permissions/reset',
+  'checkpoint/list', 'checkpoint/restore',
 ]);
 
 const SETTING_KEYS = new Set(['defaultProvider', 'defaultModel', 'permissions', 'providers']);
@@ -53,13 +56,24 @@ export class DesktopBridge {
   private readonly pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
   private readonly pendingInputs = new Map<string, (t: string) => void>();
   private readonly requestThreads = new Map<string, string>();
+  private readonly notifications: DesktopNotifications;
 
   constructor(private readonly webContents: WebContents, private readonly pageURL: string) {
+    this.notifications = new DesktopNotifications(webContents);
     const port: ClientPort = {
-      notify: (method, params) => this.send('smalt:notify', { method, params }),
+      notify: (method, params) => {
+        this.send('smalt:notify', { method, params });
+        const data = params as { threadId?: string; turnId?: string; interrupted?: boolean } | undefined;
+        if (data?.threadId && (method === 'thread/deleted' || method === 'thread/archived')) this.notifications.resolveThread(data.threadId);
+        if (data?.threadId && (method === 'turn/failed' || (method === 'turn/completed' && !data.interrupted))) {
+          const title = this.kernel.threads.get(data.threadId)?.meta.title ?? '任务';
+          this.notifications.show(data.threadId, data.threadId + ':' + method + ':' + data.turnId, method === 'turn/failed' ? '任务失败' : '任务已完成', title);
+        }
+      },
       requestApproval: (req) =>
         new Promise<ApprovalDecision>((resolve) => {
           this.requestThreads.set(req.itemId, req.threadId);
+          this.notifications.show(req.threadId, req.itemId, '需要审批', this.kernel.threads.get(req.threadId)?.meta.title ?? req.title);
           this.pendingApprovals.set(req.itemId, (decision) => {
             clearTimeout(timer); this.requestThreads.delete(req.itemId);
             this.send('smalt:resolved', { id: req.itemId }); resolve(decision);
@@ -74,6 +88,7 @@ export class DesktopBridge {
       askUser: (req) =>
         new Promise<string>((resolve) => {
           this.requestThreads.set(req.itemId, req.threadId);
+          this.notifications.show(req.threadId, req.itemId, '等待回答', this.kernel.threads.get(req.threadId)?.meta.title ?? req.question);
           this.pendingInputs.set(req.itemId, (answer) => {
             clearTimeout(timer); this.requestThreads.delete(req.itemId);
             this.send('smalt:resolved', { id: req.itemId }); resolve(answer);
@@ -105,6 +120,7 @@ export class DesktopBridge {
   }
 
   private send(channel: string, payload: unknown): void {
+    if (channel === 'smalt:resolved') this.notifications.resolve((payload as { id: string }).id);
     if (this.webContents.isDestroyed()) return;
     try { this.webContents.send(channel, payload); } catch { /* renderer was lost between the check and send */ }
   }
@@ -259,6 +275,16 @@ export class DesktopBridge {
       const result = await dialog.showOpenDialog({ title: '添加文件引用', properties: ['openFile', 'multiSelections'] });
       return result.canceled ? [] : result.filePaths.filter(p => !isSensitivePath(app.getPath('home'), p)).slice(0, 10);
     });
+    ipcMain.handle('smalt:context', async (e, cwd: string, action: string, value: unknown) => {
+      if (!this.trusted(e) || typeof cwd !== 'string') throw new Error('untrusted request');
+      if (action === 'search' && typeof value === 'string' && value.length <= 300) return searchContextFiles(cwd, value);
+      if (action === 'resolve') return resolveContext(cwd, value as ContextReference[]);
+      throw new Error('无效的上下文操作');
+    });
+    ipcMain.handle('smalt:activity', (e, threadId: string | null, enabled: boolean) => {
+      if (!this.trusted(e) || (threadId !== null && typeof threadId !== 'string') || typeof enabled !== 'boolean') throw new Error('untrusted request');
+      this.notifications.configure(threadId, enabled);
+    });
     ipcMain.handle('smalt:file', async (e, threadId: string, path: string, action: string) => {
       if (!this.trusted(e) || typeof path !== 'string') throw new Error('untrusted request');
       const cwd = this.kernel.threads.read(threadId).meta.cwd;
@@ -269,9 +295,8 @@ export class DesktopBridge {
       const stat = statSync(target);
       if (!stat.isFile()) throw new Error('只能预览文件');
       if (stat.size > 512 * 1024) return { binary: true, size: stat.size, text: '', reason: '文件较大，请在资源管理器中查看' };
-      const bytes = readFileSync(target);
-      const binary = bytes.includes(0) || !/\.(?:md|txt|json|csv|tsv|log|xml|svg|html|css|js|jsx|ts|tsx|py|yml|yaml|toml|ini|sh|bat|sql)$/i.test(extname(target));
-      return { binary, size: stat.size, text: binary ? '' : bytes.toString('utf8') };
+      try { return await readContextFile(cwd, path); }
+      catch { return { binary: true, size: stat.size, text: '', reason: '此格式无法作为 UTF-8 文本预览' }; }
     });
     ipcMain.handle('smalt:window', (e, action: string) => {
       if (!this.trusted(e)) throw new Error('untrusted sender');
@@ -353,6 +378,7 @@ export class DesktopBridge {
   }
 
   dispose(): void {
+    this.notifications.dispose();
     for (const channel of [
       'smalt:call',
       'smalt:approval:respond',
@@ -360,7 +386,7 @@ export class DesktopBridge {
       'smalt:pick-folder',
       'smalt:settings:load',
       'smalt:settings:save',
-      'smalt:settings:test', 'smalt:pick-files', 'smalt:file', 'smalt:window',
+      'smalt:settings:test', 'smalt:pick-files', 'smalt:file', 'smalt:window', 'smalt:context', 'smalt:activity',
     ]) {
       ipcMain.removeHandler(channel);
     }

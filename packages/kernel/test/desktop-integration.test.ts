@@ -206,3 +206,64 @@ describe('project trust and credential protection', () => {
     expect(loadSettings(cwd).providers.bad).toBeUndefined(); expect(loadSettings(cwd).providers.good?.apiKeyEnv).toBe('PROJECT_API_KEY');
   });
 });
+
+
+describe('checkpoint protocol and turn integration', () => {
+  it('records actual edits, restores files, persists audit metadata and leaves history intact', async () => {
+    writeFileSync(join(cwd, 'review.txt'), 'original');
+    const { k } = kernel([{ name: 'write', input: { path: 'review.txt', content: 'agent edit' } }, { text: 'done' }]);
+    const id = await start(k); await k.handle('turn/start', { threadId: id, input: 'edit' });
+    const { checkpoints } = await k.handle('checkpoint/list', { threadId: id }) as any;
+    expect(checkpoints).toHaveLength(1); expect(checkpoints[0].files[0]).toMatchObject({ path: 'review.txt', kind: 'update' });
+    await k.handle('checkpoint/restore', { threadId: id, checkpointId: checkpoints[0].id });
+    expect(readFileSync(join(cwd, 'review.txt'), 'utf8')).toBe('original');
+    expect(k.threads.read(id).meta.restoredFiles?.['review.txt']).toBeTruthy();
+    expect(replayEvents(k.store.load(id)!).history.at(-1)?.content).toContain('重新读取');
+    expect(k.threads.read(id).items.some(item => item.kind === 'fileChange')).toBe(true);
+  });
+  it('does not capture denied edits and protects same-workspace background tasks during recovery', async () => {
+    const { k } = kernel([{ name: 'write', input: { path: 'denied.txt', content: 'no' } }, { text: 'done' }], async () => ({ decision: 'deny' }));
+    const id = await start(k); await k.handle('turn/start', { threadId: id, input: 'denied' });
+    expect(await k.handle('checkpoint/list', { threadId: id })).toEqual({ checkpoints: [] });
+    writeFileSync(join(cwd, 'review.txt'), 'original');
+    const cp = await k.checkpoints.capture(id, 'turn_test', cwd, 'review', ['review.txt']); writeFileSync(join(cwd, 'review.txt'), 'new'); await k.checkpoints.complete(cp);
+    const other = await start(k);
+    let ready!: () => void; const pending = new Promise<void>(resolve => { ready = resolve; });
+    vi.spyOn(k.gateway, 'stream').mockImplementation(async function* (_ref, req) { ready(); await new Promise<void>(resolve => req.signal!.addEventListener('abort', () => resolve(), { once: true })); yield { type: 'done', finishReason: 'stop' }; });
+    const running = k.handle('turn/start', { threadId: other, input: 'background' }); await pending;
+    await expect(k.handle('checkpoint/restore', { threadId: id, checkpointId: cp.id })).rejects.toThrow('运行任务');
+    expect(readFileSync(join(cwd, 'review.txt'), 'utf8')).toBe('new');
+    await k.handle('turn/interrupt', { threadId: other }); await running;
+    await k.handle('checkpoint/restore', { threadId: id, checkpointId: cp.id });
+    expect(readFileSync(join(cwd, 'review.txt'), 'utf8')).toBe('original');
+  });
+});
+
+describe('referenced message presentation and persistence', () => {
+  it('keeps full context for the model and compact messages after reopening history', async () => {
+    const { k, requests } = kernel([{ text: 'received' }]); const id = await start(k);
+    const input = '修改这段\nPRIVATE FILE CONTEXT'; const displayText = '修改这段'; const references = [{ path: 'notes.md', label: 'notes.md:L4' }];
+    await k.handle('turn/start', { threadId: id, input, displayText, references });
+    expect(requests[0].findLast((m: any) => m.role === 'user').content).toContain(input);
+    expect(k.threads.read(id).items[0]).toMatchObject({ text: displayText, references });
+    expect(replayEvents(k.store.load(id)!).history[0].content).toBe(input);
+    await k.handle('thread/archive', { threadId: id }); await k.handle('thread/restore', { threadId: id });
+    expect(k.threads.read(id).items[0]).toMatchObject({ text: displayText, references });
+    expect(JSON.stringify(k.threads.read(id).items)).not.toContain('PRIVATE FILE CONTEXT');
+  });
+  it('preserves reference display metadata on steering messages received during execution', async () => {
+    let ready!: () => void, release!: () => void; const waiting = new Promise<void>(r => ready = r);
+    const { k, requests } = kernel([{ name: 'write', input: { path: 'queue.txt', content: 'x' } }, { text: 'done' }], async () => { ready(); await new Promise<void>(r => release = r); return { decision: 'allow' }; });
+    const id = await start(k), run = k.handle('turn/start', { threadId: id, input: 'begin' }); await waiting;
+    await k.handle('turn/steer', { threadId: id, message: 'full context', displayText: '补充要求', references: [{ path: 'queue.txt' }] });
+    release(); await run;
+    expect(requests.at(-1).some((m: any) => typeof m.content === 'string' && m.content.startsWith('full context'))).toBe(true);
+    expect(k.threads.read(id).items.filter(i => i.kind === 'userMessage').at(-1)).toMatchObject({ text: '补充要求', references: [{ path: 'queue.txt' }] });
+  });
+  it('removes associated checkpoint backups when the conversation is deleted', async () => {
+    const { k } = kernel([{ name: 'write', input: { path: 'delete-backup.txt', content: 'x' } }, { text: 'done' }]); const id = await start(k);
+    await k.handle('turn/start', { threadId: id, input: 'edit' });
+    expect((await k.checkpoints.list(id, cwd)).length).toBe(1);
+    await k.handle('thread/delete', { threadId: id }); expect(await k.checkpoints.list(id, cwd)).toEqual([]);
+  });
+});

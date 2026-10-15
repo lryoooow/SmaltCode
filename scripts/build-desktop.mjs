@@ -10,6 +10,7 @@ import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, rea
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const appDir = join(root, 'packages', 'desktop');
@@ -73,10 +74,19 @@ execSync('npx electron-builder --win nsis', {
   },
 });
 
-// move artifacts up to packages/desktop/release
-mkdirSync(join(appDir, 'release'), { recursive: true });
-cpSync(join(stage, 'release'), join(appDir, 'release'), { recursive: true });
-console.log('[desktop] installer ready in packages/desktop/release');
+// Publish one current installer; old build outputs must not remain beside it.
+const releaseDir = join(appDir, 'release');
+const installerName = 'SmaltCode-Setup-' + pkg.version + '-SFox.exe';
+const stagedInstaller = join(stage, 'release', installerName);
+if (!existsSync(stagedInstaller)) throw new Error('Expected installer missing: ' + installerName);
+if (existsSync(releaseDir) && realpathSync(releaseDir).toLowerCase() !== releaseDir.toLowerCase()) throw new Error('Unexpected release target');
+rmSync(releaseDir, { recursive: true, force: true });
+mkdirSync(releaseDir, { recursive: true });
+cpSync(stagedInstaller, join(releaseDir, installerName));
+cpSync(join(stage, 'release', 'win-unpacked'), join(releaseDir, 'win-unpacked'), { recursive: true });
+const checksum = createHash('sha256').update(readFileSync(join(releaseDir, installerName))).digest('hex');
+writeFileSync(join(releaseDir, 'SHA256SUMS.txt'), checksum + '  ' + installerName + '\n');
+console.log('[desktop] installer ready: ' + installerName);
 for (const [script, args] of [['test-desktop-icons.mjs', []], ['test-desktop-smoke.mjs', ['--packaged']], ['test-desktop-tray.mjs', ['--packaged']]]) {
   execFileSync(process.execPath, [join(root, 'scripts', script), ...args], { cwd: root, stdio: 'inherit', windowsHide: true });
 }

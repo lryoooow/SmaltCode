@@ -1,0 +1,23 @@
+import { useEffect, useState } from 'react'
+import { errorText, folderName, store, type Session } from '../bridge'
+import { Btn, cx, StatusDot } from './ui'
+import Icon from './icons'
+import { sessionStatus, statusLabels } from './task-state'
+
+export default function TaskCenter({ sessions, notifications, setNotifications, onOpen, onError }: { sessions: Session[]; notifications: boolean; setNotifications: (value: boolean) => void; onOpen: (id: string) => void; onError: (message: string) => void }) {
+  const [filter, setFilter] = useState('all'), [query, setQuery] = useState(''), [now, setNow] = useState(Date.now())
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer) }, [])
+  const filters = [['all', '全部'], ['running', '运行中'], ['attention', '需要我处理'], ['unread', '未读'], ['failed', '失败'], ['done', '已完成']]
+  const matches = (s: Session, f: string) => f === 'all' || (f === 'attention' ? ['approval', 'question'].includes(sessionStatus(s)) : f === 'unread' ? !!s.unread : f === 'done' ? ['done', 'unread'].includes(sessionStatus(s)) : sessionStatus(s) === f)
+  const active = sessions.filter(s => !s.meta.archived)
+  const list = active.filter(s => matches(s, filter) && (s.meta.title + s.meta.cwd).toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a, b) => Number(['approval', 'question'].includes(sessionStatus(b))) - Number(['approval', 'question'].includes(sessionStatus(a))) || b.meta.updatedAt.localeCompare(a.meta.updatedAt))
+  return <div data-testid="task-center" className="flex-1 min-h-0 overflow-y-auto p-6 lg:p-10">
+    <div className="max-w-5xl mx-auto"><div className="flex items-start gap-4 flex-wrap"><div className="flex-1"><h1 className="text-[24px] font-semibold">任务中心</h1><p className="text-[var(--muted)] mt-2">后台工作、待办与结果，都在这里。</p></div><Btn v="outline" onClick={() => store.markAllRead()}>全部标为已读</Btn></div>
+      <div className="flex items-center justify-between gap-4 mt-6 p-4 rounded-xl border border-[var(--line)] bg-[var(--surface-solid)]"><div><div className="font-medium">桌面通知</div><p className="text-[12px] text-[var(--muted)] mt-1">完成、失败或需要处理时提醒；正在查看当前任务时不重复打扰。</p></div><label className="flex items-center gap-2 shrink-0"><input aria-label="启用桌面通知" type="checkbox" checked={notifications} onChange={e => setNotifications(e.target.checked)} className="accent-[var(--accent)]" />{notifications ? '已开启' : '已关闭'}</label></div>
+      <div className="flex gap-2 items-center flex-wrap mt-6"><div className="flex gap-1 flex-wrap">{filters.map(([id, label]) => <button key={id} aria-label={label} onClick={() => setFilter(id)} aria-pressed={filter === id} className={cx('px-3 h-8 rounded-lg text-[12px]', filter === id ? 'bg-[var(--accent-soft)] text-accent' : 'text-[var(--muted)] hover:bg-[var(--hover)]')}>{label}<span className="ml-1.5 tabular-nums opacity-70">{active.filter(s => matches(s, id)).length}</span></button>)}</div><span className="flex-1" /><input aria-label="搜索任务中心" placeholder="搜索任务或工作文件夹" value={query} onChange={e => setQuery(e.target.value)} className="field w-56 max-w-full" /></div>
+      <div className="mt-4 space-y-2">{list.map(s => { const status = sessionStatus(s); const running = ['running', 'approval', 'question'].includes(status); const start = s.items.findLast(i => i.kind === 'userMessage')?.createdAt ?? s.meta.updatedAt
+        return <div key={s.meta.id} data-testid="activity-row" className="flex items-center gap-3 p-4 rounded-xl border border-[var(--line)] bg-[var(--surface-solid)] hover:border-accent/30 transition"><StatusDot s={status} /><button onClick={() => onOpen(s.meta.id)} className="min-w-0 flex-1 text-left"><div className="flex items-center gap-2"><span className="font-medium truncate">{s.meta.title}</span>{s.unread && <span className="size-1.5 rounded-full bg-accent shrink-0" />}</div><div className="mt-1 flex gap-3 text-[11px] text-[var(--muted)]"><span className="truncate">{folderName(s.meta.cwd)}</span><span className="shrink-0">{statusLabels[status]}</span>{running && <span className="tabular-nums shrink-0">{Math.max(0, Math.floor((now - Date.parse(start)) / 1000))} 秒</span>}</div></button>{running && <Btn v="ghost" onClick={() => void store.api!.call('turn/interrupt', { threadId: s.meta.id }).catch(e => onError(errorText(e)))}>停止</Btn>}<button aria-label={'打开任务 ' + s.meta.title} onClick={() => onOpen(s.meta.id)} className="p-2 rounded-lg text-[var(--muted)] hover:bg-[var(--hover)]"><Icon n="chevron" s={16} /></button></div>
+      })}{!list.length && <div className="py-16 text-center text-[var(--muted)]"><Icon n="check" s={28} className="mx-auto mb-3 opacity-50" />{query ? '没有匹配的任务' : '这里暂时没有任务'}</div>}</div>
+    </div>
+  </div>
+}

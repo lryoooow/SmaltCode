@@ -1,0 +1,33 @@
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Resvg } from '@resvg/resvg-js';
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const dir = join(root, 'docs/brand');
+const source = readFileSync(join(root, 'packages/desktop/assets/smalt.svg'), 'utf8');
+const inner = source.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
+const mark = /<path id="fox-symbol"[^>]*\/>/.exec(source)?.[0];
+if (!mark) throw new Error('Fox symbol missing from canonical logo');
+const fonts = { fontFiles: ['C:/Windows/Fonts/seguisb.ttf','C:/Windows/Fonts/segoeui.ttf','C:/Windows/Fonts/msyh.ttc'], loadSystemFonts: true, defaultFontFamily: 'Segoe UI' };
+fonts.fontFiles = fonts.fontFiles.filter(existsSync);
+const render = (svg, width) => new Resvg(svg, {fitTo:{mode:'width',value:width}, font:fonts}).render().asPng();
+const sizes = [16,24,32,48,64];
+const board = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1440\" height=\"1080\" viewBox=\"0 0 1440 1080\"><rect width=\"1440\" height=\"1080\" fill=\"#F6F7FB\"/><defs><g id=\"app-icon\">__INNER__</g></defs><g font-family=\"Segoe UI\" fill=\"#172033\"><text x=\"76\" y=\"70\" font-size=\"14\" letter-spacing=\"3\" fill=\"#657084\">SMALTCODE / BRAND IDENTITY</text><text x=\"1364\" y=\"70\" text-anchor=\"end\" font-size=\"13\" fill=\"#657084\">S FOX — 01</text><rect x=\"64\" y=\"110\" width=\"1312\" height=\"345\" rx=\"28\" fill=\"#FFFFFF\"/><use href=\"#app-icon\" transform=\"translate(104 164) scale(.82)\"/><text x=\"369\" y=\"272\" font-size=\"88\" font-weight=\"600\" letter-spacing=\"-3\">Smalt<tspan fill=\"#3A55D1\">Code</tspan></text><text x=\"376\" y=\"322\" font-size=\"18\" fill=\"#748093\" letter-spacing=\".4\">Focused. Curious. Ready to build.</text><text x=\"106\" y=\"411\" font-size=\"14\" fill=\"#748093\">狐狸轮廓 × 字母 S · 敏捷、专注、探索</text><rect x=\"64\" y=\"483\" width=\"640\" height=\"330\" rx=\"26\" fill=\"#161B26\"/><use href=\"#app-icon\" transform=\"translate(106 530) scale(.49)\"/><text x=\"269\" y=\"610\" font-size=\"46\" font-weight=\"600\" letter-spacing=\"-1.8\" fill=\"#FFFFFF\">SmaltCode</text><text x=\"108\" y=\"760\" font-size=\"13\" fill=\"#9DA9BD\" letter-spacing=\"1.5\">DARK SURFACE</text><rect x=\"732\" y=\"483\" width=\"644\" height=\"330\" rx=\"26\" fill=\"#FFFFFF\"/><g transform=\"translate(776 526) scale(.56)\">__MONOBLUE__</g><g transform=\"translate(1008 526) scale(.56)\">__MONOINK__</g><text x=\"776\" y=\"760\" font-size=\"13\" fill=\"#748093\" letter-spacing=\"1.5\">ONE SHAPE / MONOCHROME</text><rect x=\"64\" y=\"841\" width=\"1312\" height=\"172\" rx=\"26\" fill=\"#FFFFFF\"/><text x=\"104\" y=\"888\" font-size=\"13\" fill=\"#748093\" letter-spacing=\"1.5\">SMALL SIZE, SAME IDENTITY</text>__SIZES__<text x=\"1092\" y=\"949\" font-size=\"16\" fill=\"#3A55D1\">#3A55D1</text><text x=\"1092\" y=\"975\" font-size=\"12\" fill=\"#748093\">SMALT BLUE</text><text x=\"76\" y=\"1051\" font-size=\"12\" fill=\"#8B95A6\">Original vector identity for SmaltCode · Windows / tray / desktop / documentation</text></g></svg>";
+const monoBlue = mark.replace('fill="#FFFFFF"','fill="#3A55D1"');
+const monoInk = mark.replace('fill="#FFFFFF"','fill="#172033"');
+const sizeTests = sizes.map((size,i) => '<g transform="translate('+(112+i*160)+' '+(951-size/2)+')"><use href="#app-icon" transform="scale('+(size/256)+')"/><text x="'+(size+14)+'" y="'+(size/2+4)+'" font-size="12" fill="#748093">'+size+' px</text></g>').join('');
+const svg = board.replace('__INNER__',inner).replace('__MONOBLUE__',monoBlue).replace('__MONOINK__',monoInk).replace('__SIZES__',sizeTests);
+mkdirSync(dir,{recursive:true});
+writeFileSync(join(dir,'smaltcode-identity.svg'),svg);
+writeFileSync(join(dir,'smaltcode-identity.png'),render(svg,1440));
+writeFileSync(join(dir,'smaltcode-icon-1024.png'),render(source,1024));
+const standalone = (path) => '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">'+path+'</svg>\n';
+writeFileSync(join(dir,'smaltcode-mark-blue.svg'),standalone(monoBlue));
+writeFileSync(join(dir,'smaltcode-mark-ink.svg'),standalone(monoInk));
+writeFileSync(join(dir,'smaltcode-mark-white.svg'),standalone(mark));
+for (const [theme, ink, blue] of [['light','#172033','#3A55D1'],['dark','#F4F6FC','#9BACFF']]) {
+  const wordmark = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="184" viewBox="0 0 640 184"><title>SmaltCode — S Fox</title><g transform="translate(0 4) scale(.68)">'+inner+'</g><text x="204" y="116" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="86" font-weight="600" letter-spacing="-3" fill="'+ink+'">Smalt<tspan fill="'+blue+'">Code</tspan></text></svg>\n';
+  writeFileSync(join(dir,'smaltcode-wordmark-'+theme+'.svg'), wordmark);
+  writeFileSync(join(dir,'smaltcode-wordmark-'+theme+'.png'), render(wordmark,1600));
+}
+console.log('Rendered S Fox brand identity, wordmarks and small-size previews');

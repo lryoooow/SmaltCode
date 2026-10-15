@@ -11,15 +11,16 @@ const icon = Data.IconFile.from(readFileSync(join(app, 'assets/smalt.ico')));
 const hash = data => createHash('sha256').update(Buffer.from(data)).digest('hex');
 const expected = icon.icons.map(i => hash(i.data.bin));
 const result = {};
-for (const name of ['win-unpacked/SmaltCode.exe', `SmaltCode-Setup-${version}.exe`]) {
+for (const name of ['win-unpacked/SmaltCode.exe', `SmaltCode-Setup-${version}-SFox.exe`]) {
   const exe = NtExecutable.from(readFileSync(join(app, 'release', name)), { ignoreCert: true });
   const entries = NtExecutableResource.from(exe).entries;
   const groups = Resource.IconGroupEntry.fromEntries(entries);
-  const matched = groups.some(group => {
+  const groupChecks = groups.map(group => {
     const actual = group.getIconItemsFromEntries(entries).map(i => hash(i.isRaw() ? i.bin : i.generate()));
-    return expected.every(value => actual.includes(value));
+    return { id: group.id, lang: group.lang, matched: actual.length === expected.length && expected.every(value => actual.includes(value)) && actual.every(value => expected.includes(value)) };
   });
-  assert.ok(matched, `${name} does not contain the canonical multi-resolution icon`);
+  const matched = groupChecks.length > 0 && groupChecks.every(group => group.matched);
+  assert.ok(matched, name + ' contains a missing or outdated primary/secondary icon group');
   const versions = Resource.VersionInfo.fromEntries(entries);
   const strings = versions.flatMap(info => info.getAvailableLanguages().map(language => info.getStringValues(language)));
   // NSIS displays three components; the application writes the four-component
@@ -34,7 +35,7 @@ for (const name of ['win-unpacked/SmaltCode.exe', `SmaltCode-Setup-${version}.ex
   } else {
     assert.ok(strings.some(info => info.ProductName?.includes('SmaltCode')), `${name} installer identity is incorrect`);
   }
-  result[name] = { matched: true, version, productName: 'SmaltCode', sizes: [16, 24, 32, 48, 64, 128, 256] };
+  result[name] = { matched: true, primaryIconId: groups[0].id, iconGroups: groupChecks, version, productName: 'SmaltCode', sizes: [16, 24, 32, 48, 64, 128, 256] };
 }
 assert.equal(readFileSync(join(app, 'dist/renderer/smalt.svg'), 'utf8'), readFileSync(join(app, 'assets/smalt.svg'), 'utf8'));
 assert.equal(hash(readFileSync(join(app, 'dist/main/smalt.png'))), hash(readFileSync(join(app, 'assets/smalt.png'))));

@@ -6,7 +6,9 @@ export type SettingsData = {
   effective: { defaultProvider: string; defaultModel: string; permissionMode: string }
   keyStorage: 'encrypted' | 'session'
 }
-export type FilePreview = { binary: boolean; size: number; text: string; reason?: string }
+export type FilePreview = { binary: boolean; size: number; text: string; reason?: string; digest?: string }
+export type ContextReference = { path: string; start?: number; end?: number; digest?: string; label?: string }
+export type Checkpoint = import('../../../../kernel/src/storage/checkpoints').CheckpointSummary
 export interface DesktopAPI {
   version: string
   platform: string
@@ -19,6 +21,10 @@ export interface DesktopAPI {
   respondInput(id: string, text: string): Promise<void>
   pickFolder(defaultPath?: string): Promise<{ canceled: true; reason?: string } | { canceled: false; dir: string }>
   pickFiles(): Promise<string[]>
+  searchFiles(cwd: string, query: string): Promise<{ files: string[]; truncated: boolean }>
+  resolveContext(cwd: string, refs: ContextReference[]): Promise<{ text: string; references: Array<{ path: string; label: string }> }>
+  activity(threadId: string | null, enabled: boolean): Promise<void>
+  onNavigate(cb: (threadId: string) => void): () => void
   loadSettings(): Promise<SettingsData>
   saveSettings(patch: Record<string, unknown>): Promise<{ ok: boolean }>
   testProvider(provider: string, model: string): Promise<{ ok: boolean }>
@@ -37,6 +43,7 @@ export type Session = {
   approvals: Record<string, ApprovalRequest>; questions: Record<string, UserInputRequest>
 }
 export type Snapshot = { connected: boolean; loading: boolean; error?: string; sessions: Record<string, Session>; projects: ProjectMeta[]; settings?: SettingsData }
+function readSeen(): Record<string, number> { try { const data = JSON.parse(localStorage.getItem('smalt.ui.seen') ?? '{}'); return data && typeof data === 'object' && !Array.isArray(data) ? Object.fromEntries(Object.entries(data).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))) : {} } catch { return {} } }
 
 /** One subscription owns all sessions. Changing the visible task never interrupts it. */
 export class DesktopStore {
@@ -45,6 +52,14 @@ export class DesktopStore {
   private boot?: Promise<void>
   private unsubscribe: Array<() => void> = []
   private current: string | null = null
+  private seen = readSeen()
+  private rememberRead(id: string) {
+    this.seen[id] = Date.now()
+    this.saveSeen()
+  }
+  private saveSeen() {
+    try { localStorage.setItem('smalt.ui.seen', JSON.stringify(Object.fromEntries(Object.entries(this.seen).sort((a, b) => b[1] - a[1]).slice(0, 1000)))) } catch { /* unavailable storage */ }
+  }
   constructor(readonly api: DesktopAPI | undefined) {}
   getSnapshot = () => this.state
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -55,9 +70,11 @@ export class DesktopStore {
   }
   private upsert(meta: ThreadMeta) {
     const previous = this.state.sessions[meta.id]
+    if (this.current === meta.id) this.rememberRead(meta.id)
     this.commit({ sessions: { ...this.state.sessions, [meta.id]: previous ? { ...previous, meta } : {
       meta, items: [], summaries: [], approvals: {}, questions: {},
       interrupted: meta.lastOutcome === 'interrupted', error: meta.lastOutcome === 'failed' ? '上次执行失败，请查看对话或继续任务。' : undefined,
+      unread: meta.turnCount > 0 && Date.parse(meta.updatedAt) > (this.seen[meta.id] ?? 0),
     } } })
   }
   private item(item: Item) {
@@ -100,6 +117,7 @@ export class DesktopStore {
     if ((method === 'item/started' || method === 'item/completed') && p.item) this.item(p.item)
     if (!p.threadId) return
     const id = p.threadId
+    if ((method === 'turn/completed' || method === 'turn/failed') && id === this.current) this.rememberRead(id)
     if (method === 'thread/deleted') { const sessions = { ...this.state.sessions }; delete sessions[id]; this.commit({ sessions }); return }
     if (method === 'thread/archived') this.update(id, s => ({ ...s, meta: { ...s.meta, archived: true } }))
     if (method === 'thread/status/changed') this.update(id, s => ({ ...s, status: p as ThreadStatus }))
@@ -127,12 +145,17 @@ export class DesktopStore {
     this.update(id, s => {
       const items = new Map(result.items.map(i => [i.id, i]))
       s.items.forEach(i => items.set(i.id, i))
-      return { ...s, items: [...items.values()], status: s.status ?? result.status, unread: false }
+      if (this.current === id) this.rememberRead(id)
+      return { ...s, items: [...items.values()], status: s.status ?? result.status, unread: this.current === id ? false : s.unread }
     })
   }
   select(id: string | null) { this.current = id }
+  markAllRead() {
+    const at = Date.now(); Object.keys(this.state.sessions).forEach(id => { this.seen[id] = at }); this.saveSeen()
+    this.commit({ sessions: Object.fromEntries(Object.entries(this.state.sessions).map(([id, s]) => [id, { ...s, unread: false }])) })
+  }
   busy(id: string) { const s = this.state.sessions[id]; return !!s && (!!s.sending || (!!s.status && s.status.lifecycle !== 'idle')) }
-  async send(id: string | null, text: string, cwd: string, model: string, permissionMode: string, projectId?: string): Promise<string> {
+  async send(id: string | null, text: string, cwd: string, model: string, permissionMode: string, projectId?: string, context?: { text: string; references: Array<{ path: string; label: string }> }): Promise<string> {
     if (!this.api || !this.state.connected) throw new Error('内核未连接')
     let threadId = id
     if (!threadId) {
@@ -140,13 +163,13 @@ export class DesktopStore {
       const result = await this.api.call<{ meta: ThreadMeta; threadId: string }>('thread/start', { cwd, model, permissionMode, projectId, title: text.slice(0, 60) })
       this.upsert(result.meta); threadId = result.threadId
     }
-    this.current = threadId
+    const input = text + (context?.text ?? ''), displayText = text, references = context?.references
     if (this.busy(threadId)) {
-      await this.api.call('turn/steer', { threadId, message: text })
+      await this.api.call('turn/steer', { threadId, message: input, displayText, references })
       this.update(threadId, s => ({ ...s, status: s.status ? { ...s.status, queuedMessages: s.status.queuedMessages + 1 } : s.status }))
     } else {
       this.update(threadId, s => ({ ...s, sending: true, error: undefined }))
-      void this.api.call('turn/start', { threadId, input: text }).catch(err => this.update(threadId!, s => ({ ...s, sending: false, error: errorText(err) })))
+      void this.api.call('turn/start', { threadId, input, displayText, references }).catch(err => this.update(threadId!, s => ({ ...s, sending: false, error: errorText(err) })))
     }
     return threadId
   }

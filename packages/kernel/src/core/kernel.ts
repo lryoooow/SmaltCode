@@ -39,6 +39,8 @@ import {
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { smaltHome } from '../config/settings.js';
+import { CheckpointStore } from '../storage/checkpoints.js';
+import { isInsideWorkspace } from '../tools/workspace-guard.js';
 
 export interface ClientPort {
   notify(method: string, params?: unknown): void;
@@ -66,6 +68,7 @@ export class Kernel {
   readonly tools: ToolRegistry;
   readonly store: ThreadStore;
   readonly projects: ProjectStore;
+  readonly checkpoints: CheckpointStore;
   readonly threads: ThreadManager;
   private readonly cwd: string;
   private readonly logFn: (msg: string) => void;
@@ -81,6 +84,7 @@ export class Kernel {
     this.explicitSettings = !!opts.settings;
     this.store = opts.store ?? new JsonlThreadStore();
     this.projects = new ProjectStore();
+    this.checkpoints = new CheckpointStore();
     this.hooks = new HookBus(this.logFn);
     this.hooks.setCommandHooks(this.settings.hooks as Partial<Record<HookEvent, never>> ?? {});
     this.gateway = new ModelGateway(this.settings);
@@ -98,6 +102,7 @@ export class Kernel {
     });
     const pipeline = new ContextPipeline([envInterceptor(), systemInterceptor()]);
     const orchestrator = new ToolOrchestrator({
+      checkpoints: this.checkpoints,
       tools: this.tools,
       permissions: this.permissions,
       hooks: this.hooks,
@@ -180,6 +185,7 @@ export class Kernel {
     const hooks = this.hooks.fork(settings.hooks ?? {});
     const gateway = this.gateway.fork(settings);
     const orchestrator = new ToolOrchestrator({
+      checkpoints: this.checkpoints,
       tools: this.tools, permissions, hooks,
       requestApproval: (req) => this.client.requestApproval(req),
       cancelApproval: (id) => this.client.cancelApproval?.(id),
@@ -243,11 +249,17 @@ export class Kernel {
       }
 
       case Methods.threadArchive:
+        this.checkpoints.assertAvailable(this.threads.read(String(p.threadId)).meta.cwd);
         return { archived: this.threads.archive(p.threadId as unknown as string) };
       case Methods.threadRestore:
         return { meta: this.threads.restore(String(p.threadId)) };
-      case Methods.threadDelete:
-        return { deleted: this.threads.delete(String(p.threadId)) };
+      case Methods.threadDelete: {
+        const threadId = String(p.threadId);
+        this.checkpoints.assertAvailable(this.threads.read(threadId).meta.cwd);
+        const deleted = this.threads.delete(threadId);
+        await this.checkpoints.delete(threadId);
+        return { deleted };
+      }
       case Methods.threadProject: {
         const projectId = p.projectId ? String(p.projectId) : null;
         if (projectId) this.projects.require(projectId);
@@ -278,15 +290,43 @@ export class Kernel {
         return { meta: this.threads.resetApprovals(String(p.threadId)) };
 
       case Methods.turnStart: {
+        this.checkpoints.assertAvailable(this.threads.require(String(p.threadId)).meta.cwd);
         const outcome = await this.threads.runTurn(
           p.threadId as unknown as string,
-          String(p.input ?? ''),
+          { text: String(p.input ?? ''), displayText: typeof p.displayText === 'string' ? p.displayText : undefined, references: this.userReferences(p.references) },
         );
         return outcome;
       }
 
       case Methods.turnSteer:
-        return this.threads.steer(p.threadId as unknown as string, String(p.message ?? ''));
+        this.checkpoints.assertAvailable(this.threads.require(String(p.threadId)).meta.cwd);
+        return this.threads.steer(p.threadId as unknown as string, { text: String(p.message ?? ''), displayText: typeof p.displayText === 'string' ? p.displayText : undefined, references: this.userReferences(p.references) });
+
+      case 'checkpoint/list': {
+        const { meta } = this.threads.read(String(p.threadId));
+        return { checkpoints: await this.checkpoints.list(meta.id, meta.cwd, p.checkpointId ? String(p.checkpointId) : undefined) };
+      }
+      case 'checkpoint/restore': {
+        const { meta } = this.threads.read(String(p.threadId));
+        const assertIdle = () => {
+          for (const other of this.threads.listMetas(true)) {
+            if ((isInsideWorkspace(meta.cwd, other.cwd) || isInsideWorkspace(other.cwd, meta.cwd)) && this.threads.get(other.id)?.stateMachine.isRunning()) throw new Error('请先停止此工作区中的运行任务，再恢复检查点');
+          }
+        };
+        assertIdle();
+        const result = await this.checkpoints.restore(meta.id, String(p.checkpointId), meta.cwd, p.paths as string[] | undefined, assertIdle);
+        const note = '用户已从检查点恢复文件：' + result.restored.join('、') + '。文件系统已改变，后续编辑前必须重新读取文件。';
+        const rt = this.threads.require(meta.id);
+        const restoredAt = new Date().toISOString();
+        rt.meta.restoredFiles = { ...rt.meta.restoredFiles, ...Object.fromEntries(result.restored.map(path => [path, restoredAt])) };
+        if (result.operationId) rt.meta.restoredChanges = { ...rt.meta.restoredChanges, [result.operationId]: [...new Set([...(rt.meta.restoredChanges?.[result.operationId] ?? []), ...result.restored])] };
+        this.store.append(meta.id, { t: 'meta', meta: { ...rt.meta } });
+        this.client.notify('thread/updated', { threadId: meta.id, meta: { ...rt.meta } });
+        rt.history.push({ role: 'user', content: note });
+        this.store.append(meta.id, { t: 'user-msg', id: 'restore_' + Date.now(), text: note, at: new Date().toISOString() });
+        this.client.notify('checkpoint/restored', { threadId: meta.id, paths: result.restored });
+        return result;
+      }
 
       case Methods.turnInterrupt:
         return { interrupted: this.threads.interrupt(p.threadId as unknown as string) };
@@ -298,6 +338,12 @@ export class Kernel {
       default:
         throw new Error(`method not found: ${method}`);
     }
+  }
+
+  private userReferences(value: unknown): import('../protocol/types.js').UserReference[] | undefined {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value) || value.length > 10 || value.some(ref => !ref || typeof ref.path !== 'string' || ref.path.length > 4096 || (ref.label !== undefined && (typeof ref.label !== 'string' || ref.label.length > 4096)))) throw new Error('无效的文件引用');
+    return value.map(ref => ({ path: ref.path, label: ref.label }));
   }
 
   private validMode(value: unknown): ThreadMeta['permissionMode'] {

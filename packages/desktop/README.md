@@ -1,6 +1,6 @@
-# SmaltCode desktop · 0.0.1 公开测试版
+# SmaltCode desktop · 0.0.2 公开测试版
 
-Electron + React 桌面助手，与 CLI 共用内核。完整介绍与界面截图见 [主 README](../../README.md)。
+Electron + React 桌面助手，与 CLI 共用内核。完整介绍与界面截图见 [主 README](../../README.md)。0.0.2 公开测试版新增任务中心与通知、多标签文本预览与选区修改、@ 文件引用、变更审查与检查点恢复，使用说明见 [0.0.2 说明](../../docs/releases/v0.0.2.md)。
 
 在仓库根目录运行：
 
@@ -24,7 +24,7 @@ python -m pip install --target .qa-python playwright
 python scripts/test-desktop-ui.py --packaged
 ```
 
-安装包：`release/SmaltCode-Setup-0.0.1.exe`。打包前执行类型与启动检查，打包后验证真实应用启动、托盘生命周期、PE 文件/产品版本，以及 UI、窗口、托盘、EXE 和安装器图标一致性。界面验收连接实际打包程序、IPC 与内核，使用本地模拟模型和临时资料。
+安装包：`release/SmaltCode-Setup-0.0.2-SFox.exe`。打包前执行类型与启动检查，打包后验证真实应用启动、托盘生命周期、PE 文件/产品版本，以及 UI、窗口、托盘、EXE 和安装器图标一致性。界面验收连接实际打包程序、IPC 与内核，使用本地模拟模型和临时资料。
 
 Logo 以 `assets/smalt.svg` 为唯一矢量源，构建时生成 PNG 与多尺寸 ICO。内部资源文件名、`@smalt/*` 包名与 `SMALT_HOME` 保留兼容性。
 

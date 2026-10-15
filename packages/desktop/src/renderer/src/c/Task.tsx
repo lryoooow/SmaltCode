@@ -2,7 +2,7 @@ import { useId, useState, type ReactNode } from 'react'
 import Icon from './icons'
 import Composer, { type ModelChoice } from './Composer'
 import { Btn, cx, Menu } from './ui'
-import { errorText, folderName, store, type Session, type Item } from '../bridge'
+import { errorText, folderName, store, type Session, type Item, type ContextReference } from '../bridge'
 import Md from './Markdown'
 import { activityTimeline, activityProgress, type TimelineEntry } from './activity'
 import { rememberExpansion, useConversationScroll, type ConversationScrollMemory } from './useConversationScroll'
@@ -10,7 +10,7 @@ export { default as Md } from './Markdown'
 export type FileItem = { name: string; path: string; kind: 'new' | 'mod' | 'del'; add: number; del: number; diff?: string }
 type Step = { t: string; s: 'todo' | 'doing' | 'done' }
 type Block =
-  | { k: 'user'; text: string; queued?: boolean }
+  | { k: 'user'; text: string; references?: Array<{ path: string; label?: string }>; queued?: boolean }
   | { k: 'think'; text: string; done: boolean; secs: number }
   | { k: 'plan'; steps: Step[] }
   | { k: 'reads'; items: string[]; done: boolean }
@@ -30,6 +30,10 @@ export function artifacts(session: Session): FileItem[] {
   const files = new Map<string, FileItem>()
   session.items.forEach(item => {
     if (item.kind !== 'fileChange' || item.status !== 'completed' || !item.path) return
+    const root = session.meta.cwd.replace(/\\/g, '/').replace(/\/$/, '') + '/'
+    const path = item.path.replace(/\\/g, '/')
+    const relative = path.toLowerCase().startsWith(root.toLowerCase()) ? path.slice(root.length) : path
+    if (session.meta.restoredChanges?.[item.id in (session.meta.restoredChanges ?? {}) ? item.id : item.id.replace(/:\d+$/, '')]?.includes(relative)) return
     const previous = files.get(item.path)
     files.set(item.path, { name: folderName(item.path), path: item.path, kind: previous?.kind === 'new' && item.changeKind !== 'delete' ? 'new' : item.changeKind === 'add' ? 'new' : item.changeKind === 'delete' ? 'del' : 'mod',
       add: (item.diff?.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length ?? 0),
@@ -39,7 +43,7 @@ export function artifacts(session: Session): FileItem[] {
 }
 function block(item: Item): Block {
   switch (item.kind) {
-    case 'userMessage': return { k: 'user', text: item.text }
+    case 'userMessage': return { k: 'user', text: item.text, references: item.references }
     case 'agentMessage': return { k: 'reply', text: item.text, done: item.status !== 'inProgress' }
     case 'reasoning': return { k: 'think', text: item.text, done: item.status !== 'inProgress', secs: 0 }
     case 'plan': return { k: 'plan', steps: item.steps.map(s => ({ t: s.content, s: s.status === 'completed' ? 'done' : s.status === 'inProgress' ? 'doing' : 'todo' })) }
@@ -70,10 +74,11 @@ function operationContent(input: unknown) {
   const value = input as Record<string, unknown> | undefined
   return String(value?.command ?? value?.patch ?? value?.content ?? JSON.stringify(input, null, 2))
 }
-export default function TaskView({ session, scrollPositions, onOpenFile, model, setModel, models, mode, setMode, draft, setDraft, onSend, onError, onSettings }: {
+export default function TaskView({ session, scrollPositions, onOpenFile, model, setModel, models, mode, setMode, draft, setDraft, onSend, onError, onSettings, references, onReferencesChange }: {
   session: Session; onOpenFile: (file: FileItem) => void; model: string; setModel: (model: string) => void; models: ModelChoice[]
   scrollPositions: ConversationScrollMemory
   mode: string; setMode: (mode: string) => void; draft: string; setDraft: (value: string) => void; onSend: (text: string) => Promise<void>
+  references: ContextReference[]; onReferencesChange: (refs: ContextReference[]) => void
   onError: (error: string) => void; onSettings: () => void
 }) {
   const scroll = useConversationScroll(session, scrollPositions)
@@ -108,7 +113,7 @@ export default function TaskView({ session, scrollPositions, onOpenFile, model, 
     <div className="relative max-w-[760px] w-full mx-auto px-5 lg:px-8 pb-4">
       {!scroll.stick && <button data-testid="scroll-to-latest" onClick={scroll.latest} className="absolute left-1/2 -translate-x-1/2 bottom-full mb-3 z-10 h-8 px-3 flex items-center gap-1.5 whitespace-nowrap rounded-full glass border border-[var(--line)] shadow-lg text-[12px]"><Icon n="arrowDown" s={13} />{Object.keys(session.approvals).length ? '需要确认 · 查看最新' : Object.keys(session.questions).length ? '需要回答 · 查看最新' : scroll.hasUpdates ? '有新内容 · 查看最新' : '回到底部'}</button>}
       <PhaseBar phase={phase} />
-      <Composer approvedCategories={session.meta.approvedCategories} onResetPermissions={() => void store.updateThread(session.meta.id, {}, 'thread/permissions/reset').catch(e => onError(errorText(e)))} running={running} disabled={!!session.meta.archived} onSend={onSend} onStop={() => void stop()} value={draft} setValue={setDraft} mode={mode} setMode={setMode} model={model} setModel={setModel} models={models} ws={session.meta.cwd} queued={session.status?.queuedMessages} onError={onError} />
+      <Composer references={references} onReferencesChange={onReferencesChange} approvedCategories={session.meta.approvedCategories} onResetPermissions={() => void store.updateThread(session.meta.id, {}, 'thread/permissions/reset').catch(e => onError(errorText(e)))} running={running} disabled={!!session.meta.archived} onSend={onSend} onStop={() => void stop()} value={draft} setValue={setDraft} mode={mode} setMode={setMode} model={model} setModel={setModel} models={models} ws={session.meta.cwd} queued={session.status?.queuedMessages} onError={onError} />
       <div className="text-center text-[11px] text-[var(--muted)]/80 mt-2">内容由 AI 生成，请核实重要信息</div>
     </div>
   </div>
@@ -181,7 +186,7 @@ function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onA
     case 'user':
       return (
         <div className="flex flex-col items-end anim-rise pt-2">
-          <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-[var(--accent-soft)] text-[14px] leading-relaxed">{b.text}</div>
+          <div className="max-w-[85%] min-w-0 px-4 py-2.5 rounded-2xl rounded-br-md bg-[var(--accent-soft)] text-[14px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">{b.text}{!!b.references?.length && <div className="mt-2 flex flex-wrap gap-1.5">{b.references.map((ref, i) => <span key={i} title={ref.path} className="inline-flex items-center gap-1 max-w-full rounded-md bg-[var(--surface-solid)]/70 px-2 py-1 text-[11px] text-[var(--muted)]"><Icon n="file" s={12} className="shrink-0" /><span className="truncate">{ref.label ?? ref.path}</span></span>)}</div>}</div>
           {b.queued && <span className="mt-1 text-[11px] text-[var(--muted)] flex items-center gap-1"><Icon n="clock" s={11} />将在当前步骤后处理</span>}
         </div>
       )

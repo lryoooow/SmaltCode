@@ -21,8 +21,10 @@ import type { ToolDefinition, ToolEvent, ToolRunContext } from './types.js';
 import { validateInput } from './types.js';
 import { isInsideWorkspace, isSensitivePath } from './workspace-guard.js';
 import { toolClass } from '../permissions/rules.js';
+import type { CheckpointStore } from '../storage/checkpoints.js';
 
 export interface OrchestratorDeps {
+  checkpoints?: CheckpointStore;
   tools: ToolRegistry;
   permissions: PermissionService;
   hooks: HookBus;
@@ -311,29 +313,38 @@ export class ToolOrchestrator {
       log: this.deps.log,
     };
 
-    try {
-      let finalText = '';
-      let isError = false;
-      for await (const ev of tool.run(input, runCtx) as AsyncIterable<ToolEvent>) {
-        if (ev.type === 'output') {
-          outcome.deltas.push(ev.text);
-          this.deps.onOutput?.(baseCtx.threadId, toolCallId, ev.text);
-        } else {
-          finalText = ev.text;
-          isError = Boolean(ev.isError);
+    const execute = async () => {
+      try {
+        if (baseCtx.signal.aborted) return this.finish(outcome, '操作已停止', true);
+        const checkpoints = this.deps.checkpoints;
+        const tracked = checkpoints && (toolName === 'write' || toolName === 'apply_patch')
+          ? await checkpoints.capture(baseCtx.threadId, baseCtx.turnId, baseCtx.cwd, tool.summarize(input), tool.subjects?.(input) ?? [tool.subject(input)], toolCallId) : undefined;
+        let finalText = '';
+        let isError = false;
+        try {
+          if (baseCtx.signal.aborted || this.deps.permissions.check({ tool: toolName, input, subject: tool.subject(input), subjects: tool.subjects?.(input), cwd: baseCtx.cwd }).action === 'deny') throw new Error('操作已停止或权限已撤销');
+          for await (const ev of tool.run(input, runCtx) as AsyncIterable<ToolEvent>) {
+            if (ev.type === 'output') {
+              outcome.deltas.push(ev.text);
+              this.deps.onOutput?.(baseCtx.threadId, toolCallId, ev.text);
+            } else {
+              finalText = ev.text;
+              isError = Boolean(ev.isError);
+            }
+          }
+        } finally {
+          if (tracked) await checkpoints!.complete(tracked);
         }
+        await this.deps.hooks.emit(isError ? 'PostToolUseFailure' : 'PostToolUse', { tool: toolName, input, output: finalText });
+        return this.finish(outcome, finalText || '(no output)', isError);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await this.deps.hooks.emit('PostToolUseFailure', { tool: toolName, reason: msg });
+        return this.finish(outcome, 'Error running ' + toolName + ': ' + msg, true);
       }
-      await this.deps.hooks.emit(isError ? 'PostToolUseFailure' : 'PostToolUse', {
-        tool: toolName,
-        input,
-        output: finalText,
-      });
-      return this.finish(outcome, finalText || '(no output)', isError);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await this.deps.hooks.emit('PostToolUseFailure', { tool: toolName, reason: msg });
-      return this.finish(outcome, `Error running ${toolName}: ${msg}`, true);
-    }
+    };
+    return this.deps.checkpoints && (toolName === 'write' || toolName === 'apply_patch')
+      ? this.deps.checkpoints.exclusive(baseCtx.cwd, execute) : execute();
   }
 
   private finish(

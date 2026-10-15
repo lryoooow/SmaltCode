@@ -14,7 +14,7 @@ export type StoreEvent =
   | { t: 'meta'; meta: ThreadMeta }
   | { t: 'turn-started'; turnId: string; at: string }
   | { t: 'turn-ended'; turnId: string; at: string; interrupted?: boolean }
-  | { t: 'user-msg'; id: string; text: string; at: string }
+  | { t: 'user-msg'; id: string; text: string; displayText?: string; references?: import('../protocol/types.js').UserReference[]; at: string }
   | { t: 'agent-msg'; id: string; text: string; at: string; status?: import('../protocol/types.js').ItemStatus }
   | { t: 'reasoning'; id: string; text: string; at: string; status?: import('../protocol/types.js').ItemStatus }
   | { t: 'tool-call'; id: string; tool: string; input: unknown; at: string }
