@@ -29,6 +29,8 @@ python scripts/test-desktop-ui.py
 
 构建安装包：`npm run package:desktop`。最终安装包验收：`python scripts/test-desktop-ui.py --packaged`。测试资料与模型服务是隔离的本地夹具，不需要真实密钥。
 
+本项目使用本地验证，GitHub Actions 已关闭。推送和 Pull Request 不触发云端 CI；请在提交说明中提供本地验证结果。未经维护者明确要求，请勿新增或启用远程工作流。
+
 ## 代码约定
 
 - 内核使用 Node 内置模块，保持零运行时第三方依赖。界面依赖放在桌面端。

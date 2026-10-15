@@ -224,6 +224,8 @@ Get-FileHash .\SmaltCode-Setup-0.0.2-SFox.exe -Algorithm SHA256
 
 需要 **Node.js 22 或更高版本**与 npm。桌面安装包构建和以下原生验收目前面向 Windows。
 
+本仓库使用本地测试与打包，GitHub Actions 已关闭；推送和 Pull Request 不会自动触发云端 CI。贡献时请附上实际执行的本地验证结果。
+
 ```bash
 git clone https://github.com/lryoooow/SmaltCode.git
 cd SmaltCode
@@ -269,7 +271,7 @@ SmaltCode/
 ├── docs/
 │   ├── images/       # README 的实际界面截图
 │   └── releases/     # 公开版本发布说明
-└── .github/          # CI 与问题反馈模板
+└── .github/          # 问题反馈模板
 ```
 
 阅读 [架构说明](docs/ARCHITECTURE.md) 与 [内核协议](docs/PROTOCOL.md) 了解实现。内部包名 `@smalt/*`、命令行名称 `smalt` 和配置目录 `.smalt` 保留兼容性；桌面产品统一命名为 **SmaltCode**。
