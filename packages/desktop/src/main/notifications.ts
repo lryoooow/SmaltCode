@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Notification, type WebContents } from 'electron';
 import { join } from 'node:path';
+import { desktopTestSwitches } from './identity.js';
 
 /** OS alerts complement the task center; they never steal focus or auto-approve. */
 export class DesktopNotifications {
@@ -13,13 +14,17 @@ export class DesktopNotifications {
   resolve(key: string) { clearTimeout(this.pending.get(key)); this.pending.delete(key); this.alerts.get(key)?.close(); this.alerts.delete(key); this.threads.delete(key); }
   resolveThread(threadId: string) { for (const [key, id] of this.threads) if (id === threadId) this.resolve(key); }
   show(threadId: string, key: string, title: string, body: string) {
-    if (!this.enabled || typeof Notification?.isSupported !== 'function' || !Notification.isSupported() || this.pending.has(key) || this.alerts.has(key)) return;
+    if (!this.enabled || this.pending.has(key) || this.alerts.has(key)) return;
+    const testing = desktopTestSwitches.some(flag => app.commandLine.hasSwitch(flag));
+    // Even isSupported() can initialise Windows notification registration and
+    // create a Start Menu shortcut. Simulated alerts must bypass native APIs.
+    if (!testing && (typeof Notification?.isSupported !== 'function' || !Notification.isSupported())) return;
     this.threads.set(key, threadId);
     const timer = setTimeout(() => {
       this.pending.delete(key);
       const win = BrowserWindow.fromWebContents(this.contents);
       if (!this.enabled || this.contents.isDestroyed() || (this.current === threadId && win?.isFocused() && win.isVisible())) { this.threads.delete(key); return; }
-      if (app.commandLine.hasSwitch('ui-test')) { console.log('[notification-test]', JSON.stringify({ threadId, title })); this.threads.delete(key); return; }
+      if (testing) { console.log('[notification-test]', JSON.stringify({ threadId, title })); this.threads.delete(key); return; }
       try {
       if (this.alerts.size >= 64) this.resolve(this.alerts.keys().next().value!);
       const alert = new Notification({ title: 'SmaltCode · ' + title, body: body.slice(0, 120), silent: true, icon: join(__dirname, 'smalt.png') });

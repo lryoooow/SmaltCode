@@ -6,13 +6,15 @@ import { pathToFileURL } from 'node:url';
 import { killAllToolProcesses } from '@smalt/kernel';
 import { DesktopBridge } from './bridge.js';
 import { DesktopTray } from './tray.js';
+import { desktopAppId, desktopTestSwitches } from './identity.js';
 
 app.setName('SmaltCode');
-if (process.platform === 'win32') app.setAppUserModelId('app.smaltcode.desktop');
+const testing = desktopTestSwitches.some(flag => app.commandLine.hasSwitch(flag));
+if (process.platform === 'win32') app.setAppUserModelId(desktopAppId(app.isPackaged, testing));
 
 let tray: DesktopTray | undefined;
 
-if (process.env.SMALT_HOME && (app.commandLine.hasSwitch('ui-test') || app.commandLine.hasSwitch('smoke-test') || app.commandLine.hasSwitch('tray-smoke-test'))) app.setPath('userData', join(process.env.SMALT_HOME, 'desktop-test-profile'));
+if (process.env.SMALT_HOME && testing) app.setPath('userData', join(process.env.SMALT_HOME, 'desktop-test-profile'));
 
 // single instance: a second launch focuses the existing window
 if (!app.requestSingleInstanceLock()) {

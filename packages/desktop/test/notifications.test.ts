@@ -1,17 +1,17 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-const state = vi.hoisted(() => ({ alerts: [] as any[], focused: false, visible: true, minimized: false, show: vi.fn(), restore: vi.fn(), focus: vi.fn(), send: vi.fn(), destroyed: false }));
+const state = vi.hoisted(() => ({ alerts: [] as any[], focused: false, visible: true, minimized: false, show: vi.fn(), restore: vi.fn(), focus: vi.fn(), send: vi.fn(), destroyed: false, testSwitch: '', supported: vi.fn(() => true) }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
   class Alert extends EventEmitter {
-    static isSupported() { return true; }
+    static isSupported = state.supported;
     show = vi.fn(); close = vi.fn();
     constructor(readonly options: any) { super(); state.alerts.push(this); }
   }
-  return { app: { commandLine: { hasSwitch: () => false } }, Notification: Alert, BrowserWindow: { fromWebContents: () => ({ isFocused: () => state.focused, isVisible: () => state.visible, isMinimized: () => state.minimized, restore: state.restore, show: state.show, focus: state.focus }) } };
+  return { app: { commandLine: { hasSwitch: (flag: string) => flag === state.testSwitch } }, Notification: Alert, BrowserWindow: { fromWebContents: () => ({ isFocused: () => state.focused, isVisible: () => state.visible, isMinimized: () => state.minimized, restore: state.restore, show: state.show, focus: state.focus }) } };
 });
 import { DesktopNotifications } from '../src/main/notifications.js';
 let service: DesktopNotifications;
-beforeEach(() => { vi.useFakeTimers(); state.alerts.length = 0; state.focused = false; state.visible = true; state.minimized = false; state.destroyed = false; service = new DesktopNotifications({ isDestroyed: () => state.destroyed, send: state.send } as any); });
+beforeEach(() => { vi.useFakeTimers(); state.alerts.length = 0; state.focused = false; state.visible = true; state.minimized = false; state.destroyed = false; state.testSwitch = ''; state.supported.mockReturnValue(true); service = new DesktopNotifications({ isDestroyed: () => state.destroyed, send: state.send } as any); });
 afterEach(() => { service.dispose(); vi.useRealTimers(); vi.clearAllMocks(); });
 describe('desktop task notifications', () => {
   it('deduplicates alerts and restores the precise conversation on click', () => {
@@ -31,6 +31,21 @@ describe('desktop task notifications', () => {
     service.configure(null, false); service.show('a', 'one', '', ''); vi.advanceTimersByTime(1000); expect(state.alerts).toHaveLength(0);
     service.configure(null, true); service.show('a', 'two', '', ''); state.destroyed = true; vi.advanceTimersByTime(1000); expect(state.alerts).toHaveLength(0);
     state.destroyed = false; service.show('a', 'three', '', ''); service.dispose(); vi.advanceTimersByTime(1000); expect(state.alerts).toHaveLength(0);
+  });
+  it.each(['ui-test', 'smoke-test', 'tray-smoke-test'])('never registers native notifications during %s', flag => {
+    state.testSwitch = flag;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      service.show('a', 'completed', '已完成', 'task'); vi.advanceTimersByTime(1000);
+      expect(state.supported).not.toHaveBeenCalled();
+      expect(state.alerts).toHaveLength(0);
+      expect(log).toHaveBeenCalledWith('[notification-test]', JSON.stringify({ threadId: 'a', title: '已完成' }));
+    } finally { log.mockRestore(); }
+  });
+  it('does not create notifications when the OS does not support them', () => {
+    state.supported.mockReturnValue(false);
+    service.show('a', 'completed', '已完成', 'task'); vi.advanceTimersByTime(1000);
+    expect(state.supported).toHaveBeenCalledOnce(); expect(state.alerts).toHaveLength(0);
   });
 });
 

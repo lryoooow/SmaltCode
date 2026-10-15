@@ -200,6 +200,10 @@ Get-FileHash .\SmaltCode-Setup-0.0.2-SFox.exe -Algorithm SHA256
 
 **关闭窗口后任务会停止吗？** 关闭按钮将窗口隐藏到托盘，后台任务继续。托盘右键“退出 SmaltCode”会完全结束程序。
 
+**退出后双击没有反应怎么办？** 先检查桌面和开始菜单快捷方式是否指向正式安装目录，运行所需文件应与 `SmaltCode.exe` 一起保留。如果启动日志出现 `ICU data` 错误，检查安装目录中的 `icudtl.dat` 等运行文件是否缺失，再使用 Release 中的完整安装包覆盖修复。排查时保留用户目录中的 `.smalt` 与应用数据，无需先清空对话或模型配置。
+
+**任务栏为何仍显示 Electron 默认图标？** 正式安装包与窗口已使用 S Fox 图标。若同时运行过源码或桌面测试，还应检查 Windows 快捷方式的应用标识是否冲突。当前源码将正式版、开发版和测试进程的标识分开，模拟通知也不再调用会注册系统快捷方式的原生接口，避免测试影响正式安装的任务栏关联。
+
 **运行时可以看别的对话吗？** 可以。切换对话不会停止原来的任务；返回后继续查看进展。
 
 **能否减少审批次数？** 可允许本组或本对话同类操作，也可按任务选择“自动接受编辑”等模式；运行中仍可调整或撤销许可。
@@ -239,9 +243,17 @@ npm run package:desktop
 # 使用实际打包程序进行界面、IPC 和内核验收
 python -m pip install --target .qa-python playwright
 python scripts/test-desktop-ui.py --packaged
+
+# 同一测试配置连续三次关闭、托盘恢复、完全退出和重新启动
+node scripts/test-desktop-tray.mjs --packaged
+
+# 核对实际安装目录（替换为自己的安装路径），不修改原有对话和配置
+node scripts/test-desktop-tray.mjs --installed-dir "D:\smalt\SmaltCode"
 ```
 
 当前源码的安装包输出到 `packages/desktop/release/SmaltCode-Setup-0.0.2-SFox.exe`。UI 验收使用 Electron 自带浏览器、本地模拟模型与隔离临时目录，无需真实 API Key；截图和报告生成到 `docs/screenshots/`。
+
+Windows 托盘检查复用同一份隔离测试配置完成三轮退出与重启，并校验运行文件没有被修改或删除。开发与测试进程使用独立应用标识；正式安装版仍与安装程序中的 `app.smaltcode.desktop` 保持一致。
 
 本次公开版本的验收结果与范围见 [发布说明](docs/releases/v0.0.2.md)。模拟服务测试覆盖实际执行链路，不代表已对所有外部服务商做真实 API 兼容测试。
 
