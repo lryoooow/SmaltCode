@@ -30,7 +30,7 @@ export class ToolRegistry {
     return this.list().map((t) => ({
       name: t.name,
       description: t.description,
-      inputSchema: t.inputSchema,
+      inputSchema: { ...t.inputSchema, properties: { ...(t.inputSchema.properties as object), recoveryOf: { type: 'string', description: 'Optional earlier tool-call ID from this turn: link native grep/read/glob replacing an unavailable shell utility, or a program+args rerun of the exact same check and cwd. Different scope, skipped tests, failed alternatives and denied operations cannot be cleared.' } } },
     }));
   }
 }

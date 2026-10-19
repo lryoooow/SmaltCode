@@ -57,8 +57,19 @@ export class TerminalPort implements ClientPort {
 
 /** rl.question as a promise, tolerating a closed readline. */
 export function makeAsker(rl: readline.Interface): (q: string) => Promise<string> {
-  return (q: string) =>
-    new Promise<string>((resolve) => {
-      rl.question(q, (answer) => resolve(answer));
-    });
+  let closed = false;
+  rl.once('close', () => { closed = true; });
+  return (q: string) => new Promise<string>(resolve => {
+    const finish = (answer = '') => { rl.removeListener('close', cancel); rl.removeListener('error', cancel); resolve(answer); };
+    const cancel = () => finish('');
+    if (closed || (rl as readline.Interface & { closed?: boolean }).closed) { finish(''); return; }
+    rl.once('close', cancel); rl.once('error', cancel);
+    try { rl.question(q, finish); } catch { finish(''); }
+  });
+}
+
+export function installInterrupts(rl: readline.Interface, interrupt: () => void): () => void {
+  rl.on('SIGINT', interrupt); process.on('SIGINT', interrupt);
+  const remove = () => { rl.removeListener('SIGINT', interrupt); process.removeListener('SIGINT', interrupt); };
+  rl.once('close', remove); return remove;
 }

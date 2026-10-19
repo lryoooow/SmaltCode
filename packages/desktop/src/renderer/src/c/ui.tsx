@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Icon from './icons'
 import { createPortal } from 'react-dom'
 
-export type Status = 'running' | 'approval' | 'question' | 'unread' | 'failed' | 'stopped' | 'done'
+export type Status = 'running' | 'approval' | 'question' | 'unread' | 'failed' | 'stopped' | 'done' | 'findings' | 'unverified' | 'attention'
 export type Task = { id: string; title: string; ws: string; status: Status; time: string; group: string; pinned?: boolean; projectId?: string }
 
 export const cx = (...a: (string | false | undefined | null)[]) => a.filter(Boolean).join(' ')
@@ -39,6 +39,7 @@ export function StatusDot({ s }: { s: Status }) {
   if (s === 'approval' || s === 'question') return <span className="size-3.5 grid place-items-center"><span className="size-2 rounded-full bg-amber-500 pulse-ring" /></span>
   if (s === 'unread') return <span className="size-3.5 grid place-items-center"><span className="size-2 rounded-full bg-accent" /></span>
   if (s === 'failed') return <span className="size-3.5 grid place-items-center text-rose-500"><Icon n="alert" s={13} /></span>
+  if (s === 'findings' || s === 'unverified' || s === 'attention') return <span className="size-3.5 grid place-items-center text-amber-600 dark:text-amber-300"><Icon n="alert" s={13} /></span>
   if (s === 'stopped') return <span className="size-3.5 grid place-items-center"><span className="size-2 rounded-[2px] bg-[var(--muted)] opacity-60" /></span>
   return <span className="size-3.5" />
 }

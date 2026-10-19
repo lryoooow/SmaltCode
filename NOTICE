@@ -25,3 +25,9 @@ Stop, SessionStart, SessionEnd, SubagentStop, PreCompact, PostCompact,
 PermissionRequest) and the permission-mode names (default, plan,
 acceptEdits, bypassPermissions) follow the de-facto conventions shared
 by open-source coding agents.
+
+The desktop document preview includes PDF.js (pdfjs-dist), licensed
+under Apache-2.0, and fflate, fast-xml-parser and @thednp/dommatrix,
+licensed under MIT. Their license texts are copied into dist/licenses
+during desktop source builds. PDF CMap and Foxit/Liberation standard
+font notices are retained alongside dist/main/pdf-assets.

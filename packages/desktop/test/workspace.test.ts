@@ -4,6 +4,9 @@ import { tmpdir, homedir } from 'node:os';
 import { join, parse } from 'node:path';
 import { isValidWorkspace } from '../src/main/workspace.js';
 describe('desktop workspace selection', () => {
+  it.each(['\\\\unavailable.invalid\\share', '//unavailable.invalid/share', '\\\\?\\C:\\project', '\\\\.\\C:'])('rejects network/device paths before any filesystem access: %s', path => {
+    expect(isValidWorkspace(path)).toMatchObject({ ok: false });
+  });
   it('accepts a project directory and rejects files, home, and drive roots', () => {
     const directory = mkdtempSync(join(tmpdir(), 'smalt-workspace-'));
     try {

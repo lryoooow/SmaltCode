@@ -9,7 +9,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { resolveWorkspacePath } from '../../config/settings.js';
-import { isInsideWorkspace } from '../workspace-guard.js';
+import { isInsideWorkspace, isSensitivePath } from '../workspace-guard.js';
 import { truncate } from '../../util.js';
 import type { ToolDefinition, ToolEvent } from '../types.js';
 
@@ -32,6 +32,7 @@ function walk(
   for (const entry of entries) {
     if (opts.budget.count-- <= 0) return;
     const full = join(root, entry.name);
+    if (isSensitivePath(root, full)) continue;
     if (entry.isDirectory()) {
       if (opts.respectIgnores && DEFAULT_IGNORES.includes(entry.name)) continue;
       walk(full, opts, out);
@@ -48,7 +49,7 @@ function globToRegExp(pattern: string): RegExp {
     const ch = p[i]!;
     if (ch === '*') {
       if (p[i + 1] === '*') {
-        out += '(?:.*/)?';
+        out += p[i + 2] === '/' ? '(?:.*/)?' : '.*';
         i++;
         if (p[i + 1] === '/') i++;
       } else {
@@ -95,6 +96,12 @@ export const globTool: ToolDefinition = {
     const { pattern, path } = input as { pattern: string; path?: string };
     const searchRoot = path ? resolveWorkspacePath(ctx.cwd, path) : ctx.cwd;
     const { dir, rest } = baseDirOfPattern(pattern);
+    if (!rest && dir) {
+      const target = join(searchRoot, dir);
+      if (isInsideWorkspace(ctx.cwd, target) && !isSensitivePath(ctx.cwd, target)) {
+        try { if (statSync(target).isFile()) { yield { type: 'result', text: relative(searchRoot, target).replace(/\\/g, '/') + '\n(1 matches)' }; return; } } catch { /* absent literal */ }
+      }
+    }
     const root = dir ? join(searchRoot, dir) : searchRoot;
     const effective = rest || pattern;
 
@@ -112,8 +119,8 @@ export const globTool: ToolDefinition = {
     walk(root, { respectIgnores: true, budget: { count: MAX_FILES_SCANNED } }, files);
     const re = globToRegExp(effective);
     const matches = files
+      .filter((f) => re.test(relative(root, f).replace(/\\/g, '/')))
       .map((f) => relative(searchRoot, f).replace(/\\/g, '/'))
-      .filter((f) => re.test(f) || re.test(`${dir}/${f}`))
       .sort()
       .slice(0, MAX_RESULTS);
 
@@ -183,6 +190,7 @@ export const grepTool: ToolDefinition = {
     const root0 = files.length && statSync(searchRoot).isFile() ? join(searchRoot, '..') : searchRoot;
 
     outer: for (const file of files) {
+      if (isSensitivePath(ctx.cwd, file) || !isInsideWorkspace(ctx.cwd, file)) continue;
       if (includeRe && !includeRe.test(file.replace(/\\/g, '/').split('/').pop() ?? '')) continue;
       let content: string;
       try {

@@ -13,6 +13,12 @@ async function change(path: string, before: string | null, after: string | null)
   await store.complete(cp); return cp;
 }
 describe('durable file checkpoints', () => {
+  it('keeps healthy checkpoints visible when another record is malformed', async () => {
+    const cp = await change('good.txt', 'before', 'after');
+    await writeFile(join(root, 'backups', 'thread', 'bad.json'), '{broken');
+    expect((await store.list('thread', cwd)).map(item => item.id)).toEqual([cp.id]);
+    await expect(store.list('thread', cwd, 'bad')).rejects.toThrow();
+  });
   it.each([[null, 'new'], ['old', 'updated'], ['old', null]] as Array<[string | null, string | null]>)('restores create/update/delete across a store restart (%s, %s)', async (before, after) => {
     const cp = await change('file.txt', before, after), restarted = new CheckpointStore(join(root, 'backups'));
     expect((await restarted.list('thread', cwd, cp.id))[0].files[0]).toMatchObject({ path: 'file.txt', restored: false, conflict: undefined });

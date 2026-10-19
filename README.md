@@ -8,16 +8,18 @@
   <p><strong>让 AI 的思考、执行与项目管理，回到一个清爽的工作区。</strong></p>
   <p>多模型 AI 编程与办公桌面助手 · 中文界面 · 本地项目 · 可控执行</p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.2%20preview-2F4FD0" alt="0.0.2 公开测试版" />
+    <img src="https://img.shields.io/badge/version-0.0.3%20preview-2F4FD0" alt="0.0.3 公开测试版" />
     <img src="https://img.shields.io/badge/platform-Windows%20x64-5B6475" alt="Windows x64" />
     <img src="https://img.shields.io/badge/license-Apache--2.0-23A075" alt="Apache-2.0" />
   </p>
-  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.2">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a> · <a href="CONTRIBUTING.md">参与贡献</a></p>
+  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.3">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a> · <a href="CONTRIBUTING.md">参与贡献</a></p>
 </div>
 
-> **v0.0.2 是公开测试版本。** 我们希望和大家一起把 SmaltCode 做好：欢迎试用、报告 Bug、提出交互和功能建议，也欢迎提交代码与文档改进。功能、兼容性和模型适配仍在持续打磨，请先在可以备份和恢复的项目中体验。
+> **v0.0.3 是公开测试版本。** 我们希望和大家一起把 SmaltCode 做好：欢迎试用、报告 Bug、提出交互和功能建议，也欢迎提交代码与文档改进。功能、兼容性和模型适配仍在持续打磨，请先在可以备份和恢复的项目中体验。
 
 ![SmaltCode 对话与执行界面](docs/images/conversation.png)
+
+> **0.0.3 已纳入技能与资料工作台。** 本次新增模型目录与上下文容量识别、技能导入、截图与 PDF/Word/Excel 预览、用量诊断和异常恢复，改善执行验收与任务进度。详见 [0.0.3 更新说明](docs/releases/v0.0.3.md) 与 [功能及本地验收说明](docs/development-preview.md)。
 
 ## 目录
 
@@ -26,6 +28,7 @@
 - [下载与安装](#下载与安装)
 - [快速开始](#快速开始)
 - [权限与运行体验](#权限与运行体验)
+- [v0.0.3 更新内容](#v003-更新内容)
 - [v0.0.2 更新内容](#v002-更新内容)
 - [v0.0.1 更新内容](#v001-更新内容)
 - [测试版的边界](#测试版的边界)
@@ -42,10 +45,14 @@ SmaltCode 把模型对话连接到实际工作文件夹。你可以让它理解�
 | 能力 | 当前体验 |
 | --- | --- |
 | 多模型接入 | 内置多个服务商配置，支持 OpenAI 兼容 Chat Completions 与 Anthropic Messages 协议，也可连接本机 Ollama；服务地址与模型 ID 可修改 |
+| 模型发现 | 搜索与筛选服务商模型，刷新型号和上下文容量；显示接口、官方规格或手动设置来源，标注不可用型号 |
+| 技能与资料 | 内置技能与 SKILL.md 导入、截图引用、PDF 原页/Word 正文/Excel 工作表预览、文档选段引用 |
+| 用量与恢复 | 查看已记录用量、整理诊断及待恢复任务，导出脱敏诊断 |
 | 实际任务执行 | 读取与编辑文件、执行命令、展示计划、流式输出、查看产物和 diff |
 | 项目与对话 | 左侧项目分组、项目说明与默认文件夹，对话重命名、置顶、归档、恢复与删除 |
 | 灵活审批 | 运行中调整权限，允许一次、本组操作或本对话同类操作，并可撤销额外许可 |
-| 清晰的过程展示 | 思考、计划、命令与文件变更合并到默认折叠的过程区，按需展开详情 |
+| 清晰的过程展示 | 一个任务卡展示当前动作、完成节点和计划入口；思考与执行记录默认折叠 |
+| 执行验收 | 独立程序参数与真实退出码；区分检查发现、执行错误和待验证事项；保留重试记录，不把跳过或单例通过当作整套验证通过 |
 | 自由浏览 | 运行时上翻历史、查看文件、切换对话；保留阅读位置，点击“查看最新”恢复跟随 |
 | 后台驻留 | 关闭窗口隐藏到系统托盘，后台任务继续；通过托盘菜单完全退出 |
 | 桌面细节 | 亮暗主题、搜索与快捷键，窗口、托盘、应用和安装程序使用统一 Logo |
@@ -60,7 +67,7 @@ SmaltCode 把模型对话连接到实际工作文件夹。你可以让它理解�
     <td width="50%"><img src="docs/images/projects.png" alt="项目侧栏与项目工作区" /><p align="center">项目分组 · 对话有归属</p></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/images/activity.png" alt="思考与执行过程默认折叠" /><p align="center">过程可折叠 · 进展看得见</p></td>
+    <td width="50%"><img src="docs/images/task-progress.png" alt="统一任务卡与可展开的执行计划" /><p align="center">一个任务卡 · 计划按需展开</p></td>
     <td width="50%"><img src="docs/images/permissions.png" alt="同组审批与运行中权限" /><p align="center">合并审批 · 减少反复点击</p></td>
   </tr>
 </table>
@@ -74,21 +81,21 @@ SmaltCode 把模型对话连接到实际工作文件夹。你可以让它理解�
 
 </details>
 
-截图来自 v0.0.2 更新内容的真实桌面验收场景，使用模拟模型服务和测试资料；截图中的模型名称、路径与任务内容仅用于展示。
+截图来自 0.0.2/0.0.3 的真实桌面验收场景，使用模拟模型服务和测试资料；截图中的模型名称、路径与任务内容仅用于展示。
 
 ## 下载与安装
 
-**当前安装包：Windows x64，版本 0.0.2，S Fox 狐狸图标。**
+**当前安装包：Windows x64，版本 0.0.3，S Fox 狐狸图标。**
 
-1. 打开 [v0.0.2 Release](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.2)。
-2. 下载 [SmaltCode-Setup-0.0.2-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.2/SmaltCode-Setup-0.0.2-SFox.exe)。
-3. 按安装向导选择目录，使用桌面或开始菜单中的 **SmaltCode** 打开程序。
+1. 打开 [v0.0.3 Release](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.3)。
+2. 下载 [SmaltCode-Setup-0.0.3-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.3/SmaltCode-Setup-0.0.3-SFox.exe)。
+3. 升级前先从托盘退出旧版，再按安装向导选择原目录，使用桌面或开始菜单中的 **SmaltCode** 打开程序。
 4. 在设置中配置模型服务，选择工作文件夹，即可开始。
 
-Release 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.2/SHA256SUMS.txt) 供校验安装包。PowerShell 示例：
+Release 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.3/SHA256SUMS.txt) 供校验安装包。PowerShell 示例：
 
 ```powershell
-Get-FileHash .\SmaltCode-Setup-0.0.2-SFox.exe -Algorithm SHA256
+Get-FileHash .\SmaltCode-Setup-0.0.3-SFox.exe -Algorithm SHA256
 ```
 
 安装包目前未做代码签名，Windows 可能显示发布者未验证的提示。请从本仓库的 Release 下载，并核对文件哈希。macOS、Linux 暂未提供经过桌面验收的安装包。
@@ -98,6 +105,10 @@ Get-FileHash .\SmaltCode-Setup-0.0.2-SFox.exe -Algorithm SHA256
 ### 1. 配置模型
 
 打开 **设置 → 模型服务商**，选择服务商，填写 **API Key、服务地址、模型 ID**，点击“保存并测试连接”。
+
+0.0.3 保存连接后，可打开“浏览服务商模型”并刷新列表，也可在输入框旁的模型菜单搜索名称、筛选服务商和刷新目录；仍支持手动填写自定义 ID。接口没有容量字段时，确切官方端点使用官方规格；未确认的容量会明确标注。自动发现与各厂商的支持范围见 [模型目录与容量说明](docs/development-preview.md#模型目录与容量自动识别)。
+
+![模型搜索与上下文容量](docs/images/model-picker.png)
 
 - 使用支持工具调用的模型，才能执行文件与命令操作。
 - 服务地址须与所选协议匹配；模型 ID 以你的服务商实际提供的名称为准。
@@ -147,10 +158,27 @@ Get-FileHash .\SmaltCode-Setup-0.0.2-SFox.exe -Algorithm SHA256
 ### 长任务与浏览互不打断
 
 - 默认移除固定的 50 步上限，连续任务无需每 50 步点击继续；开发者仍可通过 `SMALT_MAX_STEPS` 显式设置上限。
-- 当前阶段与已完成节点来自实际执行事件。模型在关键节点可以给出简短说明；不是虚构的百分比进度条。
-- 思考与执行详情默认折叠；用户手动展开的内容保持展开。
+- 输入框上方只有一个任务卡：当前动作、最近完成节点与计划入口集中展示。展开计划浮层可查看全部步骤，完成比例来自实际计划状态。
+- 思考与执行详情默认折叠，只保留详细记录；历史回合保留最后一份计划，可单独展开。用户手动展开的记录保持展开。
 - 上翻、键盘翻页、查看输出、选取文字和切换对话时，可以保留阅读位置。
 - 关闭窗口后程序驻留托盘。单击托盘恢复窗口，右键选择 **“退出 SmaltCode”** 完全退出并结束工具子进程。
+
+0.0.3 按**具体模型与服务地址**解析容量：优先采用手动设置，再读取服务接口元数据与已确认的官方规格；切换模型后在下一轮执行前更新预算。窗口与最大输入分别处理，不把最大输出量当成上下文容量。默认约使用 80% 时整理，并为输出保留空间；官方 DeepSeek V4 Pro / Flash 的 1M 窗口约在 800K 时整理，容量依据：[DeepSeek 官方说明](https://api-docs.deepseek.com/quick_start/pricing/)。未知网关和未能确认实际分配的本地模型会标注“容量待确认”，可手动修正或恢复自动容量。状态栏与右侧“统计”展示同一预算及整理前后用量；摘要失败后，只有输入明显增长或空间即将耗尽才重试。
+
+## v0.0.3 更新内容
+
+相较于 0.0.2，本次集中改善长任务可靠性、模型选择与资料处理：
+
+| 更新 | 带来的体验 |
+| --- | --- |
+| 八类服务的型号与容量识别 | 获取和搜索新型号，明确接口/官方/手动来源；换模型后更新下一轮预算，未知容量可修正 |
+| 上下文整理修复 | 避免长窗口套用统一小窗口而频繁整理，记录整理前后用量，减少无进展重试 |
+| 一个任务卡与计划浮层 | 真实动作、完成节点与计划集中展示；明细折叠，历史计划可独立查看 |
+| 错误定位与执行验收 | 显眼展示具体原因，区分检查发现、执行错误与待验证，保留原始输出和退出码 |
+| 技能与文档工作台 | 技能导入和选择，截图引用，PDF/Word/Excel 内容预览及文档选段引用 |
+| 用量诊断与异常恢复 | 查看已记录用量，导出脱敏诊断，异常重开后检查再继续 |
+
+Windows x64 安装包为 **SmaltCode-Setup-0.0.3-SFox.exe**。本地 402 项测试通过，实际打包桌面验收及文档流程无渲染错误；GitHub CI 保持关闭。完整内容、使用边界和版本验收见 [0.0.3 发布说明](docs/releases/v0.0.3.md)。
 
 ## v0.0.2 更新内容
 
@@ -190,7 +218,7 @@ Get-FileHash .\SmaltCode-Setup-0.0.2-SFox.exe -Algorithm SHA256
 | 数据与文件 | 对话与项目资料保存在本机；模型请求会将必要任务内容发送到你配置的服务地址 |
 | 文件删除 | 删除对话、移除项目不会删除对应工作文件夹中的真实文件 |
 | 安装与更新 | 安装包暂未签名；目前从 Release 手动下载更新 |
-| 后续规划 | MCP、技能、定时任务、目标模式及 Office 原生预览尚未作为完整桌面功能交付 |
+| 后续规划 | MCP、定时任务、长期记忆、目标模式及原生 Office 编辑仍在规划；技能仅导入 SKILL.md，文档预览不等同于完整编辑 |
 
 欢迎在 [Issues](https://github.com/lryoooow/SmaltCode/issues) 中讨论你最需要的能力，帮助确定下一步优先级。
 
@@ -236,7 +264,7 @@ npm run build
 npm run desktop
 ```
 
-修改源码后重新执行 `npm run build`，再启动桌面端。
+修改源码后重新执行 `npm run build`，再启动桌面端。维护者测试本轮新增功能时可双击 `打开开发预览.cmd`，或运行 `npm run preview:desktop`；它只构建源码，使用独立的 `.local-preview/data/` 配置，不生成安装包。
 
 ```bash
 # 构建 Windows x64 安装包，并执行打包前后的原生检查
@@ -253,11 +281,11 @@ node scripts/test-desktop-tray.mjs --packaged
 node scripts/test-desktop-tray.mjs --installed-dir "D:\smalt\SmaltCode"
 ```
 
-当前源码的安装包输出到 `packages/desktop/release/SmaltCode-Setup-0.0.2-SFox.exe`。UI 验收使用 Electron 自带浏览器、本地模拟模型与隔离临时目录，无需真实 API Key；截图和报告生成到 `docs/screenshots/`。
+当前源码的安装包输出到 `packages/desktop/release/SmaltCode-Setup-0.0.3-SFox.exe`。UI 验收使用 Electron 自带浏览器、本地模拟模型与隔离临时目录，无需真实 API Key；截图和报告生成到 `docs/screenshots/`。
 
 Windows 托盘检查复用同一份隔离测试配置完成三轮退出与重启，并校验运行文件没有被修改或删除。开发与测试进程使用独立应用标识；正式安装版仍与安装程序中的 `app.smaltcode.desktop` 保持一致。
 
-本次公开版本的验收结果与范围见 [发布说明](docs/releases/v0.0.2.md)。模拟服务测试覆盖实际执行链路，不代表已对所有外部服务商做真实 API 兼容测试。
+本次公开版本的验收结果与范围见 [发布说明](docs/releases/v0.0.3.md)。模拟服务测试覆盖实际执行链路，不代表已对所有外部服务商做真实 API 兼容测试。
 
 ## 项目结构
 

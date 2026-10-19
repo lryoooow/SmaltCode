@@ -23,7 +23,7 @@ export interface AnthropicAdapterOptions {
   fetchImpl?: typeof fetch;
 }
 
-function toAnthropicWire(messages: ChatMessage[]): { system?: string; messages: unknown[] } {
+export function toAnthropicWire(messages: ChatMessage[]): { system?: string; messages: unknown[] } {
   const systemTexts: string[] = [];
   const out: any[] = [];
   for (const m of messages) {
@@ -43,8 +43,9 @@ function toAnthropicWire(messages: ChatMessage[]): { system?: string; messages: 
             );
       // merge consecutive user messages (Anthropic requires alternation)
       const prev = out[out.length - 1];
-      if (prev?.role === 'user' && typeof prev.content === 'string' && typeof content === 'string') {
-        prev.content = `${prev.content}\n\n${content}`;
+      if (prev?.role === 'user') {
+        if (typeof prev.content === 'string' && typeof content === 'string') prev.content = `${prev.content}\n\n${content}`;
+        else prev.content = [...(typeof prev.content === 'string' ? [{ type: 'text', text: prev.content }] : prev.content), ...(typeof content === 'string' ? [{ type: 'text', text: content }] : content)];
       } else {
         out.push({ role: 'user', content });
       }
@@ -69,8 +70,8 @@ function toAnthropicWire(messages: ChatMessage[]): { system?: string; messages: 
         content: m.content,
         is_error: m.isError ?? false,
       };
-      if (prev?.role === 'user' && Array.isArray(prev.content) && prev.content[0]?.type === 'tool_result') {
-        prev.content.push(block);
+      if (prev?.role === 'user') {
+        prev.content = [...(typeof prev.content === 'string' ? [{ type: 'text', text: prev.content }] : prev.content), block];
       } else {
         out.push({ role: 'user', content: [block] });
       }
@@ -124,8 +125,9 @@ export class AnthropicAdapter implements ModelAdapter {
     const doFetch = this.opts.fetchImpl ?? fetch;
     let res: Response;
     try {
-      res = await doFetch(`${this.opts.baseUrl.replace(/\/$/, '')}/v1/messages`, {
+      res = await doFetch(`${this.opts.baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1/messages`, {
         method: 'POST',
+        redirect: 'error',
         headers: {
           'content-type': 'application/json',
           'x-api-key': this.opts.apiKey,

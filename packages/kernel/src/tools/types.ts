@@ -6,7 +6,7 @@
 
 export type ToolEvent =
   | { type: 'output'; text: string }
-  | { type: 'result'; text: string; isError?: boolean };
+  | { type: 'result'; text: string; isError?: boolean; assessment?: import('../protocol/assessment.js').ExecutionAssessment };
 
 export interface ToolRunContext {
   cwd: string;

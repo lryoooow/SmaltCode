@@ -10,7 +10,10 @@ if (installedIndex >= 0 && (!args[installedIndex + 1] || args[installedIndex + 1
 const installed = installedIndex >= 0 ? resolve(args[installedIndex + 1]) : undefined;
 const packaged = !!installed || args.includes('--packaged');
 const app = join(root, 'packages/desktop');
-const runtime = installed ?? (packaged ? join(app, 'release/win-unpacked') : join(root, 'node_modules/electron/dist'));
+const releaseIndex = args.indexOf('--release-dir');
+if (releaseIndex >= 0 && !args[releaseIndex + 1]) throw new Error('--release-dir requires a directory');
+const release = releaseIndex >= 0 ? resolve(args[releaseIndex + 1]) : join(app, 'release');
+const runtime = installed ?? (packaged ? join(release, 'win-unpacked') : join(root, 'node_modules/electron/dist'));
 const executable = join(runtime, packaged ? 'SmaltCode.exe' : 'electron.exe');
 const home = join(root, '.qa-work', installed ? 'installed-tray' : packaged ? 'packaged-tray' : 'tray-smoke');
 mkdirSync(home, { recursive: true });

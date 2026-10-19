@@ -10,6 +10,7 @@ type Entry = { path: string; before: Image; after?: Image; restored?: boolean };
 type RecordData = { id: string; threadId: string; turnId: string; operationId?: string; cwd: string; title: string; createdAt: string; complete: boolean; files: Entry[] };
 export type CheckpointSummary = Omit<RecordData, 'cwd' | 'files'> & { files: Array<{ path: string; kind: 'add' | 'update' | 'delete'; restored: boolean; conflict?: string; diff?: string }> };
 const validId = /^[A-Za-z0-9_-]{1,160}$/;
+class CheckpointScopeError extends Error {}
 const hash = (image: Image | undefined) => image === null ? 'absent' : image ? createHash('sha256').update(image.data).update(String(image.mode)).digest('hex') : 'incomplete';
 
 /** Only write/apply_patch operations are tracked. Shell side effects are never advertised as reversible. */
@@ -76,7 +77,8 @@ export class CheckpointStore {
   }
   private async load(threadId: string, id: string, cwd: string): Promise<RecordData> {
     const record = JSON.parse(await readFile(this.file(threadId, id), 'utf8')) as RecordData;
-    if (record.threadId !== threadId || record.id !== id || realPathOf(record.cwd) !== realPathOf(cwd) || !Array.isArray(record.files)) throw new Error('检查点与当前工作区不匹配');
+    if (record.threadId !== threadId || record.id !== id || typeof record.cwd !== 'string' || !Array.isArray(record.files)) throw new Error('无效的检查点记录');
+    if (realPathOf(record.cwd) !== realPathOf(cwd)) throw new CheckpointScopeError('检查点与当前工作区不匹配');
     for (const file of record.files) this.check(cwd, file.path);
     return record;
   }
@@ -95,7 +97,9 @@ export class CheckpointStore {
     for (const name of names.filter(name => name.endsWith('.json'))) {
       const id = name.slice(0, -5);
       if (detailId && detailId !== id) continue;
-      const record = await this.load(threadId, id, cwd);
+      let record: RecordData;
+      try { record = await this.load(threadId, id, cwd); }
+      catch (error) { if (detailId || error instanceof CheckpointScopeError) throw error; console.warn('[checkpoint] skipped unreadable record: ' + id); continue; }
       const files: CheckpointSummary['files'] = [];
       for (const entry of record.files) {
         let conflict: string | undefined;

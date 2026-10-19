@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { resolveWorkspacePath } from '../../config/settings.js';
-import { unifiedDiff } from '../../util.js';
+import { unifiedDiff, diffPreview } from '../../util.js';
 import type { ToolDefinition, ToolEvent } from '../types.js';
 
 export const writeTool: ToolDefinition = {
@@ -35,7 +35,7 @@ export const writeTool: ToolDefinition = {
       await ctx.emitItem({ kind: 'fileChange', payload: { path, changeKind: existed ? 'update' : 'add', diff } });
       yield {
         type: 'result',
-        text: `${existed ? 'Updated' : 'Created'} ${path}\n\n${diff}`,
+        text: `${existed ? 'Updated' : 'Created'} ${path}\n\n${diffPreview(diff)}`,
       };
     } catch (err) {
       yield { type: 'result', text: `Error writing ${path}: ${err instanceof Error ? err.message : err}`, isError: true };

@@ -16,10 +16,18 @@ home.mkdir(parents=True); workspace.mkdir()
 shots = root / "docs/screenshots"
 shots.mkdir(exist_ok=True)
 requests = []
+catalog_requests = []
+catalog_revision = 1
+catalog_offline = False
 scroll_continue = threading.Event()
 activity_continue = threading.Event()
 class Model(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
+    def do_GET(self):
+        catalog_requests.append(self.path)
+        if self.path != '/v1/models': self.send_error(404); return
+        self.send_response(503 if catalog_offline else 200); self.send_header('Content-Type','application/json'); self.end_headers()
+        self.wfile.write(json.dumps({'error':'metadata temporarily unavailable'} if catalog_offline else {'data':[{'id':'ui-test-model','name':'ui-test-model','context_window':128000,'supported_parameters':['tools']}, {'id':'ui-long-model','name':'长窗口测试模型','context_window':1000000,'supported_parameters':['tools'],'input_modalities':['text','image']}, {'id':'ui-small-model','name':'小窗口测试模型','context_window':32000,'supported_parameters':['tools']}, {'id':'embedding-fixture','name':'向量模型（不可用于任务）','supported_parameters':[]}, {'id':'retired-fixture','name':'已下线模型','lifecycle':'retired'}] + ([{'id':'ui-new-model','name':'未来新型号','context_window':512000,'supported_parameters':['tools']}] if catalog_revision > 1 else [])},ensure_ascii=False).encode('utf8'))
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         requests.append(body)
@@ -34,7 +42,10 @@ class Model(BaseHTTPRequestHandler):
         def tool(name, args):
             emit({"tool_calls":[{"index":0,"id":"call_" + str(len(requests)),"function":{"name":name,"arguments":json.dumps(args, ensure_ascii=False)}}]}, "tool_calls")
         try:
-            if not body.get("tools"): emit({"content":"OK"}, "stop")
+            if not body.get('tools') and 'COMPACTION_BUDGET_FIXTURE' in str(messages):
+                emit({'reasoning_content':'Only reasoning before the summary output limit.'}, 'length')
+            elif '验证摘要预算恢复' in str(prompt): emit({'content':'摘要预算受限，精简旧工具输出后任务已继续完成。'}, 'stop')
+            elif not body.get("tools"): emit({"content":"OK"}, "stop")
             elif "准备多标签验收资料" in str(prompt):
                 last_user = max(i for i,m in enumerate(messages) if m['role'] == 'user')
                 n = sum(m['role'] == 'tool' for m in messages[last_user+1:])
@@ -82,19 +93,24 @@ class Model(BaseHTTPRequestHandler):
                 else: emit({"content":"权限切换已生效"},"stop")
             elif "验证无步数限制" in str(prompt):
                 n = len([m for m in messages if m["role"] == "tool"])
-                if n < 64: tool("plan", {"steps":[{"content":"长任务步骤 " + str(n + 1),"status":"inProgress"}]})
+                if n < 64: tool("plan", {"steps":[{"content":"长任务步骤 " + str(n + 1),"status":"completed" if n == 63 else "inProgress"}]})
                 else: emit({"content":"已连续完成64个工具步骤"},"stop")
             elif "验证过程折叠" in str(prompt):
                 n = len([m for m in messages if m["role"] == "tool"])
+                steps = [{"content":"核对会议记录和工作范围","status":"completed" if n >= 2 else "inProgress"},{"content":"执行项目检查并核对实际结果","status":"completed" if n >= 4 else "inProgress" if n >= 2 else "pending"},{"content":"保存整理结果与任务说明","status":"completed" if n >= 6 else "inProgress" if n >= 4 else "pending"}]
                 if n == 0:
                     emit({"reasoning_content":"先核对资料，然后执行检查并保存结果。"})
-                    tool("read", {"path":"会议记录.txt"})
-                elif n == 1:
+                    tool("plan", {"steps":steps})
+                elif n == 1: tool("read", {"path":"会议记录.txt"})
+                elif n == 2: tool("plan", {"steps":steps})
+                elif n == 3:
                     emit({"reasoning_content":"资料已读取，检查实际输出后再写入文件。"})
                     tool("shell", {"command":"node progress-probe.cjs"})
-                elif n == 2:
+                elif n == 4: tool("plan", {"steps":steps})
+                elif n == 5:
                     emit({"reasoning_content":"检查完成，开始保存结果。"})
                     tool("write", {"path":"progress-result.md","content":"# 过程检查完成\n实际输出已核对。\n"})
+                elif n == 6: tool("plan", {"steps":steps})
                 else: emit({"content":"资料核对、执行检查和文件保存都已完成。"},"stop")
             elif "验证节点回复" in str(prompt):
                 n = len([m for m in messages if m["role"] == "tool"])
@@ -134,6 +150,7 @@ class Model(BaseHTTPRequestHandler):
                 elif n == 3: tool("ask_user", {"question":"产物使用哪种语言？","options":["中文","English"]})
                 elif n == 4: tool("write", {"path":"deliverables/周报说明.md","content":"# 本周工作说明\n\n完成前端接入，验证审批与文件预览。\n\n| 项目 | 结果 |\n|---|---|\n| UI | 已接入 |\n"})
                 elif n == 5: tool("apply_patch", {"patch":"*** Begin Patch\n*** Update File: README.md\n@@\n # 项目资料\n-待整理\n+已经整理，可查看 deliverables/周报说明.md\n*** Add File: deliverables/检查结果.txt\n+文件预览与审批验证通过。\n*** End Patch"})
+                elif n == 6: tool('plan', {'steps':[{'content':'读取会议记录','status':'completed'},{'content':'生成说明并更新索引','status':'completed'}]})
                 else:
                     text = "已完成 **周报说明**，并更新了项目索引。\n\n| 文件 | 用途 |\n|---|---|\n| 周报说明.md | 工作说明 |\n| 检查结果.txt | 验证记录 |\n\n```text\n真实文件已保存到工作文件夹。\n```"
                     for i in range(0, len(text), 5):
@@ -149,15 +166,55 @@ settings = {"defaultProvider":"openai","defaultModel":"ui-test-model","providers
 with socket.socket() as sock:
     sock.bind(("127.0.0.1",0)); debug_port = sock.getsockname()[1]
 env = {**os.environ, "SMALT_HOME":str(home)}
+for key_env in ['OPENAI_API_KEY','ANTHROPIC_API_KEY','DEEPSEEK_API_KEY','ZHIPU_API_KEY','MOONSHOT_API_KEY','DASHSCOPE_API_KEY','OPENROUTER_API_KEY']: env.pop(key_env,None)
 env.pop("ELECTRON_RUN_AS_NODE",None)
 log = open(run / "electron.log","w",encoding="utf-8")
 packaged_executable = str(root / "packages/desktop/release/win-unpacked/SmaltCode.exe") if "--packaged" in sys.argv else os.environ.get("SMALT_UI_EXECUTABLE")
-launch = [packaged_executable] if packaged_executable else [str(root / "node_modules/electron/dist/electron.exe"),str(root / "packages/desktop")]
-process = subprocess.Popen([*launch,"--ui-test","--remote-debugging-port=" + str(debug_port)], env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
+harness = run / "harness.cjs"
+# Native dialogs are mocked only in this test-owned Electron entry point.
+harness.write_text("const {app,dialog}=require('electron');app.getVersion=()=>" + json.dumps(json.loads((root / 'packages/desktop/package.json').read_text(encoding='utf8'))['version']) + ";dialog.showMessageBox=async()=>({response:0});require(" + json.dumps(str(root / 'packages/desktop/dist/main/index.js')) + ");", encoding='utf8')
+launch = [packaged_executable] if packaged_executable else [str(root / "node_modules/electron/dist/electron.exe"),str(harness)]
+main_debug_port = None
+if packaged_executable:
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0)); main_debug_port = sock.getsockname()[1]
+process = subprocess.Popen([*launch,"--ui-test","--remote-debugging-port=" + str(debug_port), *(['--inspect=127.0.0.1:' + str(main_debug_port)] if main_debug_port else [])], env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
 errors = []
 checks = []
 p = sync_playwright().start()
 try:
+    if main_debug_port:
+        # The shipped app keeps all native consent checks. Control dialogs only
+        # in this test-owned process via Electron's loopback main debugger:
+        # https://www.electronjs.org/docs/latest/tutorial/debugging-main-process
+        expression = """(() => {
+          if (process.env.SMALT_HOME !== __FIXTURE_HOME__ || !process.argv.includes('--ui-test')) throw new Error('Not the isolated test process');
+          const {app, dialog} = process.mainModule.require('electron');
+          if (!app.isPackaged) throw new Error('Expected the shipped application');
+          const titles = ['允许访问工作区', '确认调整操作权限', '信任项目配置', '确认权限规则', '确认模型服务地址'];
+          dialog.showMessageBox = async options => {
+            if (!titles.includes(options.title)) throw new Error('Unexpected test dialog: ' + options.title);
+            return {response: 0, checkboxChecked: false};
+          };
+          return true;
+        })()""".replace('__FIXTURE_HOME__', json.dumps(str(home)))
+        inspector = """
+const port=PORT, expression=EXPRESSION; let targets;
+for(let attempt=0;attempt<60;attempt++) {
+  try { targets=await (await fetch('http://127.0.0.1:'+port+'/json/list',{signal:AbortSignal.timeout(500)})).json(); if(targets[0]?.webSocketDebuggerUrl) break; } catch {}
+  await new Promise(resolve=>setTimeout(resolve,100));
+}
+const url=new URL(targets?.[0]?.webSocketDebuggerUrl);
+if(url.hostname!=='127.0.0.1'||Number(url.port)!==port)throw new Error('Unexpected main debugger address');
+await new Promise((resolve,reject)=>{
+  const ws=new WebSocket(url),timer=setTimeout(()=>{ws.close();reject(new Error('Main debugger timed out'));},5000);
+  ws.onopen=()=>ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression,returnByValue:true}}));
+  ws.onerror=()=>{clearTimeout(timer);ws.close();reject(new Error('Main debugger connection failed'));};
+  ws.onmessage=event=>{const result=JSON.parse(event.data);if(result.id!==1)return;clearTimeout(timer);ws.close();if(result.error||result.result?.exceptionDetails||result.result?.result?.value!==true)reject(new Error('Test dialog setup failed: '+JSON.stringify(result)));else resolve();};
+});
+""".replace('PORT', str(main_debug_port)).replace('EXPRESSION', json.dumps(expression))
+        subprocess.run(['node', '--input-type=module', '-'], input=inspector, text=True, encoding='utf8', env=env, check=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+        checks.append('native consent dialogs controlled only through a loopback debugger in the isolated test process; shipped authorization checks unchanged')
     browser = None
     for attempt in range(100):
         try: browser = p.chromium.connect_over_cdp("http://127.0.0.1:" + str(debug_port), timeout=1000); break
@@ -174,6 +231,15 @@ try:
     checks.append("SmaltCode branding and actual app version match the manifest")
     expect(page.get_by_test_id("onboarding")).to_be_visible()
     page.screenshot(animations="disabled", path=str(shots / "onboarding.png"))
+    # The welcome layer and nested settings must retain keyboard focus separately.
+    welcome = page.get_by_role("dialog", name="欢迎使用 SmaltCode", exact=True)
+    welcome.locator('button').last.focus(); page.keyboard.press('Tab')
+    expect(welcome.locator('button').first).to_be_focused()
+    page.get_by_role('button', name='查看模型配置', exact=True).click()
+    expect(page.get_by_label('API Key', exact=True)).to_be_visible()
+    page.keyboard.press('Escape')
+    expect(page.get_by_label('API Key', exact=True)).to_have_count(0)
+    expect(welcome).to_be_visible()
     page.get_by_role("button",name="跳过，稍后在设置中配置").click()
     expect(page.get_by_text("内核已连接",exact=True)).to_be_visible()
     page.evaluate("([dir]) => {localStorage.setItem('smalt.ui.dark','false'); localStorage.setItem('smalt.ui.workspace',JSON.stringify(dir)); localStorage.setItem('smalt.ui.workspaces',JSON.stringify([dir]));}",[str(workspace)])
@@ -182,21 +248,77 @@ try:
     checks.append("native bridge connected; onboarding persists")
     if '--features-only' not in sys.argv:
         page.get_by_role("button",name="设置 (Ctrl+,)",exact=True).click()
+        page.get_by_role('button',name='DeepSeek',exact=False).click()
+        page.get_by_label('模型 ID',exact=True).fill('deepseek-v4-pro')
+        expect(page.get_by_test_id('context-window-hint')).to_contain_text('1,000,000 Token，约 800,000 Token')
+        page.get_by_label('上下文窗口',exact=True).fill('256000')
+        expect(page.get_by_test_id('context-window-hint')).to_contain_text('256,000 Token，约 204,800 Token')
+        page.get_by_label('上下文窗口',exact=True).fill('')
+        expect(page.get_by_test_id('context-window-hint')).to_contain_text('官方模型规格')
+        page.get_by_role('button',name='OpenAI',exact=False).click()
+        page.get_by_role('button',name='浏览服务商模型',exact=True).click()
+        picker = page.get_by_test_id('model-picker')
+        expect(picker.get_by_role('listbox',name='可选模型').get_by_role('option').filter(has_text='长窗口测试模型')).to_contain_text('1,000,000 Token')
+        expect(picker.get_by_role('listbox',name='可选模型').get_by_role('option').filter(has_text='向量模型')).to_be_disabled()
+        expect(picker.get_by_role('listbox',name='可选模型').get_by_role('option').filter(has_text='已下线模型')).to_be_disabled()
+        picker.get_by_label('搜索模型',exact=True).fill('未来新型号')
+        expect(picker.get_by_role('listbox',name='可选模型').get_by_role('option')).to_have_count(0)
+        catalog_revision = 2
+        picker.get_by_label('刷新模型列表',exact=True).click()
+        expect(picker.get_by_role('listbox',name='可选模型').get_by_role('option')).to_have_count(1)
+        expect(picker.get_by_role('listbox',name='可选模型').get_by_role('option')).to_contain_text('512,000 Token')
+        picker.get_by_role('listbox',name='可选模型').get_by_role('option').click()
+        expect(page.get_by_label('模型 ID',exact=True)).to_have_value('ui-new-model')
+        expect(page.get_by_test_id('context-window-hint')).to_contain_text('接口识别 · 512,000 Token，约 409,600 Token')
+        page.get_by_role('button',name='浏览服务商模型',exact=True).click()
+        catalog_offline = True
+        picker.get_by_label('刷新模型列表',exact=True).click()
+        expect(picker.get_by_role('status')).to_contain_text('503')
+        expect(picker.get_by_role('listbox',name='可选模型').get_by_role('option').filter(has_text='长窗口测试模型')).to_contain_text('缓存待刷新')
+        catalog_offline = False
+        picker.get_by_label('关闭模型列表',exact=True).click()
+        page.get_by_label('模型 ID',exact=True).fill('ui-test-model')
         page.get_by_label("API Key",exact=True).fill("UI-save-secret")
         page.get_by_role("button",name="保存并测试连接",exact=True).click()
         expect(page.get_by_text("连接成功，模型已返回响应")).to_be_visible(timeout=20000)
         saved = (home / "settings.json").read_text(encoding="utf-8")
         assert "UI-save-secret" not in saved and "initial-test-key" not in saved
         assert json.loads(saved)["providers"]["openai"].get("apiKeyEnc")
+        expect(page.get_by_role("button",name="关闭设置",exact=True)).to_be_in_viewport()
         page.screenshot(animations="disabled", path=str(shots / "settings.png"))
         page.get_by_role("button",name="关闭设置",exact=True).click()
+        page.get_by_role('button',name='选择模型',exact=True).click()
+        picker = page.get_by_test_id('model-picker')
+        picker.get_by_label('搜索模型',exact=True).fill('ui-long-model')
+        page.keyboard.press('ArrowDown'); page.keyboard.press('Enter')
+        expect(page.get_by_role('button',name='选择模型',exact=True)).to_contain_text('长窗口测试模型')
+        page.get_by_role('button',name='选择模型',exact=True).click()
+        picker.get_by_label('搜索模型',exact=True).fill('ui-small-model')
+        picker.get_by_label('刷新模型列表',exact=True).click()
+        expect(picker.get_by_label('刷新模型列表',exact=True)).to_be_enabled()
+        expect(page.get_by_role('button',name='选择模型',exact=True)).to_contain_text('长窗口测试模型')
+        page.screenshot(animations='disabled',path=str(shots / 'model-picker-light.png'))
+        page.keyboard.press('Escape')
+        expect(page.get_by_role('button',name='选择模型',exact=True)).to_be_focused()
+        page.get_by_role('button',name='切换主题',exact=True).click()
+        page.set_viewport_size({'width':920,'height':660})
+        page.get_by_role('button',name='选择模型',exact=True).click()
+        picker.get_by_label('搜索模型',exact=True).fill('ui-small-model')
+        box = picker.bounding_box(); assert box['x'] >= 0 and box['y'] >= 40 and box['x'] + box['width'] <= 920
+        page.screenshot(animations='disabled',path=str(shots / 'model-picker-dark-narrow.png'))
+        page.keyboard.press('Escape'); page.set_viewport_size({'width':1240,'height':820})
+        page.get_by_role('button',name='切换主题',exact=True).click()
+        page.get_by_role('button',name='选择模型',exact=True).click()
+        picker.get_by_label('搜索模型',exact=True).fill('ui-test-model')
+        picker.get_by_role('listbox',name='可选模型').get_by_role('option').click()
+        checks.append('live names and per-model capacities discovered without generation; refresh finds new IDs; offline keeps cached choices; retired/non-tool models disabled; searchable keyboard model picker works in settings/composer and light/dark/narrow layouts')
         checks.append("settings saved encrypted; real connection test completed")
         page.get_by_label("任务输入",exact=True).fill("整理会议记录并生成周报说明")
         page.get_by_role("button",name="发送",exact=True).click()
         expect(page.get_by_test_id("approval")).to_be_visible(timeout=15000)
         expect(page.get_by_test_id("activity-toggle")).to_have_attribute("aria-expanded", "false")
         expect(page.get_by_test_id("activity-details")).to_have_count(0)
-        expect(page.get_by_test_id("activity-milestones")).to_contain_text("已读取 1 项资料")
+        expect(page.get_by_test_id("progress-milestones")).to_contain_text("已读取 1 项资料")
         page.screenshot(animations="disabled", path=str(shots / "approval.png"))
         page.get_by_test_id("approval").get_by_role("button",name="允许",exact=True).click()
         expect(page.get_by_test_id("approval")).to_have_count(0, timeout=3000)
@@ -267,6 +389,7 @@ try:
         expect(page.get_by_test_id("task-row").filter(has_text="前端验收任务")).to_be_visible()
         page.get_by_test_id("task-row").filter(has_text="前端验收任务").click()
         expect(page.get_by_test_id("item-agentMessage").filter(has_text="已完成")).to_be_visible()
+        expect(page.get_by_text('产物使用哪种语言？', exact=False)).to_be_visible()
         checks.append("rename, dark theme and persisted conversation reload")
         page.get_by_role("button",name="新建任务",exact=True).click()
         page.get_by_label("任务输入",exact=True).fill("验证拒绝")
@@ -276,7 +399,7 @@ try:
         page.get_by_placeholder("告诉 AI 为什么拒绝（可选）").fill("本次测试不要执行")
         page.get_by_test_id("approval").get_by_role("button",name="确认拒绝",exact=True).click()
         expect(page.get_by_test_id("item-agentMessage")).to_contain_text("已尊重拒绝",timeout=15000)
-        expect(page.get_by_test_id("activity-warning")).to_contain_text("操作被阻止")
+        expect(page.get_by_test_id("failure-overview")).to_contain_text("操作被阻止")
         page.screenshot(animations="disabled", path=str(shots / "blocked.png"))
         checks.append("denial reason returned to model; command blocked")
         page.get_by_role("button",name="新建任务",exact=True).click()
@@ -291,7 +414,7 @@ try:
         page.get_by_role("button",name="新建任务",exact=True).click()
         page.get_by_label("任务输入",exact=True).fill("验证失败状态")
         page.get_by_role("button",name="发送",exact=True).click()
-        expect(page.get_by_text("任务执行失败",exact=True)).to_be_visible(timeout=15000)
+        expect(page.get_by_test_id('task-error')).to_contain_text('HTTP 401', timeout=15000)
         page.screenshot(animations="disabled", path=str(shots / "error.png"))
         page.get_by_role("button",name="工作区",exact=True).click()
         page.screenshot(animations="disabled", path=str(shots / "workspaces.png"))
@@ -357,13 +480,14 @@ try:
         page.get_by_label("任务输入",exact=True).fill("验证无步数限制")
         page.get_by_role("button",name="发送",exact=True).click()
         expect(page.get_by_test_id("item-agentMessage")).to_contain_text("已连续完成64个工具步骤",timeout=30000)
-        expect(page.get_by_test_id("activity-group")).to_have_count(1)
-        expect(page.get_by_test_id("activity-details")).to_have_count(0)
+        expect(page.get_by_test_id("activity-group")).to_have_count(0)
         expect(page.get_by_test_id("item-plan")).to_have_count(0)
-        page.get_by_test_id("activity-toggle").click()
-        expect(page.get_by_test_id("item-plan")).to_have_count(64)
-        assert page.get_by_test_id("activity-details").evaluate("e => e.clientHeight") <= 480
-        page.get_by_test_id("activity-toggle").click()
+        expect(page.get_by_test_id("task-progress-dock")).to_have_count(1)
+        page.get_by_test_id("plan-toggle").click()
+        expect(page.get_by_test_id("plan-step")).to_have_count(1)
+        expect(page.get_by_test_id("plan-step")).to_contain_text("长任务步骤 64")
+        page.keyboard.press("Escape")
+        expect(page.get_by_test_id("plan-popover")).to_have_count(0)
         page.screenshot(animations="disabled",path=str(shots / "long-task-folded.png"))
         checks.append("desktop task completes 64 tools beyond the former 50-step limit")
         page.get_by_role("button",name="新建任务",exact=True).click()
@@ -374,17 +498,48 @@ try:
         expect(page.get_by_test_id("approval")).to_be_visible(timeout=15000)
         expect(page.get_by_test_id("activity-group")).to_have_count(1)
         expect(page.get_by_test_id("activity-details")).to_have_count(0)
-        expect(page.get_by_test_id("activity-milestones")).to_contain_text("已读取 1 项资料")
+        expect(page.get_by_test_id("progress-milestones")).to_contain_text("已读取 1 项资料")
         page.get_by_test_id("activity-toggle").click()
         shell = page.get_by_test_id("item-commandExecution").filter(has_text="progress-probe.cjs")
         expect(shell.get_by_role("button")).to_have_attribute("aria-expanded","false")
         shell.get_by_role("button").click()
         page.get_by_test_id("approval").get_by_role("button",name="允许",exact=True).click()
-        expect(page.get_by_test_id("task-progress")).to_contain_text("正在执行操作")
+        expect(page.get_by_test_id("task-progress")).to_contain_text("正在执行命令")
         expect(shell.get_by_test_id("command-output")).to_contain_text("progress-start")
         page.get_by_test_id("activity-toggle").click()
-        expect(page.get_by_test_id("activity-stage")).to_contain_text("正在执行操作")
+        expect(page.get_by_test_id("task-progress")).to_contain_text("正在执行命令")
         expect(page.get_by_test_id("activity-details")).to_have_count(0)
+        expect(page.get_by_test_id("task-progress")).to_have_count(1)
+        expect(page.get_by_test_id("progress-subject")).to_contain_text("progress-probe.cjs")
+        expect(page.get_by_test_id("current-plan-step")).to_contain_text("第 2 步")
+        expect(page.get_by_test_id("activity-group").locator('.spin')).to_have_count(0)
+        expect(page.get_by_test_id("activity-group").get_by_test_id("item-plan")).to_have_count(0)
+        expect(page.get_by_test_id("plan-toggle")).to_contain_text("1/3")
+        before_plan_scroll = page.get_by_test_id("conversation-scroll").evaluate("e=>e.scrollTop")
+        page.get_by_test_id("plan-toggle").click()
+        expect(page.get_by_test_id("plan-popover")).to_be_visible()
+        expect(page.get_by_test_id("plan-step")).to_have_count(3)
+        assert abs(page.get_by_test_id("conversation-scroll").evaluate("e=>e.scrollTop") - before_plan_scroll) < 3
+        page.get_by_label("计划步骤列表", exact=True).focus()
+        page.keyboard.press("Escape")
+        expect(page.get_by_test_id("plan-toggle")).to_be_focused()
+        expect(page.get_by_test_id("plan-popover")).to_have_count(0)
+        page.get_by_test_id("plan-toggle").click()
+        page.screenshot(animations="disabled",path=str(shots / ("task-plan-running-dark.png" if page.evaluate("document.documentElement.classList.contains('dark')") else "task-plan-running-light.png")))
+        page.get_by_label("任务输入",exact=True).click()
+        expect(page.get_by_test_id("plan-popover")).to_have_count(0)
+        expect(page.get_by_label("任务输入",exact=True)).to_be_focused()
+        page.get_by_role("button",name="切换主题",exact=True).click()
+        page.get_by_test_id("plan-toggle").click()
+        page.screenshot(animations="disabled",path=str(shots / ("task-plan-running-dark.png" if page.evaluate("document.documentElement.classList.contains('dark')") else "task-plan-running-light.png")))
+        page.set_viewport_size({"width":920,"height":660})
+        assert page.get_by_test_id("task-view").evaluate("e=>e.scrollWidth<=e.clientWidth+1")
+        popup = page.get_by_test_id("plan-popover").bounding_box()
+        composer = page.get_by_label("任务输入",exact=True).bounding_box()
+        assert popup['y'] >= 40 and popup['y'] + popup['height'] < composer['y']
+        page.screenshot(animations="disabled",path=str(shots / "task-plan-running-narrow.png"))
+        page.set_viewport_size({"width":1240,"height":820})
+        page.keyboard.press("Escape")
         page.screenshot(animations="disabled",path=str(shots / "activity-running-folded.png"))
         page.get_by_test_id("activity-toggle").click()
         expect(shell.get_by_role("button")).to_have_attribute("aria-expanded","true")
@@ -395,19 +550,24 @@ try:
         expect(page.get_by_test_id("activity-toggle")).to_have_attribute("aria-expanded","true")
         expect(shell.get_by_role("button")).to_have_attribute("aria-expanded","true")
         expect(shell.get_by_test_id("command-output")).to_contain_text("progress-start")
-        expect(page.get_by_test_id("task-progress")).to_contain_text("正在执行操作")
+        expect(page.get_by_test_id("task-progress")).to_contain_text("正在执行命令")
+        page.get_by_test_id("plan-toggle").click()
         (workspace / "progress-continue").write_text("continue",encoding="utf-8")
         expect(page.get_by_test_id("approval")).to_be_visible(timeout=15000)
+        expect(page.get_by_test_id("plan-popover")).to_be_visible()
+        expect(page.get_by_test_id("plan-toggle")).to_contain_text("2/3")
+        expect(page.get_by_test_id("current-plan-step")).to_contain_text("第 3 步")
+        page.keyboard.press("Escape")
         expect(page.get_by_test_id("activity-toggle")).to_have_attribute("aria-expanded","true")
         expect(shell.get_by_role("button")).to_have_attribute("aria-expanded","true")
         expect(shell.get_by_test_id("command-output")).to_contain_text("progress-done")
-        expect(page.get_by_test_id("activity-milestones")).to_contain_text("已执行 1 项操作")
+        expect(page.get_by_test_id("progress-milestones")).to_contain_text("已执行 1 项操作")
         page.get_by_test_id("activity-toggle").click()
         expect(page.get_by_test_id("approval")).to_be_visible()
         page.get_by_test_id("approval").get_by_role("button",name="允许",exact=True).click()
         expect(page.get_by_test_id("item-agentMessage")).to_contain_text("文件保存都已完成",timeout=15000)
         expect(page.get_by_test_id("activity-details")).to_have_count(0)
-        expect(page.get_by_test_id("activity-milestones")).to_contain_text("已更新 1 个文件")
+        expect(page.get_by_test_id("progress-checkpoint")).to_contain_text("已更新 progress-result.md")
         assert (workspace / "progress-result.md").read_text(encoding="utf-8").startswith("# 过程检查完成")
         page.screenshot(animations="disabled",path=str(shots / "activity-folded-dark.png"))
         page.get_by_test_id("activity-toggle").focus()
@@ -419,14 +579,14 @@ try:
         page.reload(); page.wait_for_load_state("networkidle")
         page.get_by_test_id("task-row").filter(has_text="验证过程折叠").click()
         expect(page.get_by_test_id("activity-details")).to_have_count(0)
-        expect(page.get_by_test_id("activity-milestones")).to_contain_text("已读取 1 项资料")
-        expect(page.get_by_test_id("activity-milestones")).to_contain_text("已更新 1 个文件")
+        expect(page.get_by_test_id("plan-toggle")).to_contain_text("3/3")
+        expect(page.get_by_test_id("progress-checkpoint")).to_contain_text("已更新 progress-result.md")
         page.screenshot(animations="disabled",path=str(shots / "activity-folded-light.png"))
         page.set_viewport_size({"width":920,"height":660})
         assert page.get_by_test_id("task-view").evaluate("e => e.scrollWidth <= e.clientWidth")
         page.screenshot(animations="disabled",path=str(shots / "activity-compact.png"))
         page.set_viewport_size({"width":1240,"height":820})
-        checks.append("thinking and execution fold into one process; real milestones update; user expansion survives completion; approvals and blocked warnings stay visible; keyboard expansion and restored history work")
+        checks.append("one task card owns live status and plan; execution records have no duplicate live indicator; nonmodal plan keyboard/outside-click behavior, action subject, live plan updates, completion, chat switching, scroll preservation and light/dark/narrow layout verified")
         page.get_by_role("button",name="新建任务",exact=True).click()
         page.get_by_label("任务输入",exact=True).fill("验证节点回复")
         page.get_by_role("button",name="发送",exact=True).click()
@@ -614,6 +774,134 @@ try:
     page.get_by_test_id('approval').get_by_role('button',name='允许',exact=True).click()
     expect(page.get_by_test_id('item-agentMessage')).to_contain_text('任务中心待办已处理',timeout=15000)
     checks.append('task center filters live/background/unread/waiting tasks; streaming completes while browsing; mark-read and deep navigation to pending approval work')
+    # Seed only this test-owned profile: no user history or project is touched.
+    fixture_time = '2026-10-19T03:00:00Z'
+    failure_id = 'th_failure_diagnostics_fixture'
+    compact_id = 'th_compaction_diagnostics_fixture'
+    failure_reason = '上下文剩余空间不足，任务已暂停。\n具体原因：摘要输出预算耗尽，模型未返回完整摘要。'
+    failures = ["'ls' is not recognized as an internal or external command.", "'head' is not recognized as an internal or external command.", 'SyntaxError: unterminated string literal', 'SyntaxError: invalid syntax', "'tail' is not recognized as an internal or external command.", "E FileNotFoundError: [Errno 2] No such file or directory: 'backend/resource.json'", 'FAILED tests/test_resource.py::test_resource - ValueError: unreadable resource']
+    def seed_thread(thread_id, title, failed=False):
+        turn_id = 'turn_' + thread_id
+        metadata = {'id':thread_id, 'title':title, 'cwd':str(workspace), 'model':'ui-test-model', 'provider':'openai', 'createdAt':fixture_time, 'updatedAt':fixture_time, 'turnCount':1, 'lastOutcome':'failed' if failed else 'completed'}
+        if failed: metadata['lastError'] = failure_reason
+        seeded = [{'t':'meta','meta':metadata}, {'t':'turn-started','turnId':turn_id,'at':fixture_time}, {'t':'user-msg','id':'u_'+thread_id,'text':'只检查，不修改。COMPACTION_BUDGET_FIXTURE' if not failed else '检查执行失败原因。','at':fixture_time}]
+        for i in range(7 if failed else 20):
+            call_id = thread_id + '_call_' + str(i)
+            output = ('[exit 1]\n' + failures[i]) if failed else ('source code record ' * 1400)[:24000]
+            tool_name = 'shell' if failed else 'read'
+            arguments = {'command':'diagnostic-fixture-' + str(i)} if failed else {'path':'source-' + str(i) + '.txt'}
+            seeded += [{'t':'tool-call','id':call_id,'tool':tool_name,'input':arguments,'at':fixture_time}, {'t':'tool-result','id':call_id,'tool':tool_name,'output':output,'isError':failed,'at':fixture_time}]
+        seeded += [{'t':'turn-ended','turnId':turn_id,'at':fixture_time,**({'error':failure_reason} if failed else {})}]
+        (home / 'threads' / (thread_id + '.jsonl')).write_text(''.join(json.dumps(event,ensure_ascii=False)+'\n' for event in seeded),encoding='utf8')
+    seed_thread(failure_id, '失败诊断验收', True)
+    seed_thread(compact_id, '上下文恢复验收')
+    plan_id = 'th_plan_history_fixture'
+    plan_meta = {'id':plan_id, 'title':'长计划与停止状态验收', 'cwd':str(workspace), 'model':'ui-test-model', 'provider':'openai', 'createdAt':fixture_time, 'updatedAt':fixture_time, 'turnCount':2, 'lastOutcome':'interrupted'}
+    plan_records = [{'t':'meta','meta':plan_meta}, {'t':'turn-started','turnId':'plan_old','at':fixture_time}, {'t':'user-msg','id':'plan_old_user','text':'前一轮资料核对','at':fixture_time}, {'t':'plan','steps':[{'content':'旧版步骤','status':'pending'}],'at':fixture_time}, {'t':'plan','steps':[{'content':'已核对旧版资料','status':'completed'}],'at':fixture_time}, {'t':'turn-ended','turnId':'plan_old','at':fixture_time}, {'t':'turn-started','turnId':'plan_current','at':fixture_time}, {'t':'user-msg','id':'plan_current_user','text':'当前任务已由用户停止','at':fixture_time}, {'t':'reasoning','id':'plan_reasoning','text':'核对各项资料与待办','at':fixture_time}, {'t':'plan','steps':[{'content':('核对资料路径与上下文说明 '+str(i)+'：这是很长的计划描述，需要自动换行并保留全部内容。')*3,'status':'completed' if i == 0 else 'inProgress' if i == 1 else 'pending'} for i in range(20)],'at':fixture_time}, {'t':'turn-ended','turnId':'plan_current','interrupted':True,'at':fixture_time}]
+    (home / 'threads' / (plan_id + '.jsonl')).write_text(''.join(json.dumps(event,ensure_ascii=False)+'\n' for event in plan_records),encoding='utf8')
+    page.reload(); page.wait_for_load_state('networkidle')
+    page.get_by_text('长计划与停止状态验收',exact=True).click()
+    expect(page.get_by_test_id('task-progress')).to_have_text('已停止，可继续任务')
+    expect(page.get_by_test_id('plan-toggle')).to_contain_text('1/20')
+    expect(page.get_by_test_id('plan-history')).to_have_count(1)
+    page.get_by_test_id('plan-history').get_by_role('button').click()
+    expect(page.get_by_test_id('plan-history')).to_contain_text('已核对旧版资料')
+    expect(page.get_by_test_id('plan-history')).not_to_contain_text('旧版步骤')
+    expect(page.get_by_test_id('activity-group').get_by_test_id('item-plan')).to_have_count(0)
+    page.get_by_test_id('plan-toggle').click()
+    expect(page.get_by_test_id('plan-popover').get_by_test_id('plan-step')).to_have_count(20)
+    plan_list = page.get_by_label('计划步骤列表',exact=True)
+    plan_list.focus(); page.keyboard.press('End')
+    page.wait_for_timeout(300)
+    assert plan_list.evaluate('e=>e.scrollTop>0 && e.scrollHeight>e.clientHeight')
+    page.set_viewport_size({'width':920,'height':660})
+    assert page.get_by_test_id('task-view').evaluate('e=>e.scrollWidth<=e.clientWidth+1')
+    page.screenshot(animations='disabled',path=str(shots / 'task-plan-stopped-long.png'))
+    page.keyboard.press('Escape')
+    expect(page.get_by_test_id('plan-toggle')).to_be_focused()
+    page.set_viewport_size({'width':1240,'height':820})
+    checks.append('historical plan uses only its final snapshot outside execution records; stopped plan retains actual 1/20 completion; long wrapped plan scrolls by keyboard in a bounded popup')
+    page.get_by_text('失败诊断验收', exact=True).click()
+    expect(page.get_by_test_id('failure-overview')).to_contain_text('7 项')
+    expect(page.get_by_test_id('task-error')).to_contain_text('摘要输出预算耗尽')
+    expect(page.get_by_test_id('activity-toggle')).to_have_attribute('aria-expanded','false')
+    expect(page.get_by_test_id('activity-issue-preview')).to_contain_text("'ls' is not recognized")
+    page.get_by_test_id('failure-overview').get_by_role('button',name='查看原因',exact=True).click()
+    expect(page.get_by_test_id('task-error')).to_be_in_viewport()
+    page.screenshot(animations='disabled',path=str(shots / 'failure-summary-light.png'))
+    page.get_by_role('button',name='查看全部 7 项原因',exact=True).click()
+    expect(page.get_by_test_id('failure-reason')).to_have_count(7)
+    expect(page.get_by_test_id('failure-reason').nth(5)).to_contain_text('backend/resource.json')
+    page.get_by_role('button',name='查看失败记录 6',exact=True).click()
+    details = page.get_by_role('dialog',name='执行结果详情')
+    expect(details).to_contain_text('6 / 7'); expect(details).to_contain_text('backend/resource.json')
+    details.get_by_role('button',name='下一项',exact=True).click(); expect(details).to_contain_text('7 / 7')
+    page.keyboard.press('Escape'); expect(details).to_have_count(0)
+    page.screenshot(animations='disabled',path=str(shots / 'failure-details-list.png'))
+    page.get_by_role('button',name='收起更多原因',exact=True).click()
+    page.get_by_test_id('failure-overview').get_by_role('button',name='查看原因',exact=True).click()
+    page.get_by_role('button',name='切换主题',exact=True).click()
+    page.screenshot(animations='disabled',path=str(shots / 'failure-summary-dark.png'))
+    page.reload(); page.wait_for_load_state('networkidle')
+    page.get_by_text('失败诊断验收', exact=True).click()
+    expect(page.get_by_test_id('task-error')).to_contain_text('摘要输出预算耗尽')
+    checks.append('seven failures show specific reasons outside folded logs; full-record dialog navigates failures; Escape and precise error reload work')
+    page.get_by_text('上下文恢复验收',exact=True).click()
+    page.get_by_label('任务输入',exact=True).fill('验证摘要预算恢复')
+    page.get_by_role('button',name='发送',exact=True).click()
+    expect(page.get_by_test_id('item-agentMessage')).to_contain_text('精简旧工具输出后任务已继续完成',timeout=20000)
+    expect(page.get_by_test_id('context-notice')).to_contain_text('摘要输出预算耗尽')
+    page.get_by_role('button',name='统计',exact=True).click()
+    expect(page.get_by_test_id('compaction-statistics')).to_contain_text('触发时总输入')
+    expect(page.get_by_test_id('compaction-statistics')).to_contain_text('整理前')
+    expect(page.get_by_test_id('compaction-statistics')).to_contain_text('整理后')
+    expect(page.get_by_test_id('context-usage')).to_contain_text('128,000 Token')
+    expect(page.get_by_test_id('task-error')).to_have_count(0)
+    compact_usage = page.evaluate("async()=> (await window.smalt.call('thread/read',{threadId:'th_compaction_diagnostics_fixture'})).usage")
+    expect(page.locator('footer')).to_contain_text('上下文 ' + str(int(compact_usage['contextUsage'] * 100 + .5)) + '%')
+    page.screenshot(animations='disabled',path=str(shots / 'context-recovery.png'))
+    page.reload(); page.wait_for_load_state('networkidle')
+    page.get_by_text('上下文恢复验收',exact=True).click()
+    expect(page.get_by_test_id('context-notice')).to_contain_text('摘要输出预算耗尽')
+    checks.append('reasoning-only truncated summaries retry with more budget then compact only old tool output; task completes and diagnostic survives reload')
+    # Deliberately mixed legacy records: an isolated pass cannot erase suite
+    # findings, a zero outer status cannot verify a failed check, and linked
+    # utility recovery must retain the raw error without counting it twice.
+    semantic_id, semantic_turn = 'th_semantic_results_fixture', 'turn_semantic_results_fixture'
+    semantic = [{'t':'meta','meta':{'id':semantic_id,'title':'检查结果分类验收','cwd':str(workspace),'provider':'openai','model':'ui-test-model','createdAt':fixture_time,'updatedAt':fixture_time,'turnCount':1,'lastOutcome':'completed'}}, {'t':'turn-started','turnId':semantic_turn,'at':fixture_time}, {'t':'user-msg','id':'semantic-user','text':'只检查代码，禁止修改。','at':fixture_time}]
+    semantic_calls = [('format','ruff format --check .','Would reformat: tests/test_example.py',1), ('suite','pnpm exec vitest run','1 failed | 41 passed\nTestingLibraryElementError: Unable to find earth3d-fallback',1), ('isolated','pnpm exec vitest run Cover.test.tsx','1 passed',0), ('masked','pnpm test & echo EXIT_CODE=%ERRORLEVEL%','1 failed\nEXIT_CODE=0',0), ('skipped','pytest integration','115 skipped',0), ('missing','grep fixture README.md',"'grep' is not recognized as an internal or external command",1)]
+    for call_id,command,output,code in semantic_calls:
+        semantic += [{'t':'tool-call','id':call_id,'tool':'shell','input':{'command':command},'at':fixture_time}, {'t':'tool-result','id':call_id,'tool':'shell','output':'[exit '+str(code)+']\n'+output,'isError':bool(code),'at':fixture_time}]
+    semantic += [{'t':'tool-call','id':'alternative','tool':'grep','input':{'pattern':'fixture','recoveryOf':'missing'},'at':fixture_time}, {'t':'tool-result','id':'alternative','tool':'grep','output':'README.md:1:fixture','isError':False,'at':fixture_time}, {'t':'tool-recovered','id':'missing','recoveredBy':'alternative','recovery':'alternative','at':fixture_time}, {'t':'agent-msg','id':'semantic-report','text':'静态检查结束：发现格式和整套测试问题。单个用例通过；复合命令结果待核实；集成测试跳过，未修改代码。','at':fixture_time}, {'t':'turn-ended','turnId':semantic_turn,'at':fixture_time,'summary':{'durationMs':1000,'toolCount':7,'fileCount':0,'usage':{'inputTokens':0,'outputTokens':0}}}]
+    (home / 'threads' / (semantic_id+'.jsonl')).write_text(''.join(json.dumps(e,ensure_ascii=False)+'\n' for e in semantic),encoding='utf8')
+    page.reload(); page.wait_for_load_state('networkidle')
+    page.get_by_text('检查结果分类验收',exact=True).click()
+    expect(page.get_by_test_id('failure-overview')).to_contain_text('2 项检查发现 · 2 项待验证')
+    expect(page.get_by_test_id('completion-status')).to_have_text('部分验证未完成')
+    expect(page.get_by_test_id('failure-summary')).not_to_contain_text('执行失败')
+    page.get_by_role('button',name='查看全部 4 项原因',exact=True).click()
+    expect(page.get_by_test_id('failure-reason')).to_have_count(4)
+    expect(page.get_by_test_id('failure-reason').nth(1)).to_contain_text('earth3d-fallback')
+    expect(page.get_by_test_id('failure-reason').nth(2)).to_contain_text('返回 0')
+    expect(page.get_by_test_id('failure-reason').nth(3)).to_contain_text('115 项跳过')
+    page.get_by_test_id('failure-overview').get_by_role('button',name='查看原因',exact=True).click()
+    page.screenshot(animations='disabled',path=str(shots / 'execution-results-dark.png'))
+    page.get_by_role('button',name='切换主题',exact=True).click()
+    page.set_viewport_size({'width':920,'height':660})
+    assert page.get_by_test_id('conversation-scroll').evaluate('e=>e.scrollWidth<=e.clientWidth+1')
+    page.screenshot(animations='disabled',path=str(shots / 'execution-results-light-narrow.png'))
+    page.set_viewport_size({'width':1240,'height':820})
+    page.get_by_test_id('activity-toggle').click()
+    expect(page.get_by_test_id('activity-details')).to_contain_text('已改用其他工具')
+    page.get_by_test_id('activity-details').get_by_role('button',name='grep fixture README.md 已改用其他工具',exact=True).click()
+    expect(page.get_by_test_id('activity-details')).to_contain_text("'grep' is not recognized")
+    page.reload(); page.wait_for_load_state('networkidle')
+    page.get_by_text('检查结果分类验收',exact=True).click()
+    expect(page.get_by_test_id('completion-status')).to_have_text('部分验证未完成')
+    page.get_by_role('button',name='任务中心',exact=True).click()
+    center.get_by_role('button',name='待验证',exact=True).click()
+    expect(center.get_by_test_id('activity-row').filter(has_text='检查结果分类验收')).to_be_visible()
+    checks.append('format and suite findings stay distinct from execution errors; isolated pass does not clear suite; masked exit zero and skipped coverage remain unverified; confirmed native recovery keeps original evidence; statuses persist and appear in task-center filters; light/dark/narrow screenshots')
     page.get_by_role('button',name='新建任务',exact=True).click()
     page.get_by_label("任务输入",exact=True).fill("验证托盘驻留")
     page.get_by_role("button",name="发送",exact=True).click()
@@ -625,7 +913,7 @@ try:
     assert not errors, errors
     checks.append('no renderer errors' if '--features-only' in sys.argv else 'provider auth error shown, no renderer errors')
     browser.close()
-    result = {"passed":True,"packaged":bool(packaged_executable),"checks":checks,"modelRequests":len(requests),"rendererErrors":errors,"fixture":str(run)}
+    result = {"passed":True,"packaged":bool(packaged_executable),"checks":checks,"modelRequests":len(requests),"catalogRequests":len(catalog_requests),"rendererErrors":errors,"fixture":str(run)}
     (shots / "ui-test-results.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
     print(json.dumps(result,ensure_ascii=True,indent=2))
 except Exception:

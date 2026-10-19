@@ -1,30 +1,30 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useId, useState, useMemo, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import Icon from './icons'
 import Composer, { type ModelChoice } from './Composer'
 import { Btn, cx, Menu } from './ui'
 import { errorText, folderName, store, type Session, type Item, type ContextReference } from '../bridge'
 import Md from './Markdown'
-import { activityTimeline, activityProgress, type TimelineEntry } from './activity'
+import { activityTimeline, activityProgress, latestPlan, type TimelineEntry } from './activity'
+import TaskProgress, { PlanHistory } from './TaskProgress'
+import { operationIssues, issueOverview, type OperationIssue } from './issues'
+import { assessmentLabels, assessTurn, displayCommand, itemAssessment, operationAssessments, type ExecutionAssessment, type TurnAssessment } from '../../../../../kernel/src/protocol/assessment'
+import { FailureSummary, FailureDetails } from './Failures'
 import { rememberExpansion, useConversationScroll, type ConversationScrollMemory } from './useConversationScroll'
 export { default as Md } from './Markdown'
 export type FileItem = { name: string; path: string; kind: 'new' | 'mod' | 'del'; add: number; del: number; diff?: string }
-type Step = { t: string; s: 'todo' | 'doing' | 'done' }
 type Block =
   | { k: 'user'; text: string; references?: Array<{ path: string; label?: string }>; queued?: boolean }
   | { k: 'think'; text: string; done: boolean; secs: number }
-  | { k: 'plan'; steps: Step[] }
+  | { k: 'plan'; plan: Extract<Item, { kind: 'plan' }> }
   | { k: 'reads'; items: string[]; done: boolean }
-  | { k: 'cmd'; cmd: string; out: string[]; code?: number; done: boolean }
+  | { k: 'cmd'; cmd: string; out: string[]; code?: number; done: boolean; assessment?: ExecutionAssessment }
   | { k: 'approval'; id: string; risk: 'normal' | 'high'; title: string; detail: string; reason: string; rule: string; category?: string; batch?: number; operations?: Array<{ title: string; tool: string; input: unknown }>; res?: 'allow' | 'session' | 'always' | 'deny' }
   | { k: 'blocked'; title: string; reason: string }
   | { k: 'file'; f: FileItem; done: boolean }
   | { k: 'reply'; text: string; done: boolean }
   | { k: 'question'; q: string; opts: string[]; ans?: string }
-  | { k: 'summary'; secs: number; tools: number; files: number }
+  | { k: 'summary'; secs: number; tools: number; files: number; assessment?: TurnAssessment }
   | { k: 'error'; title: string; msg: string }
-
-export type Phase = { s: string; label: string; detail?: string } | null
-
 
 export function artifacts(session: Session): FileItem[] {
   const files = new Map<string, FileItem>()
@@ -41,24 +41,26 @@ export function artifacts(session: Session): FileItem[] {
   })
   return [...files.values()]
 }
-function block(item: Item): Block {
+function block(item: Item, assessment = itemAssessment(item)): Block {
   switch (item.kind) {
     case 'userMessage': return { k: 'user', text: item.text, references: item.references }
     case 'agentMessage': return { k: 'reply', text: item.text, done: item.status !== 'inProgress' }
     case 'reasoning': return { k: 'think', text: item.text, done: item.status !== 'inProgress', secs: 0 }
-    case 'plan': return { k: 'plan', steps: item.steps.map(s => ({ t: s.content, s: s.status === 'completed' ? 'done' : s.status === 'inProgress' ? 'doing' : 'todo' })) }
+    case 'plan': return { k: 'plan', plan: item }
     case 'fileChange':
-      if (item.status !== 'completed') return { k: 'blocked', title: item.path, reason: item.diff || '文件操作失败或被拒绝' }
+      if (item.status === 'blocked') return { k: 'blocked', title: item.path, reason: item.diff || '文件操作被拒绝' }
+      if (item.status !== 'completed') return { k: 'error', title: '文件操作失败 · ' + item.path, msg: item.diff || '请展开执行记录检查原因。' }
       return { k: 'file', done: true, f: { name: folderName(item.path), path: item.path, kind: item.changeKind === 'add' ? 'new' : item.changeKind === 'delete' ? 'del' : 'mod', add: item.diff?.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length ?? 0, del: item.diff?.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length ?? 0, diff: item.diff } }
     case 'commandExecution':
       if (item.status === 'blocked') return { k: 'blocked', title: item.command, reason: item.output }
-      return { k: 'cmd', cmd: item.command, out: item.output.split('\n'), code: item.exitCode ?? undefined, done: item.status !== 'inProgress' }
-    case 'userInputRequest': return { k: 'question', q: item.question, opts: item.options ?? [] }
+      return { k: 'cmd', cmd: item.command, out: item.output.split('\n'), code: item.exitCode ?? undefined, done: item.status !== 'inProgress', assessment }
+    case 'userInputRequest': return { k: 'question', q: item.question, opts: item.options ?? [], ans: item.answer }
     case 'mcpToolCall': return { k: 'cmd', cmd: item.server + '/' + item.tool, out: item.output.split('\n'), code: item.status === 'failed' ? 1 : 0, done: item.status !== 'inProgress' }
   }
 }
 function operationTitle(tool: string, input: unknown, fallback: string) {
   const value = input as Record<string, unknown> | undefined
+  if (tool === 'shell' && value) return '运行命令 · ' + displayCommand(value)
   const labels: Record<string, string> = { write: '写入文件', apply_patch: '修改文件', shell: '运行命令', read: '读取文件', grep: '搜索内容', glob: '查找文件' }
   return (labels[tool] ?? fallback) + (typeof value?.path === 'string' ? ' · ' + value.path : '')
 }
@@ -84,89 +86,86 @@ export default function TaskView({ session, scrollPositions, onOpenFile, model, 
   const scroll = useConversationScroll(session, scrollPositions)
   const running = store.busy(session.meta.id)
   const lifecycle = session.status?.lifecycle
-  const timeline = activityTimeline(session.items)
   const lastTurnId = session.items.at(-1)?.turnId
-  const progress = activityProgress(session.items.filter(item => item.turnId === lastTurnId), { running, lifecycle })
-  const phase: Phase = running ? { s: lifecycle === 'waitingForPermission' ? 'approval' : lifecycle === 'waitingForUser' ? 'question' : lifecycle ?? 'prep', label: progress.label } : session.interrupted ? { s: 'stopped', label: '已停止，可继续任务' } : null
+  const timeline = useMemo(() => activityTimeline(session.items, lastTurnId), [session.items, lastTurnId])
+  const plan = useMemo(() => latestPlan(session.items, lastTurnId), [session.items, lastTurnId])
+  const assessments = useMemo(() => operationAssessments(session.items), [session.items])
+  const issues = useMemo(() => operationIssues(session.items.filter(item => item.turnId === lastTurnId), session.items, assessments), [session.items, lastTurnId, assessments])
+  const latestAssessment = useMemo(() => {
+    const items = session.items.filter(i => i.turnId === lastTurnId)
+    const prompt = items.find(i => i.kind === 'userMessage')
+    return assessTurn(items, prompt?.kind === 'userMessage' ? prompt.text : '', !!session.interrupted)
+  }, [session.items, lastTurnId, session.interrupted])
+  const failures = useRef<HTMLDivElement>(null)
+  const [planOpen, setPlanOpen] = useState(false)
+  const onPlanOpenChange = useCallback((open: boolean) => setPlanOpen(open), [])
+  const [inspection, setInspection] = useState<{ issues: OperationIssue[]; index: number } | null>(null)
+  const inspect = (issues: OperationIssue[], index: number) => setInspection({ issues, index })
+  useEffect(() => { setInspection(null) }, [session.meta.id])
+  const progress = useMemo(() => activityProgress(session.items.filter(item => item.turnId === lastTurnId), { running, lifecycle, cwd: session.meta.cwd, interrupted: !!session.interrupted }, session.items, assessments), [session.items, lastTurnId, running, lifecycle, session.meta.cwd, session.interrupted, assessments])
   const respond = async (id: string, decision: string, reason?: string) => {
     try { await store.api!.respondApproval(id, decision === 'deny' ? { decision: 'deny', reason } : { decision: 'allow', scope: decision === 'category' ? 'category' : decision === 'batch' ? 'batch' : 'operation', remember: decision === 'session' || decision === 'always' ? decision : undefined }) }
-    catch (err) { onError(errorText(err)) }
+    catch (err) { onError(errorText(err)); throw err }
   }
   const answer = async (id: string, text: string) => {
-    try { await store.api!.respondInput(id, text) } catch (err) { onError(errorText(err)) }
+    try { await store.api!.respondInput(id, text) } catch (err) { onError(errorText(err)); throw err }
   }
   const stop = async () => { try { await store.api!.call('turn/interrupt', { threadId: session.meta.id }) } catch (err) { onError(errorText(err)) } }
   return <div data-testid="task-view" className="flex-1 flex flex-col min-w-0 min-h-0 relative">
     <div ref={scroll.viewport} data-testid="conversation-scroll" role="region" aria-label="对话内容" tabIndex={0} onScroll={scroll.onScroll} onWheelCapture={scroll.onWheelCapture} onPointerDownCapture={scroll.onPointerDownCapture} onKeyDownCapture={scroll.onKeyDownCapture} className="flex-1 min-h-0 overflow-y-auto outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--line)]">
       <div ref={scroll.content} className="max-w-[760px] mx-auto px-5 lg:px-8 pt-6 pb-10 space-y-3">
+        {session.meta.recovery && !running && <div data-testid="recovery-banner" className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4"><div className="font-medium text-[13px]">上次任务未完整结束</div><p className="mt-1 text-[12px] text-[var(--muted)] leading-relaxed">记录与已有文件已保留。请先检查实际结果，继续时会重新核对，避免重复执行。</p><Btn v="outline" disabled={!!session.meta.archived} className="mt-3" onClick={() => setDraft('继续上次任务，先检查已完成内容和实际文件状态，避免重复执行。')}>填写继续任务的说明</Btn></div>}
         {session.meta.archived && <div className="rounded-xl border border-[var(--line)] p-3 flex items-center gap-3 bg-[var(--sunken)]"><Icon n="archive" s={16} /><span className="flex-1 text-[12px] text-[var(--muted)]">这段对话已归档，恢复后可继续。</span><Btn v="outline" onClick={() => void store.restore(session.meta.id).catch(e => onError(errorText(e)))}>恢复对话</Btn></div>}
         {session.items.length === 0 && <div className="py-12 text-center text-[var(--muted)]">继续描述你希望完成的工作。</div>}
-        {timeline.map((entry, index) => entry.kind === 'message'
+        {timeline.map(entry => entry.kind !== 'activity'
           ? <div key={entry.item.id} data-testid={'item-' + entry.item.kind}><BlockView b={block(entry.item)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} /></div>
-          : <ActivityGroup key={entry.id} entry={entry} memory={scrollPositions} threadId={session.meta.id} live={running && index === timeline.length - 1} lifecycle={lifecycle} interrupted={!!session.interrupted && entry.turnId === lastTurnId} onOpenFile={onOpenFile} />)}
-        {Object.values(session.approvals).map(req => <div key={req.itemId} data-testid="approval"><BlockView b={{ k: 'approval', id: req.itemId, risk: req.riskLevel ?? 'normal', title: req.batch ? '同组 ' + (req.categoryLabel ?? '操作') + ' · ' + req.batch.length + ' 项' : operationTitle(req.tool, req.input, req.title), detail: JSON.stringify(req.batch ?? req.input, null, 2), reason: approvalReason(req.detail), rule: req.suggestedRule ?? req.tool, category: req.category === 'other' ? undefined : req.categoryLabel, batch: req.batch?.length, operations: req.batch?.map(op => ({ ...op, title: operationTitle(op.tool, op.input, op.title) })) }} onResolve={(decision, reason) => void respond(req.itemId, decision, reason)} onAnswer={() => {}} onOpenFile={onOpenFile} /></div>)}
-        {Object.values(session.questions).map(req => <div key={req.itemId} data-testid="question"><BlockView b={{ k: 'question', q: req.question, opts: req.options ?? [] }} onResolve={() => {}} onAnswer={text => void answer(req.itemId, text)} onOpenFile={onOpenFile} /></div>)}
-        {session.error && <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/[.06] p-4"><div className="flex items-center gap-2 text-rose-600 font-medium"><Icon n="alert" s={16} />任务执行失败</div><p className="mt-2 break-words text-[var(--muted)]">{session.error}</p><div className="flex gap-2 mt-3"><Btn v="outline" onClick={() => setDraft('请继续完成上次任务，并先检查失败原因。')}>继续任务</Btn><Btn onClick={onSettings}>打开模型设置</Btn></div></div>}
-        {(!session.error && !session.interrupted ? session.summaries.slice(-1) : []).map(summary => <BlockView key={summary.turnId} b={{ k: 'summary', secs: Math.round(summary.durationMs / 100) / 10, tools: summary.toolCount, files: summary.fileCount }} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} />)}
+          : <ActivityGroup key={entry.id} entry={entry} allItems={session.items} assessments={assessments} memory={scrollPositions} threadId={session.meta.id} onOpenFile={onOpenFile} onInspect={inspect} />)}
+        {Object.values(session.approvals).map(req => <div key={req.itemId} data-testid="approval"><BlockView b={{ k: 'approval', id: req.itemId, risk: req.riskLevel ?? 'normal', title: req.batch ? '同组 ' + (req.categoryLabel ?? '操作') + ' · ' + req.batch.length + ' 项' : operationTitle(req.tool, req.input, req.title), detail: JSON.stringify(req.batch ?? req.input, null, 2), reason: approvalReason(req.detail), rule: req.suggestedRule ?? req.tool, category: req.category === 'other' ? undefined : req.categoryLabel, batch: req.batch?.length, operations: req.batch?.map(op => ({ ...op, title: operationTitle(op.tool, op.input, op.title) })) }} onResolve={(decision, reason) => respond(req.itemId, decision, reason)} onAnswer={() => {}} onOpenFile={onOpenFile} /></div>)}
+        {Object.values(session.questions).map(req => <div key={req.itemId} data-testid="question"><BlockView b={{ k: 'question', q: req.question, opts: req.options ?? [] }} onResolve={() => {}} onAnswer={text => answer(req.itemId, text)} onOpenFile={onOpenFile} /></div>)}
+        {(session.error || issues.length > 0) && <div ref={failures}><FailureSummary key={lastTurnId} issues={issues} error={session.error} onInspect={inspect} onContinue={() => setDraft('请继续完成上次任务，先检查失败原因和已有结果，避免重复操作。')} onSettings={onSettings} /></div>}
+        {!session.error && session.contextNotice?.level === 'warning' && <div data-testid="context-notice" role="status" className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3 text-[12px] leading-relaxed"><p className="font-medium">{session.contextNotice.message}</p>{session.contextNotice.reason && <p className="mt-1 break-words text-[var(--muted)]">具体原因：{session.contextNotice.reason}</p>}<p className="mt-1 text-[var(--muted)]">原始记录与已有文件保持完整。</p></div>}
+        {(!running && !session.error && !session.interrupted ? session.summaries.filter(s => s.turnId === lastTurnId).slice(-1) : []).map(summary => <BlockView key={summary.turnId} b={{ k: 'summary', secs: Math.round(summary.durationMs / 100) / 10, tools: summary.toolCount, files: summary.fileCount, assessment: summary.assessment ?? latestAssessment }} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} />)}
       </div>
     </div>
     <div className="relative max-w-[760px] w-full mx-auto px-5 lg:px-8 pb-4">
-      {!scroll.stick && <button data-testid="scroll-to-latest" onClick={scroll.latest} className="absolute left-1/2 -translate-x-1/2 bottom-full mb-3 z-10 h-8 px-3 flex items-center gap-1.5 whitespace-nowrap rounded-full glass border border-[var(--line)] shadow-lg text-[12px]"><Icon n="arrowDown" s={13} />{Object.keys(session.approvals).length ? '需要确认 · 查看最新' : Object.keys(session.questions).length ? '需要回答 · 查看最新' : scroll.hasUpdates ? '有新内容 · 查看最新' : '回到底部'}</button>}
-      <PhaseBar phase={phase} />
-      <Composer references={references} onReferencesChange={onReferencesChange} approvedCategories={session.meta.approvedCategories} onResetPermissions={() => void store.updateThread(session.meta.id, {}, 'thread/permissions/reset').catch(e => onError(errorText(e)))} running={running} disabled={!!session.meta.archived} onSend={onSend} onStop={() => void stop()} value={draft} setValue={setDraft} mode={mode} setMode={setMode} model={model} setModel={setModel} models={models} ws={session.meta.cwd} queued={session.status?.queuedMessages} onError={onError} />
+      {!scroll.stick && !planOpen && <button data-testid="scroll-to-latest" onClick={scroll.latest} className="absolute left-1/2 -translate-x-1/2 bottom-full mb-3 z-40 h-8 px-3 flex items-center gap-1.5 whitespace-nowrap rounded-full glass border border-[var(--line)] shadow-lg text-[12px]"><Icon n="arrowDown" s={13} />{Object.keys(session.approvals).length ? '需要确认 · 查看最新' : Object.keys(session.questions).length ? '需要回答 · 查看最新' : scroll.hasUpdates ? '有新内容 · 查看最新' : '回到底部'}</button>}
+      {(running || plan || session.interrupted || session.error || issues.length > 0) && <TaskProgress key={lastTurnId} plan={plan} progress={progress} running={running} lifecycle={lifecycle} interrupted={session.interrupted} error={session.error} idleLabel={assessmentLabels[latestAssessment.status]} issueLabel={issueOverview(issues)} onInspectIssues={() => failures.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} onOpenChange={onPlanOpenChange} />}
+      {inspection && <FailureDetails {...inspection} onChange={index => setInspection({ ...inspection, index })} onClose={() => setInspection(null)} />}
+      <Composer onPreview={ref => onOpenFile({ name: ref.label ?? folderName(ref.path), path: ref.path, kind: 'mod', add: 0, del: 0 })} references={references} onReferencesChange={onReferencesChange} approvedCategories={session.meta.approvedCategories} onResetPermissions={() => void store.updateThread(session.meta.id, {}, 'thread/permissions/reset').catch(e => onError(errorText(e)))} running={running} disabled={!!session.meta.archived} onSend={onSend} onStop={() => void stop()} value={draft} setValue={setDraft} mode={mode} setMode={setMode} model={model} setModel={setModel} models={models} ws={session.meta.cwd} queued={session.status?.queuedMessages} onError={onError} />
       <div className="text-center text-[11px] text-[var(--muted)]/80 mt-2">内容由 AI 生成，请核实重要信息</div>
     </div>
   </div>
 }
-function PhaseBar({ phase }: { phase: Phase }) {
-  const attn = phase && (phase.s === 'approval' || phase.s === 'question')
-  return (
-    <div className={cx('fold-region', phase && 'open')}>
-      <div>
-        {phase && (
-          <div role="status" aria-live="polite" aria-atomic="true" data-testid="task-progress" className={cx('mb-2 h-8 inline-flex items-center gap-2 px-3 rounded-full text-[12.5px]', attn ? 'bg-amber-500/12 text-amber-700 dark:text-amber-300 border border-amber-500/30' : 'text-[var(--muted)]')}>
-            {attn ? <span className="size-2 rounded-full bg-amber-500 pulse-ring" /> : phase.s === 'stopped' ? <Icon n="stop" s={12} /> : <Orbit />}
-            <span className={cx(!attn && phase.s !== 'stopped' && 'shimmer-text', 'font-medium')}>{phase.label}</span>
-            {phase.detail && <span className="font-mono text-[11.5px] opacity-80">{phase.detail}</span>}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
 
-function ActivityGroup({ entry, memory, threadId, live, lifecycle, interrupted, onOpenFile }: {
-  entry: Extract<TimelineEntry, { kind: 'activity' }>; live: boolean; lifecycle?: NonNullable<Session['status']>['lifecycle']
+function ActivityGroup({ entry, allItems, assessments, memory, threadId, onOpenFile, onInspect }: {
+  allItems: Item[]
+  assessments: Map<string, ExecutionAssessment>
+  entry: Extract<TimelineEntry, { kind: 'activity' }>
   memory: ConversationScrollMemory; threadId: string
-  interrupted: boolean; onOpenFile: (file: FileItem) => void
+  onOpenFile: (file: FileItem) => void
+  onInspect: (issues: OperationIssue[], index: number) => void
 }) {
   const [expanded, setExpanded] = useState(() => memory.get(threadId)?.activities?.has(entry.id) ?? false)
   const detailId = useId()
-  const progress = activityProgress(entry.items, { running: live, lifecycle, interrupted })
-  const attention = live && (lifecycle === 'waitingForPermission' || lifecycle === 'waitingForUser')
+  const issues = operationIssues(entry.items, allItems, assessments)
   return <section data-testid="activity-group" className="rounded-xl border border-[var(--line)] bg-[var(--surface-solid)] overflow-hidden">
     <button type="button" data-testid="activity-toggle" aria-expanded={expanded} aria-controls={detailId} onClick={() => { rememberExpansion(memory, threadId, 'activities', entry.id, !expanded); setExpanded(!expanded) }} className="w-full px-3.5 py-3 flex items-start gap-2.5 text-left hover:bg-[var(--hover)] transition-colors">
-      <span className="mt-0.5 text-[var(--muted)]">{live && !attention ? <Orbit /> : <Icon n={attention ? 'shield' : interrupted ? 'stop' : progress.issueCount ? 'alert' : 'brain'} s={15} />}</span>
+      <span className="mt-0.5 text-[var(--muted)]"><Icon n="brain" s={15} /></span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px]">
-          <span className="font-medium">思考与执行</span>
-          {live || interrupted ? <span className={cx('text-[12px]', attention ? 'text-amber-600 dark:text-amber-300' : 'text-[var(--muted)]')} data-testid="activity-stage">{progress.label}</span> : <span className="text-[11.5px] text-[var(--muted)]">{progress.count} 项记录</span>}
+          <span className="font-medium">思考与执行记录</span>
+          <span className="text-[11.5px] text-[var(--muted)]">{entry.items.length} 项记录</span>
         </div>
-        {progress.milestones.length > 0 && <p data-testid="activity-milestones" className="mt-1 text-[11.5px] leading-relaxed text-[var(--muted)]">{progress.milestones.join(' · ')}</p>}
-        {progress.warnings && <p role="note" data-testid="activity-warning" className="mt-1 text-[12px] text-amber-700 dark:text-amber-300">{progress.warnings}，展开查看原因</p>}
       </div>
       <span className="shrink-0 mt-0.5 flex items-center gap-1 text-[11px] text-[var(--muted)]"><span className="hidden sm:inline">{expanded ? '收起' : '详情'}</span><Icon n="chevron" s={13} className={cx('transition-transform', expanded && 'rotate-90')} /></span>
     </button>
+    {issues.length > 0 && <button type="button" data-testid="activity-issue-preview" onClick={() => onInspect(issues, 0)} className={cx('w-full border-t border-[var(--line)] px-3.5 py-2.5 text-left flex items-start gap-2', issues[0]!.kind === 'error' ? 'bg-rose-500/[.035] text-rose-700 dark:text-rose-300' : 'bg-amber-500/[.035] text-amber-700 dark:text-amber-300')}><Icon n="alert" s={13} className="shrink-0 mt-0.5" /><span className="flex-1 min-w-0 text-[12px] line-clamp-2 break-words">{issues[0]!.reason}</span><span className="text-[11px] shrink-0 text-[var(--accent)]">查看原因{issues.length > 1 ? ` (${issues.length})` : ''}</span></button>}
     {expanded && <div id={detailId} role="region" aria-label="思考与执行详情" data-testid="activity-details" className="border-t border-[var(--line)] p-3 space-y-2.5 max-h-[480px] overflow-y-auto">
       {entry.items.map(item => <div key={item.id} data-testid={'item-' + item.kind}>{item.kind === 'reasoning'
         ? <div className="border-l-2 border-[var(--line)] pl-3 py-1"><div className="flex items-center gap-1.5 text-[11px] text-[var(--muted)] mb-1"><Icon n="brain" s={12} />{item.status === 'inProgress' ? '正在思考' : '思考过程'}</div><div className="text-[12.5px] leading-relaxed whitespace-pre-wrap break-words text-[var(--muted)]">{item.text || '正在分析任务…'}</div></div>
-        : <BlockView b={block(item)} commandOpen={memory.get(threadId)?.commands?.has(item.id)} onCommandToggle={open => rememberExpansion(memory, threadId, 'commands', item.id, open)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} />}</div>)}
+        : <BlockView b={block(item, assessments.get(item.id))} commandOpen={memory.get(threadId)?.commands?.has(item.id)} onCommandToggle={open => rememberExpansion(memory, threadId, 'commands', item.id, open)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} />}</div>)}
     </div>}
   </section>
-}
-
-function Orbit() {
-  return <span className="relative inline-block shrink-0 size-3.5"><span className="absolute inset-0 rounded-full border-[1.5px] border-accent/25" /><span className="absolute inset-0 rounded-full border-[1.5px] border-accent border-r-transparent border-b-transparent spin" /></span>
 }
 
 function Fold({ head, children, open: init = false, tone }: { head: ReactNode; children: ReactNode; open?: boolean; tone?: string }) {
@@ -181,7 +180,7 @@ function Fold({ head, children, open: init = false, tone }: { head: ReactNode; c
   )
 }
 
-function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onAnswer }: { b: Block; commandOpen?: boolean; onCommandToggle?: (open: boolean) => void; onResolve: (r: string, reason?: string) => void; onOpenFile: (f: FileItem) => void; onAnswer: (a: string) => void }) {
+function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onAnswer }: { b: Block; commandOpen?: boolean; onCommandToggle?: (open: boolean) => void; onResolve: (r: string, reason?: string) => void | Promise<void>; onOpenFile: (f: FileItem) => void; onAnswer: (a: string) => void | Promise<void> }) {
   switch (b.k) {
     case 'user':
       return (
@@ -196,25 +195,7 @@ function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onA
           <div className="ml-[7px] pl-4 border-l-2 border-[var(--line)] text-[var(--muted)] leading-relaxed py-1">{b.text}</div>
         </Fold>
       )
-    case 'plan': {
-      const d = b.steps.filter((s) => s.s === 'done').length
-      return (
-        <div className="anim-rise rounded-xl border border-[var(--line)] bg-[var(--surface-solid)] p-3.5">
-          <div className="flex items-center gap-2 mb-2.5"><Icon n="list" s={15} className="text-accent" /><span className="font-medium">执行计划</span><span className="ml-auto text-[12px] text-[var(--muted)]">{d}/{b.steps.length}</span></div>
-          <div className="h-1 rounded-full bg-[var(--sunken)] overflow-hidden mb-3"><div className="h-full bg-accent rounded-full transition-all duration-700 ease-out" style={{ width: `${b.steps.length ? (d / b.steps.length) * 100 : 0}%` }} /></div>
-          <div className="space-y-1.5">
-            {b.steps.map((s, i) => (
-              <div key={i} className="flex items-center gap-2.5">
-                <span className={cx('size-4 rounded-full grid place-items-center transition-all duration-300', s.s === 'done' ? 'bg-accent text-white scale-100' : s.s === 'doing' ? 'border-[1.5px] border-accent' : 'border-[1.5px] border-[var(--line)]')}>
-                  {s.s === 'done' && <Icon n="check" s={10} w={3} />}{s.s === 'doing' && <span className="size-1.5 rounded-full bg-accent animate-pulse" />}
-                </span>
-                <span className={cx('transition-colors', s.s === 'done' ? 'text-[var(--muted)] line-through decoration-[var(--line)]' : s.s === 'doing' ? 'font-medium' : 'text-[var(--muted)]')}>{s.t}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )
-    }
+    case 'plan': return <PlanHistory plan={b.plan} />
     case 'reads':
       return (
         <Fold head={<><Icon n="eye" s={15} /><span className={cx(!b.done && 'shimmer-text')}>{b.done ? `查看了 ${b.items.length} 个文件` : `正在读取 ${b.items.length} 个文件…`}</span></>}>
@@ -247,9 +228,13 @@ function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onA
       return <QuestionCard b={b} onAnswer={onAnswer} />
     case 'summary':
       return (
-        <div className="anim-rise flex items-center gap-4 pt-2 text-[12px] text-[var(--muted)]">
-          <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium"><span className="size-4 rounded-full bg-emerald-500 text-white grid place-items-center"><Icon n="check" s={10} w={3} /></span>已完成</span>
+        <div className="anim-rise flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 text-[12px] text-[var(--muted)]">
+          <span data-testid="completion-status" className={cx('flex items-center gap-1.5 font-medium', !b.assessment || b.assessment.status === 'completed' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-300')}><Icon n={!b.assessment || b.assessment.status === 'completed' ? 'check' : 'alert'} s={14} />{b.assessment ? assessmentLabels[b.assessment.status] : '已完成'}</span>
           <span>用时 {b.secs}s</span><span>调用 {b.tools} 个工具</span><span>改动 {b.files} 个文件</span>
+          {!!b.assessment?.recovered && <span>{b.assessment.recovered} 项已有后续结果</span>}
+          {!!b.assessment?.pendingSteps && <span>计划剩余 {b.assessment.pendingSteps} 项</span>}
+          {!!b.assessment?.checks.skipped && <span>{b.assessment.checks.skipped} 项检查跳过</span>}
+          {b.assessment?.verificationMissing && <span>代码改动尚无验证记录</span>}
           <span className="flex-1" />
 
 
@@ -276,7 +261,7 @@ function CmdBlock({ b, open = false, onToggle }: { b: Extract<Block, { k: 'cmd' 
         <span className="font-mono text-[12.5px] truncate">{b.cmd}</span>
         <span className="flex-1" />
         {!b.done ? <span className="text-[11.5px] text-accent flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-accent animate-pulse" />运行中</span>
-          : <span className={cx('text-[11px] px-1.5 py-0.5 rounded', b.code === 0 ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10' : 'text-rose-500 bg-rose-500/10')}>{b.code === undefined ? '已结束' : 'exit ' + b.code}</span>}
+          : <span title={b.assessment?.recoveredBy ? `原退出码 ${b.code ?? '?'} · ${b.assessment.summary}` : b.assessment?.summary} className={cx('text-[11px] px-1.5 py-0.5 rounded shrink-0', b.assessment?.recoveredBy ? 'text-[var(--muted)] bg-[var(--sunken)]' : b.assessment?.kind === 'finding' || b.assessment?.kind === 'unverified' ? 'text-amber-700 dark:text-amber-300 bg-amber-500/10' : b.code === 0 ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10' : 'text-rose-500 bg-rose-500/10')}>{b.assessment?.recoveredBy ? b.assessment.recovery === 'alternative' ? '已改用其他工具' : '已有后续检查' : b.assessment?.kind === 'finding' ? '检查发现' : b.assessment?.kind === 'unverified' ? '待验证' : b.code === undefined ? '已结束' : 'exit ' + b.code}</span>}
         <Icon n="chevron" s={13} className={cx('text-[var(--muted)] transition-transform', o && 'rotate-90')} />
       </button>
       {o && <div id={outputId} data-testid="command-output" className="bg-[#0d1017] text-[#c4cad6] font-mono text-[11.5px] leading-[1.7] px-3.5 py-2.5 max-h-44 overflow-auto">
@@ -287,8 +272,11 @@ function CmdBlock({ b, open = false, onToggle }: { b: Extract<Block, { k: 'cmd' 
   )
 }
 
-function Approval({ b, onResolve }: { b: Extract<Block, { k: 'approval' }>; onResolve: (r: string, reason?: string) => void }) {
-  const [deny, setDeny] = useState(false)
+function Approval({ b, onResolve }: { b: Extract<Block, { k: 'approval' }>; onResolve: (r: string, reason?: string) => void | Promise<void> }) {
+  const [deny, setDeny] = useState(false), [busy, setBusy] = useState(false)
+  const submitted = useRef(false), reasonInput = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (deny) reasonInput.current?.focus() }, [deny])
+  const submit = async (decision: string, reason?: string) => { if (submitted.current) return; submitted.current = true; setBusy(true); try { await onResolve(decision, reason) } catch { submitted.current = false; setBusy(false) } }
   const [reason, setReason] = useState('')
   const high = b.risk === 'high'
   if (b.res) {
@@ -302,7 +290,7 @@ function Approval({ b, onResolve }: { b: Extract<Block, { k: 'approval' }>; onRe
     )
   }
   return (
-    <div className={cx('anim-rise relative rounded-2xl p-[1px] overflow-hidden', high ? 'bg-gradient-to-br from-rose-500 to-orange-400' : 'bg-gradient-to-br from-amber-400/80 via-amber-300/40 to-[var(--line)]')}>
+    <fieldset disabled={busy} aria-busy={busy} className={cx('anim-rise relative rounded-2xl border-0 min-w-0 p-[1px] overflow-hidden', high ? 'bg-gradient-to-br from-rose-500 to-orange-400' : 'bg-gradient-to-br from-amber-400/80 via-amber-300/40 to-[var(--line)]')}>
       <div className="rounded-[15px] bg-[var(--surface-solid)] p-4">
         <div className="flex items-start gap-3">
           <div className={cx('size-9 rounded-xl grid place-items-center', high ? 'bg-rose-500/10 text-rose-500' : 'bg-amber-500/12 text-amber-600')}><Icon n="shield" s={18} /></div>
@@ -313,16 +301,16 @@ function Approval({ b, onResolve }: { b: Extract<Block, { k: 'approval' }>; onRe
           </div>
         </div>
         <div className={cx('fold-region', deny && 'open')}>
-          <div><div className="pt-3 pl-12"><input autoFocus={deny} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="告诉 AI 为什么拒绝（可选）" className="w-full h-9 px-3 rounded-lg border border-[var(--line)] bg-[var(--sunken)] outline-none focus:border-accent/50" /></div></div>
+          <div><div className="pt-3 pl-12"><input ref={reasonInput} tabIndex={deny ? 0 : -1} disabled={!deny || busy} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="告诉 AI 为什么拒绝（可选）" className="w-full h-9 px-3 rounded-lg border border-[var(--line)] bg-[var(--sunken)] outline-none focus:border-accent/50" /></div></div>
         </div>
         <div className="flex items-center gap-2 mt-4 pl-12 flex-wrap">
-          {deny ? (<><Btn v="danger" onClick={() => onResolve('deny', reason)}>确认拒绝</Btn><Btn v="ghost" onClick={() => setDeny(false)}>返回</Btn></>) : (<>
-            <Btn v="primary" onClick={() => onResolve('allow')}><Icon n="check" s={14} w={2.2} />允许</Btn>
-            {!high && b.batch && <Btn v="soft" onClick={() => onResolve('batch')}>允许本组 {b.batch} 项</Btn>}
-            {!high && b.category && <Btn v="outline" onClick={() => onResolve('category')}>本对话允许同类{b.category}</Btn>}
+          {deny ? (<><Btn v="danger" onClick={() => submit('deny', reason)}>确认拒绝</Btn><Btn v="ghost" onClick={() => setDeny(false)}>返回</Btn></>) : (<>
+            <Btn v="primary" onClick={() => submit('allow')}><Icon n="check" s={14} w={2.2} />允许</Btn>
+            {!high && b.batch && <Btn v="soft" onClick={() => submit('batch')}>允许本组 {b.batch} 项</Btn>}
+            {!high && b.category && <Btn v="outline" onClick={() => submit('category')}>本对话允许同类{b.category}</Btn>}
             <Menu align="right" trigger={() => <Btn v="ghost"><Icon n="dots" s={14} />更多许可</Btn>} items={[
-              { label: '本对话允许此规则', desc: b.rule, onClick: () => onResolve('session') },
-              { label: '始终允许此规则', desc: '保存到设置：' + b.rule, onClick: () => onResolve('always') },
+              { label: '本对话允许此规则', desc: b.rule, onClick: () => submit('session') },
+              { label: '始终允许此规则', desc: '保存到设置：' + b.rule, onClick: () => submit('always') },
             ]} />
             <span className="flex-1" />
             <Btn v="ghost" className="text-rose-500" onClick={() => setDeny(true)}>拒绝</Btn>
@@ -330,16 +318,18 @@ function Approval({ b, onResolve }: { b: Extract<Block, { k: 'approval' }>; onRe
         </div>
         <div className="mt-3 pl-12 text-[11px] text-[var(--muted)]">同类许可仅影响当前对话；高风险操作仍会询问。运行中可在输入框调整权限。<br />"始终允许"保存规则 <code className="font-mono">{b.rule}</code> · 5 分钟未处理将自动拒绝</div>
       </div>
-    </div>
+    </fieldset>
   )
 }
 
-function QuestionCard({ b, onAnswer }: { b: Extract<Block, { k: 'question' }>; onAnswer: (a: string) => void }) {
-  const [sel, setSel] = useState<string | null>(null)
+function QuestionCard({ b, onAnswer }: { b: Extract<Block, { k: 'question' }>; onAnswer: (a: string) => void | Promise<void> }) {
+  const [sel, setSel] = useState<string | null>(null), [busy, setBusy] = useState(false)
+  const submitted = useRef(false)
+  const submit = async (answer: string) => { if (submitted.current) return; submitted.current = true; setBusy(true); try { await onAnswer(answer) } catch { submitted.current = false; setBusy(false) } }
   const [other, setOther] = useState('')
   if (b.ans) return <div className="anim-fade flex items-center gap-2 text-[12.5px] text-[var(--muted)]"><Icon n="question" s={14} />{b.q}<span className="text-[var(--text)] font-medium">→ {b.ans}</span></div>
   return (
-    <div className="anim-rise rounded-2xl border border-accent/30 bg-[var(--surface-solid)] p-4 shadow-[0_8px_30px_-16px_rgba(47,79,208,.5)]">
+    <fieldset disabled={busy} aria-busy={busy} className="anim-rise min-w-0 rounded-2xl border border-accent/30 bg-[var(--surface-solid)] p-4 shadow-[0_8px_30px_-16px_rgba(47,79,208,.5)]">
       <div className="flex items-center gap-2 font-semibold text-[14px]"><Icon n="question" s={17} className="text-accent" />{b.q}</div>
       <div className="mt-3 grid gap-1.5">
         {b.opts.map((o) => (
@@ -349,8 +339,8 @@ function QuestionCard({ b, onAnswer }: { b: Extract<Block, { k: 'question' }>; o
         ))}
         <input value={other} onChange={(e) => { setOther(e.target.value); setSel(null) }} placeholder="其他，请输入…" className="h-10 px-3 rounded-xl border border-[var(--line)] bg-transparent outline-none focus:border-accent/50" />
       </div>
-      <div className="flex justify-end mt-3"><Btn v="primary" disabled={!sel && !other} onClick={() => onAnswer(sel || other)}>提交回答</Btn></div>
-    </div>
+      <div className="flex justify-end mt-3"><Btn v="primary" disabled={!sel && !other} onClick={() => submit(sel || other)}>提交回答</Btn></div>
+    </fieldset>
   )
 }
 

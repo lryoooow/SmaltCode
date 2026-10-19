@@ -6,15 +6,29 @@
  * itself). Staging only the bundle + manifests avoids that entirely — the
  * app is fully bundled, so no node_modules are needed inside the package.
  */
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, realpathSync, renameSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const appDir = join(root, 'packages', 'desktop');
 const stage = join(appDir, '.build-stage');
+const releaseDir = join(appDir, 'release');
+const require = createRequire(import.meta.url);
+// Resolve local tools up front: never let npx fetch a different builder.
+const builderCLI = require.resolve('electron-builder/cli.js');
+require.resolve('resedit');
+function assertBuildDirectory(target) {
+  const absolute = resolve(target);
+  if (![stage, releaseDir].some(allowed => absolute.toLowerCase() === resolve(allowed).toLowerCase())) throw new Error('Unexpected build directory: ' + absolute);
+  if (dirname(absolute).toLowerCase() !== realpathSync(appDir).toLowerCase()) throw new Error('Build directory escaped desktop workspace');
+  if (existsSync(absolute) && realpathSync(absolute).toLowerCase() !== absolute.toLowerCase()) throw new Error('Build directory is redirected: ' + absolute);
+}
+assertBuildDirectory(stage);
+assertBuildDirectory(releaseDir);
 
 // Package only a freshly checked renderer, with asserted startup.
 execSync('npm run typecheck', { cwd: root, stdio: 'inherit' });
@@ -32,9 +46,12 @@ execFileSync(electron, [appDir, '--smoke-test'], {
 });
 
 const pkg = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8'));
+if (pkg.version !== JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version) throw new Error('Desktop/root version mismatch');
 
-if (existsSync(stage) && realpathSync(stage).toLowerCase() !== stage.toLowerCase()) throw new Error('Unexpected staging target');
+assertBuildDirectory(stage);
 rmSync(stage, { recursive: true, force: true });
+let retainStageForRecovery = false;
+try {
 mkdirSync(join(stage, 'dist'), { recursive: true });
 cpSync(join(appDir, 'dist'), join(stage, 'dist'), { recursive: true });
 cpSync(join(appDir, 'electron-builder.yml'), join(stage, 'electron-builder.yml'));
@@ -63,9 +80,10 @@ writeFileSync(
 );
 
 console.log('[desktop] staging complete, building nsis installer…');
-execSync('npx electron-builder --win nsis', {
+execFileSync(process.execPath, [builderCLI, '--win', 'nsis'], {
   cwd: stage,
   stdio: 'inherit',
+  windowsHide: true,
   env: {
     ...process.env,
     ELECTRON_MIRROR: process.env.ELECTRON_MIRROR ?? 'https://npmmirror.com/mirrors/electron/',
@@ -74,19 +92,32 @@ execSync('npx electron-builder --win nsis', {
   },
 });
 
-// Publish one current installer; old build outputs must not remain beside it.
-const releaseDir = join(appDir, 'release');
+// Verify the candidate before replacing the previous local installer.
 const installerName = 'SmaltCode-Setup-' + pkg.version + '-SFox.exe';
 const stagedInstaller = join(stage, 'release', installerName);
 if (!existsSync(stagedInstaller)) throw new Error('Expected installer missing: ' + installerName);
-if (existsSync(releaseDir) && realpathSync(releaseDir).toLowerCase() !== releaseDir.toLowerCase()) throw new Error('Unexpected release target');
-rmSync(releaseDir, { recursive: true, force: true });
-mkdirSync(releaseDir, { recursive: true });
-cpSync(stagedInstaller, join(releaseDir, installerName));
-cpSync(join(stage, 'release', 'win-unpacked'), join(releaseDir, 'win-unpacked'), { recursive: true });
-const checksum = createHash('sha256').update(readFileSync(join(releaseDir, installerName))).digest('hex');
-writeFileSync(join(releaseDir, 'SHA256SUMS.txt'), checksum + '  ' + installerName + '\n');
-console.log('[desktop] installer ready: ' + installerName);
-for (const [script, args] of [['test-desktop-icons.mjs', []], ['test-desktop-smoke.mjs', ['--packaged']], ['test-desktop-tray.mjs', ['--packaged']]]) {
-  execFileSync(process.execPath, [join(root, 'scripts', script), ...args], { cwd: root, stdio: 'inherit', windowsHide: true });
+const candidate = join(stage, 'verified-release');
+mkdirSync(candidate);
+cpSync(stagedInstaller, join(candidate, installerName));
+renameSync(join(stage, 'release', 'win-unpacked'), join(candidate, 'win-unpacked'));
+const checksum = createHash('sha256').update(readFileSync(join(candidate, installerName))).digest('hex');
+writeFileSync(join(candidate, 'SHA256SUMS.txt'), checksum + '  ' + installerName + '\n');
+for (const [script, args] of [['test-desktop-icons.mjs', []], ['test-desktop-package.mjs', []], ['test-desktop-smoke.mjs', ['--packaged']], ['test-desktop-tray.mjs', ['--packaged']]]) {
+  execFileSync(process.execPath, [join(root, 'scripts', script), ...args, '--release-dir', candidate], { cwd: root, stdio: 'inherit', windowsHide: true });
+}
+assertBuildDirectory(releaseDir);
+const previous = join(stage, 'previous-release');
+if (existsSync(releaseDir)) renameSync(releaseDir, previous);
+try { renameSync(candidate, releaseDir); }
+catch (error) {
+  if (existsSync(previous)) {
+    try { renameSync(previous, releaseDir); }
+    catch (rollbackError) { retainStageForRecovery = true; throw new AggregateError([error, rollbackError], 'Previous release retained at ' + previous); }
+  }
+  throw error;
+}
+console.log('[desktop] installer ready: ' + join(releaseDir, installerName));
+console.log('[desktop] SHA256: ' + checksum);
+} finally {
+  if (!retainStageForRecovery) { assertBuildDirectory(stage); rmSync(stage, { recursive: true, force: true }); }
 }

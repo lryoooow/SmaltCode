@@ -12,6 +12,7 @@ import { newId, nowIso } from '../util.js';
 import { replayEvents, type ReplayedThread, type StoreEvent, type ThreadStore } from '../storage/thread-store.js';
 import { Notifications, type Item, type ThreadMeta, type ThreadStatus } from '../protocol/types.js';
 import { toolClass } from '../permissions/rules.js';
+import { displayCommand, itemAssessment } from '../protocol/assessment.js';
 
 export interface ThreadManagerDeps {
   store: ThreadStore;
@@ -65,7 +66,7 @@ export class ThreadManager {
     if (!meta) throw new Error(`thread ${threadId} has no metadata (corrupt file?)`);
     const replayed: Pick<ReplayedThread, 'history' | 'lastUsage'> = replayEvents(events);
     const settings = this.deps.settings();
-    const modelRef = resolveModelRef(meta.model.includes('/') && settings.providers[meta.model.split('/')[0]] ? meta.model : meta.model, settings);
+    const modelRef = resolveModelRef(meta.model, settings);
     // prefer stored provider when it exists
     if (meta.provider && settings.providers[meta.provider]) {
       modelRef.provider = meta.provider;
@@ -73,6 +74,12 @@ export class ThreadManager {
     const runtime = new ThreadRuntime(meta, modelRef, replayed.history);
     runtime.usage = { ...replayed.lastUsage };
     runtime.items = replayItems(events, threadId);
+    runtime.summaries = events.flatMap(event => event.t === 'turn-ended' && event.summary ? [{ ...event.summary, turnId: event.turnId }] : []);
+    const lastTurn = events.findLast(event => event.t === 'turn-started');
+    const notice = events.findLast(event => event.t === 'context-notice' && event.notice.turnId === (lastTurn?.t === 'turn-started' ? lastTurn.turnId : ''));
+    if (notice?.t === 'context-notice') runtime.contextNotice = notice.notice;
+    const ended = events.findLast(event => event.t === 'turn-ended');
+    if (meta.lastOutcome === 'failed' && ended?.t === 'turn-ended') meta.lastError ??= ended.error;
     this.runtimes.set(threadId, runtime);
     this.watchStatus(runtime);
     return runtime;
@@ -92,9 +99,27 @@ export class ThreadManager {
     return this.deps.store.listMetas(includeArchived);
   }
 
-  read(threadId: string): { meta: ThreadMeta; items: Item[] } {
+  /** Recover persisted unfinished turns once at host startup; never rerun tools. */
+  recoverInterrupted(): void {
+    for (const meta of this.deps.store.listMetas(true)) {
+      if (this.get(meta.id)?.stateMachine.isRunning()) continue;
+      const events = this.deps.store.load(meta.id) ?? [];
+      const latest = [...events].reverse().find(event => event.t === 'turn-started');
+      if (!latest || latest.t !== 'turn-started' || events.some(event => event.t === 'turn-ended' && event.turnId === latest.turnId)) continue;
+      const start = events.lastIndexOf(latest);
+      const results = new Set(events.slice(start).filter(event => event.t === 'tool-result').map(event => event.id));
+      for (const event of events.slice(start)) {
+        if (event.t !== 'tool-call' || results.has(event.id)) continue;
+        this.deps.store.append(meta.id, { t: 'tool-result', id: event.id, tool: event.tool, output: '上次任务未完整结束，该操作的结果未保存。继续前请检查实际文件和进程状态，避免重复操作。', isError: true, at: nowIso() });
+      }
+      this.deps.store.append(meta.id, { t: 'turn-ended', turnId: latest.turnId, at: nowIso(), interrupted: true });
+      this.deps.store.append(meta.id, { t: 'meta', meta: { ...meta, lastOutcome: 'interrupted', recovery: { turnId: latest.turnId, startedAt: latest.at } } });
+    }
+  }
+
+  read(threadId: string): { meta: ThreadMeta; items: Item[]; summaries: import('../protocol/types.js').TurnSummary[]; contextNotice?: import('../protocol/types.js').ContextNotice } {
     const rt = this.get(threadId) ?? this.resume(threadId);
-    return { meta: rt.meta, items: rt.items };
+    return { meta: rt.meta, items: rt.items, summaries: rt.summaries, contextNotice: rt.contextNotice };
   }
 
   status(threadId: string): ThreadStatus {
@@ -221,22 +246,29 @@ export class ThreadManager {
   }
 
   private enqueueTurn(rt: ThreadRuntime, input: import('../protocol/types.js').UserPrompt): Promise<import('./turn-runner.js').TurnOutcome> {
-    rt.abort = new AbortController();
-    rt.stateMachine.transition('RUN_PREPARING');
     const run = () => {
+      const controller = new AbortController();
+      rt.abort = controller;
+      rt.contextNotice = undefined;
+      rt.stateMachine.transition('RUN_PREPARING');
+      if (rt.meta.recovery) { delete rt.meta.recovery; this.deps.store.append(rt.meta.id, { t: 'meta', meta: { ...rt.meta } }); }
       return (this.deps.runnerFor?.(rt) ?? this.deps.runner)
         .runTurn(rt.stateMachine, this.runtimeAdapter(rt), input)
         .then((outcome) => {
+          if (outcome.summary) rt.summaries.push({ ...outcome.summary, turnId: outcome.turnId });
           rt.meta.turnCount++;
           rt.meta.updatedAt = nowIso();
           rt.meta.lastOutcome = outcome.failed ? 'failed' : outcome.interrupted ? 'interrupted' : 'completed';
+          rt.meta.lastError = outcome.failed ? outcome.error : undefined;
+          rt.meta.lastAssessment = outcome.summary?.assessment;
+          rt.meta.usage = rt.snapshotUsage();
           this.deps.store.append(rt.meta.id, { t: 'meta', meta: { ...rt.meta } });
           this.deps.notify('thread/updated', { threadId: rt.meta.id, meta: { ...rt.meta } });
           rt.notifyUsagePersisted();
           return outcome;
         })
         .finally(() => {
-          rt.abort = null;
+          if (rt.abort === controller) rt.abort = null;
           if (this.chains.get(rt.meta.id) === next) this.chains.delete(rt.meta.id);
           this.drainIfIdle(rt);
         });
@@ -279,9 +311,10 @@ export class ThreadManager {
       onHistoryReplaced: (history: import('../models/types.js').ChatMessage[]) => {
         rt.history = history;
       },
+      onContextNotice: (notice: import('../protocol/types.js').ContextNotice) => { rt.contextNotice = notice; },
       addUsage: (i: number, o: number) => rt.addUsage(i, o),
       usageTotals: () => rt.snapshotUsage(),
-      contextWindow: () => this.deps.contextWindowFor(rt.modelRef),
+      contextWindow: () => rt.runner?.contextWindow ?? this.deps.contextWindowFor(rt.modelRef),
     };
   }
 }
@@ -323,7 +356,7 @@ function replayItems(events: StoreEvent[], threadId: string): Item[] {
   const items: Item[] = [];
   const toolInputs = new Map<string, unknown>();
   let turnId = 'unknown';
-  for (const ev of events) {
+  for (const [eventIndex, ev] of events.entries()) {
     const at = 'at' in ev ? ev.at : nowIso();
     switch (ev.t) {
       case 'turn-started':
@@ -348,17 +381,23 @@ function replayItems(events: StoreEvent[], threadId: string): Item[] {
           items.push({ kind: 'fileChange', id: ev.id, threadId, turnId, createdAt: at, status: ev.isError ? 'failed' : 'completed', path: fileChangePath(ev.id, toolInputs.get(ev.id)), changeKind: fileChangeKind(ev.output), diff: ev.output.slice(0, 2000) });
         } else {
           const input = toolInputs.get(ev.id) as Record<string, unknown> | undefined;
-          const command =
-            typeof input?.command === 'string'
-              ? (input.command as string)
-              : `${ev.tool}${summarizeToolInput(input)}`;
-          items.push({ kind: 'commandExecution', id: ev.id, threadId, turnId, createdAt: at, status: ev.isError ? 'failed' : 'completed', command: command.slice(0, 300), tool: ev.tool, exitCode: ev.isError ? 1 : 0, output: ev.output.slice(0, 8000) });
+          const command = ev.tool === 'shell' ? displayCommand(input ?? {}) : `${ev.tool}${summarizeToolInput(input)}`;
+          const code = ev.output.match(/^\[exit (-?\d+)\]/);
+          items.push({ kind: 'commandExecution', id: ev.id, threadId, turnId, createdAt: at, status: ev.isError ? 'failed' : 'completed', command, tool: ev.tool, exitCode: code ? Number(code[1]) : ev.tool === 'shell' ? null : ev.isError ? 1 : 0, output: ev.output });
         }
         break;
       }
       case 'plan':
-        items.push({ kind: 'plan', id: `plan_${at}`, threadId, turnId, createdAt: at, status: 'completed', steps: ev.steps });
+        items.push({ kind: 'plan', id: ev.id ?? `plan_${turnId}_${eventIndex}_${at}`, threadId, turnId, createdAt: at, status: 'completed', steps: ev.steps });
         break;
+      case 'tool-recovered': {
+        const prior = items.find(i => i.id === ev.id && i.turnId === turnId);
+        if (prior?.kind === 'commandExecution') {
+          const assessment = itemAssessment(prior);
+          if (assessment) prior.assessment = { ...assessment, recoveredBy: ev.recoveredBy, recovery: ev.recovery ?? 'alternative' };
+        }
+        break;
+      }
       default:
         break;
     }

@@ -13,13 +13,16 @@ export type { ThreadMeta } from '../protocol/types.js';
 export type StoreEvent =
   | { t: 'meta'; meta: ThreadMeta }
   | { t: 'turn-started'; turnId: string; at: string }
-  | { t: 'turn-ended'; turnId: string; at: string; interrupted?: boolean }
-  | { t: 'user-msg'; id: string; text: string; displayText?: string; references?: import('../protocol/types.js').UserReference[]; at: string }
+  | { t: 'turn-ended'; turnId: string; at: string; interrupted?: boolean; error?: string; summary?: Omit<import('../protocol/types.js').TurnSummary, 'turnId'> }
+  | { t: 'context-notice'; notice: import('../protocol/types.js').ContextNotice; at: string }
+  | { t: 'verification-reminder'; text: string; at: string }
+  | { t: 'tool-recovered'; id: string; recoveredBy: string; recovery?: 'retry' | 'alternative'; at: string }
+  | { t: 'user-msg'; id: string; text: string; displayText?: string; references?: import('../protocol/types.js').UserReference[]; images?: import('../models/types.js').ImagePart[]; at: string }
   | { t: 'agent-msg'; id: string; text: string; at: string; status?: import('../protocol/types.js').ItemStatus }
   | { t: 'reasoning'; id: string; text: string; at: string; status?: import('../protocol/types.js').ItemStatus }
   | { t: 'tool-call'; id: string; tool: string; input: unknown; at: string }
   | { t: 'tool-result'; id: string; tool: string; output: string; isError: boolean; at: string; items?: import('../protocol/types.js').Item[] }
-  | { t: 'plan'; steps: PlanStep[]; at: string }
+  | { t: 'plan'; id?: string; steps: PlanStep[]; at: string }
   | { t: 'compacted'; summary: string; at: string; history?: ChatMessage[] }
   | { t: 'usage'; inputTokens: number; outputTokens: number; at: string };
 
@@ -48,8 +51,9 @@ export function replayEvents(events: StoreEvent[]): Pick<ReplayedThread, 'histor
 
   for (const ev of events) {
     switch (ev.t) {
+      case 'verification-reminder': history.push({ role: 'user', content: ev.text }); break;
       case 'user-msg':
-        history.push({ role: 'user', content: ev.text });
+        history.push({ role: 'user', content: ev.images?.length ? [{ type: 'text', text: ev.text }, ...ev.images] : ev.text });
         break;
       case 'agent-msg':
         history.push({ role: 'assistant', content: ev.text, reasoningContent: reasoning });

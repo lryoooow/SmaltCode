@@ -1,7 +1,7 @@
 {
   "name": "smaltcode-monorepo",
   "private": true,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "SmaltCode — a multi-model desktop coding and workspace assistant.",
   "license": "Apache-2.0",
   "type": "module",
@@ -21,7 +21,9 @@
     "package": "node scripts/package.mjs",
     "package:desktop": "node scripts/build-desktop.mjs",
     "desktop": "npm run -w @smalt/desktop start",
-    "postinstall": "node node_modules/electron/install.js"
+    "postinstall": "node node_modules/electron/install.js",
+    "preview:desktop": "node scripts/start-desktop-preview.mjs",
+    "pretest": "npm run -w @smalt/kernel build && npm run -w @smalt/cli build"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",

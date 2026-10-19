@@ -9,15 +9,17 @@
 import { realpathSync, statSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { smaltHome } from '@smalt/kernel';
+import { smaltHome, isNetworkPath, isSensitivePath } from '@smalt/kernel';
 
 const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
 
 /** Reject home, drive roots, Windows/system dirs, and the agent config dir. */
 export function isValidWorkspace(dir: string): { ok: true } | { ok: false; reason: string } {
+  if (typeof dir !== 'string' || !dir.trim() || dir.length > 4096 || isNetworkPath(dir)) return { ok: false, reason: '请选择本机项目文件夹，不支持网络共享或设备路径' };
   let real: string;
   try {
     real = norm(realpathSync(dir));
+    if (isNetworkPath(real)) return { ok: false, reason: '不支持网络共享工作区' };
     if (!statSync(dir).isDirectory()) return { ok: false, reason: '请选择文件夹，不能选择文件' };
   } catch {
     return { ok: false, reason: 'folder does not exist' };
@@ -38,6 +40,7 @@ export function isValidWorkspace(dir: string): { ok: true } | { ok: false; reaso
   if (real === config || real.startsWith(`${config}/`)) {
     return { ok: false, reason: 'the agent config directory cannot be a workspace' };
   }
+  if (isSensitivePath(real, real)) return { ok: false, reason: '敏感配置目录不能作为工作区' };
   return { ok: true };
 }
 

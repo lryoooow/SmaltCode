@@ -2,10 +2,10 @@
  * The permission chain — checked in a fixed order before any tool runs:
  *
  *   1. deny rules        (hard stop, any-segment match)
- *   2. trusted allow rules (every-segment match for shell commands)
+ *   2. plan-mode hard stop for mutating tools
  *   3. dangerous-command backstop (shell)
- *   4. ask rules
- *   5. permission mode (plan / acceptEdits / bypassPermissions / dontAsk)
+ *   4. trusted rules and temporary/category grants
+ *   5. ask rules and remaining permission modes
  *   6. secure default: ask
  *
  * A denial is never an exception: it becomes a tool result carrying the
@@ -186,15 +186,17 @@ export class PermissionService {
       }
     }
 
-    // Dangerous commands require explicit approval even under broad allow rules.
-    if (cls === 'shell') {
-      const danger = dangerousCommandCheck(input.subject);
-      if (danger.dangerous) return { action: 'ask', reason: `Dangerous command (${danger.why}) — needs explicit approval` };
-    }
     // A live switch to plan mode immediately blocks future side effects,
     // including previously remembered approvals.
     if (this.modeValue === 'plan' && cls !== 'read' && input.tool !== 'plan' && input.tool !== 'ask_user') {
       return { action: 'deny', reason: 'Plan mode is active — only read-only tools may run.' };
+    }
+    // Read-only/unattended modes cannot be relaxed by approving a dangerous call.
+    if (cls === 'shell') {
+      const danger = subjects.map(dangerousCommandCheck).find(d => d.dangerous);
+      if (danger) return this.modeValue === 'dontAsk'
+        ? { action: 'deny', reason: `Dangerous command (${danger.why}) — unattended execution is forbidden` }
+        : { action: 'ask', reason: `Dangerous command (${danger.why}) — needs explicit approval` };
     }
     // Category approval is scoped to this conversation. Explicit ask/deny and
     // dangerous commands stay authoritative over category grants.
@@ -214,14 +216,6 @@ export class PermissionService {
         if (subjects.every((subject) => ruleMatchesSubject(rule, input, subject, true))) {
           return { action: 'allow', reason: 'allowed by rule' };
         }
-      }
-    }
-
-    // 3. dangerous command backstop
-    if (cls === 'shell') {
-      const danger = dangerousCommandCheck(input.subject);
-      if (danger.dangerous) {
-        return { action: 'ask', reason: `Dangerous command (${danger.why}) — needs explicit approval` };
       }
     }
 

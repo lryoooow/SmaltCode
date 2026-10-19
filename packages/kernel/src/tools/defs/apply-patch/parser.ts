@@ -31,6 +31,7 @@ export interface PatchLine {
 export interface PatchHunk {
   /** optional `@@` anchor text (informational; matching uses context lines) */
   anchor?: string;
+  endOfFile?: boolean;
   lines: PatchLine[];
 }
 
@@ -83,7 +84,8 @@ export function parsePatch(patch: string): PatchFile[] {
         i++;
       }
       const hunks: PatchHunk[] = [];
-      while (i < lines.length && !lines[i]!.startsWith('*** ') && lines[i]!.trim() !== '') {
+      while (i < lines.length && !lines[i]!.startsWith('*** ')) {
+        if (lines[i] === '') { i++; continue; }
         const { hunk, next } = parseHunk(lines, i);
         hunks.push(hunk);
         i = next;
@@ -98,9 +100,9 @@ export function parsePatch(patch: string): PatchFile[] {
       if (!path) throw new PatchParseError('Add File requires a path', i + 1);
       i++;
       const content: string[] = [];
-      while (i < lines.length && (lines[i]!.startsWith('+') || lines[i]!.startsWith('\\***'))) {
+      while (i < lines.length && (lines[i]!.startsWith('+') || lines[i]!.startsWith('\\***') || (lines[i] === '' && lines[i + 1]?.startsWith('+')))) {
         let l = lines[i]!;
-        l = l.startsWith('\\***') ? l.slice(1) : l.slice(1);
+        l = l.slice(1);
         if (l.startsWith('\\***')) l = l.slice(1); // `+\***` escapes content starting with `***`
         content.push(l);
         i++;
@@ -135,11 +137,13 @@ function parseHunk(lines: string[], start: number): { hunk: PatchHunk; next: num
   }
 
   const out: PatchLine[] = [];
+  let endOfFile = false;
   while (i < lines.length) {
     const l = lines[i]!;
+    if (l === '*** End of File') { endOfFile = true; i++; break; }
     if (l.startsWith('***')) break;
     if (i > start && l.startsWith('@@')) break; // a new hunk begins
-    if (l.trim() === '') break; // blank line ends the hunk (section separator)
+    if (l === '' && /^(?:\*\*\*|@@)/.test(lines.slice(i + 1).find(line => line !== '') ?? '***')) break;
     if (l.startsWith('+')) {
       out.push({ kind: 'add', text: l.slice(1) });
     } else if (l.startsWith('-')) {
@@ -154,5 +158,5 @@ function parseHunk(lines: string[], start: number): { hunk: PatchHunk; next: num
   if (!out.some((p) => p.kind !== 'context')) {
     throw new PatchParseError('hunk contains no +/- changes', i);
   }
-  return { hunk: { anchor, lines: out }, next: i };
+  return { hunk: { anchor, lines: out, endOfFile }, next: i };
 }

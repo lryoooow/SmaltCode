@@ -21,7 +21,7 @@ export interface ItemBase {
 }
 
 export type UserReference = { path: string; label?: string };
-export type UserPrompt = string | { text: string; displayText?: string; references?: UserReference[] };
+export type UserPrompt = string | { text: string; displayText?: string; references?: UserReference[]; images?: import('../models/types.js').ImagePart[] };
 
 export interface UserMessageItem extends ItemBase {
   kind: 'userMessage';
@@ -46,6 +46,7 @@ export interface CommandExecutionItem extends ItemBase {
   tool?: string;
   exitCode: number | null;
   output: string;
+  assessment?: import('./assessment.js').ExecutionAssessment;
 }
 
 export type FileChangeKind = 'add' | 'update' | 'delete';
@@ -80,6 +81,7 @@ export interface UserInputRequestItem extends ItemBase {
   kind: 'userInputRequest';
   question: string;
   options?: string[];
+  answer?: string;
 }
 
 export type Item =
@@ -93,6 +95,19 @@ export type Item =
   | UserInputRequestItem;
 
 export type ItemKind = Item['kind'];
+
+export interface ContextNotice {
+  turnId: string;
+  level: 'info' | 'warning';
+  message: string;
+  reason?: string;
+  beforeTokens?: number;
+  afterTokens?: number;
+  contextWindow?: number;
+  thresholdTokens?: number;
+  /** Whole input at the trigger, including system/tool instructions. */
+  inputTokens?: number;
+}
 
 export interface ThreadMeta {
   id: string;
@@ -110,8 +125,12 @@ export interface ThreadMeta {
   approvedCategories?: Array<'edit' | 'read' | 'shell'>;
   permissionMode?: import('../permissions/rules.js').PermissionMode;
   lastOutcome?: 'completed' | 'failed' | 'interrupted';
+  lastError?: string;
+  lastAssessment?: import('./assessment.js').TurnAssessment;
   restoredFiles?: Record<string, string>;
   restoredChanges?: Record<string, string[]>;
+  usage?: { inputTokens: number; outputTokens: number };
+  recovery?: { turnId: string; startedAt: string };
 }
 
 export interface ProjectMeta {
@@ -155,8 +174,18 @@ export interface ThreadTokenUsage {
   totalInputTokens: number;
   totalOutputTokens: number;
   contextWindow: number;
+  thresholdTokens?: number;
   /** rough share of the context window currently occupied (0..1) */
   contextUsage: number;
+}
+
+export interface TurnSummary {
+  turnId: string;
+  durationMs: number;
+  toolCount: number;
+  fileCount: number;
+  usage: { inputTokens: number; outputTokens: number };
+  assessment?: import('./assessment.js').TurnAssessment;
 }
 
 /* ------------------------------------------------------------------ *
@@ -226,6 +255,7 @@ export const Notifications = {
   threadStatusChanged: 'thread/status/changed',
   threadTokenUsage: 'thread/tokenUsage/updated',
   threadCompacted: 'thread/compacted',
+  threadContextNotice: 'thread/context/notice',
   turnStarted: 'turn/started',
   turnCompleted: 'turn/completed',
   turnFailed: 'turn/failed',

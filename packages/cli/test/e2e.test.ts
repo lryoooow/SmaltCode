@@ -1,3 +1,4 @@
+import { VERSION } from '@smalt/kernel';
 /**
  * End-to-end smoke test: a fake OpenAI-compatible server + the real CLI
  * binary, exercising the full path
@@ -20,6 +21,7 @@ let home: string;
 let workdir: string;
 /** scripts the fake model serves, one per /chat/completions call */
 let scripts: string[][] = [];
+let requests: any[] = [];
 
 function sse(deltas: string[]): string {
   return deltas.map((d) => `data: ${d}\n\n`).join('') + 'data: [DONE]\n\n';
@@ -28,9 +30,9 @@ function sse(deltas: string[]): string {
 beforeAll(async () => {
   server = createServer((req, res) => {
     if (req.url?.endsWith('/chat/completions')) {
-      const script = scripts.shift() ?? [];
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end(sse(script));
+      let body = ''; req.on('data', chunk => body += chunk);
+      req.on('end', () => { requests.push(JSON.parse(body)); const script = scripts.shift() ?? [];
+        res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(sse(script)); });
       return;
     }
     res.writeHead(404);
@@ -85,7 +87,7 @@ describe('CLI end-to-end against a fake model server', () => {
     expect(help.stdout).toContain('smalt');
 
     const version = await runCli(['version']);
-    expect(version.stdout).toContain('0.0.1');
+    expect(version.stdout).toContain(VERSION);
   });
 
   it('--help and --version flags work and never print a stack trace', async () => {
@@ -96,7 +98,7 @@ describe('CLI end-to-end against a fake model server', () => {
 
     const version = await runCli(['--version']);
     expect(version.code).toBe(0);
-    expect(version.stdout.trim()).toBe('smalt 0.0.1');
+    expect(version.stdout.trim()).toBe(`smalt ${VERSION}`);
     expect(version.stderr).toBe('');
   });
 
@@ -117,6 +119,7 @@ describe('CLI end-to-end against a fake model server', () => {
     expect(result.stdout).toContain('THE FILE SAYS: greetings');
     // the read tool ran for real (its item rendered into the transcript)
     expect(result.stdout).toContain('read');
+    expect(requests.at(-1).messages.findLast((m: any) => m.role === 'tool')).toMatchObject({ content: expect.stringContaining('greetings from the file') });
   });
 
   it('runs an allowed shell command without prompting', async () => {
@@ -130,6 +133,8 @@ describe('CLI end-to-end against a fake model server', () => {
     const result = await runCli(['-p', 'run the echo']);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('smalt-e2e-ok');
+    const output = requests.at(-1).messages.findLast((m: any) => m.role === 'tool').content;
+    expect(output.trim()).toBe('[exit 0]\nsmalt-e2e-ok');
   });
 
   it('REGRESSION: unapproved commands fail closed on non-interactive stdin', async () => {

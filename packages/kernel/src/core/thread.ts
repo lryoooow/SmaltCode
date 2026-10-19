@@ -12,6 +12,8 @@ export class ThreadRuntime {
   /** user inputs queued while a turn is running (drained when idle) */
   readonly turnQueue: UserPrompt[] = [];
   items: Item[] = [];
+  summaries: import('../protocol/types.js').TurnSummary[] = [];
+  contextNotice?: import('../protocol/types.js').ContextNotice;
   history: ChatMessage[];
   abort: AbortController | null = null;
   usage = { inputTokens: 0, outputTokens: 0 };

@@ -10,8 +10,8 @@ import type {
   ThreadTokenUsage,
 } from '@smalt/kernel';
 
-const supportsColor = process.stdout.isTTY && !process.env.NO_COLOR;
-const c = (code: string, s: string) => (supportsColor ? `\x1b[${code}m${s}\x1b[0m` : s);
+const supportsColor = () => process.stdout.isTTY && !process.env.NO_COLOR;
+const c = (code: string, s: string) => (supportsColor() ? `\x1b[${code}m${s}\x1b[0m` : s);
 const dim = (s: string) => c('2', s);
 const bold = (s: string) => c('1', s);
 const yellow = (s: string) => c('33', s);
@@ -33,7 +33,7 @@ export class TerminalRenderer {
       case 'item/reasoning/textDelta': {
         // reasoning is shown dimly, inline before the answer
         this.beginStream();
-        if (supportsColor) process.stdout.write(dim(String(p.delta ?? '')));
+        if (supportsColor()) process.stdout.write(dim(String(p.delta ?? '')));
         else process.stdout.write(String(p.delta ?? ''));
         break;
       }
@@ -150,7 +150,7 @@ export class TerminalRenderer {
   }
 
   error(msg: string): void {
-    process.stdout.write(`${red(`✗ ${msg}`)}\n`);
+    process.stderr.write(`${red(`✗ ${msg}`)}\n`);
   }
 
   info(msg: string): void {

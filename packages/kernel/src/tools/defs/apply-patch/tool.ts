@@ -1,6 +1,7 @@
 import { applyPatch } from './apply.js';
 import { parsePatch } from './parser.js';
 import type { ToolDefinition, ToolEvent } from '../../types.js';
+import { budgetToolOutput, diffPreview } from '../../../util.js';
 
 /** every path a patch touches, including Move to targets */
 export function patchTargets(patch: string): string[] {
@@ -63,10 +64,10 @@ Rules:
       }
       yield {
         type: 'result',
-        text: `${report.summary}\n\n${report.changes
+        text: budgetToolOutput(`${report.summary}\n\n${report.changes
           .filter((c) => c.diff)
-          .map((c) => c.diff)
-          .join('\n\n')}`,
+          .map((c) => diffPreview(c.diff!))
+          .join('\n\n')}`, 6000),
       };
     } catch (err) {
       yield {

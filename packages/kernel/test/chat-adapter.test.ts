@@ -29,10 +29,39 @@ async function collect(gen: AsyncIterable<ModelDelta>): Promise<ModelDelta[]> {
   for await (const d of gen) out.push(d);
   return out;
 }
+it('uses the modern OpenAI output limit parameter without changing other compatible providers', async () => {
+  for (const [baseUrl, field] of [['https://api.openai.com/v1', 'max_completion_tokens'], ['https://proxy.example/v1', 'max_tokens']]) {
+    let sent: any;
+    const model = new ChatCompletionsAdapter({ baseUrl: baseUrl!, apiKey: 'test', fetchImpl: (async (_url, request) => { sent = JSON.parse(String(request?.body)); return sseResponse([{ choices: [{ delta: { content: 'summary' }, finish_reason: 'stop' }] }]); }) as typeof fetch });
+    await collect(model.stream({ model: 'gpt-5.2', messages: [{ role: 'user', content: 'summarize' }], tools: [], maxOutputTokens: 4096 }));
+    expect(sent[field!]).toBe(4096); expect(sent[field === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens']).toBeUndefined();
+  }
+});
 
 const MESSAGES: ChatMessage[] = [{ role: 'user', content: 'hi' }];
 
 describe('ChatCompletionsAdapter', () => {
+  it('does not retry unrelated 400s and prevents provider HTTP redirects', async () => {
+    let requests = 0;
+    const a = adapter(async (_url, init) => { requests++; expect(init?.redirect).toBe('error'); return new Response('context window exceeded', { status: 400 }); });
+    await expect(collect(a.stream({ model: 'm', messages: MESSAGES, tools: [] }))).rejects.toMatchObject({ status: 400 });
+    expect(requests).toBe(1);
+  });
+  it('keeps index-less parallel calls separate using stable IDs', async () => {
+    const a = adapter(async () => sseResponse([
+      { choices: [{ delta: { tool_calls: [{ id: 'a', function: { name: 'read', arguments: '{' } }, { id: 'b', function: { name: 'read', arguments: '{' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ id: 'b', function: { arguments: '"path":"b"}' } }, { id: 'a', function: { arguments: '"path":"a"}' } }] }, finish_reason: 'tool_calls' }] },
+    ]));
+    const deltas = await collect(a.stream({ model: 'm', messages: MESSAGES, tools: [] }));
+    for (const id of ['a', 'b']) expect(deltas.filter(d => d.type === 'toolCallDelta' && d.id === id).map(d => (d as any).argsDelta).join('')).toBe(`{"path":"${id}"}`);
+  });
+  it('rejects ambiguous index-less continuations instead of merging tools', async () => {
+    const a = adapter(async () => sseResponse([
+      { choices: [{ delta: { tool_calls: [{ id: 'a', function: { name: 'read' } }, { id: 'b', function: { name: 'read' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ function: { arguments: '{}' } }] }, finish_reason: 'tool_calls' }] },
+    ]));
+    await expect(collect(a.stream({ model: 'm', messages: MESSAGES, tools: [] }))).rejects.toThrow('Ambiguous');
+  });
   it('streams text and maps finish_reason stop', async () => {
     const a = adapter(async () =>
       sseResponse([

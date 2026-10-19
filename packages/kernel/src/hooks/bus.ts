@@ -81,12 +81,12 @@ export class HookBus {
   private hooks: RegisteredHook[] = [];
   private commandHooks: Partial<Record<HookEvent, CommandHookConfig[]>> = {};
 
-  constructor(private readonly log: (msg: string) => void = () => {}, private readonly parent?: HookBus) {
+  constructor(private readonly log: (msg: string) => void = () => {}, private readonly parent?: HookBus, private readonly context: HookContext = {}) {
     this.emitter.setMaxListeners(100);
   }
 
-  fork(config: Partial<Record<HookEvent, CommandHookConfig[]>>): HookBus {
-    const bus = new HookBus(this.log, this);
+  fork(config: Partial<Record<HookEvent, CommandHookConfig[]>>, context: HookContext = {}): HookBus {
+    const bus = new HookBus(this.log, this, context);
     bus.setCommandHooks(config);
     return bus;
   }
@@ -112,6 +112,7 @@ export class HookBus {
    * treating hooks as security guards must degrade to `ask`, not pass through.
    */
   async emit(event: HookEvent, payload: HookContext): Promise<HookResult | null> {
+    payload = { ...this.context, ...payload };
     let decision: HookResult | null = null;
     const markFailed = (why: string) => {
       this.log(`hook failed for ${event}: ${why}`);
@@ -186,7 +187,7 @@ async function runCommandHook(
     child = spawn(
       isWin ? 'cmd.exe' : 'sh',
       isWin ? ['/d', '/s', '/c', cfg.command] : ['-c', cfg.command],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
+      { stdio: ['pipe', 'pipe', 'pipe'], cwd: typeof payload.cwd === 'string' ? payload.cwd : undefined, windowsHide: true },
     );
   } catch {
     return 'failed';
@@ -198,8 +199,10 @@ async function runCommandHook(
   }, cfg.timeoutMs ?? 10_000);
 
   const stdoutChunks: Buffer[] = [];
-  child.stdout.on('data', (d: Buffer) => stdoutChunks.push(d));
+  let bytes = 0;
+  child.stdout.on('data', (d: Buffer) => { bytes += d.length; if (bytes > 64 * 1024) { timedOut = true; child.kill(); } else stdoutChunks.push(d); });
   child.stderr.on('data', () => {});
+  child.stdin.on('error', () => {});
   child.stdin.end(JSON.stringify({ event, ...payload }));
 
   const code = await new Promise<number>((resolve) => {
@@ -207,8 +210,8 @@ async function runCommandHook(
     child.on('error', () => resolve(-1));
   });
   clearTimeout(timer);
-  if (timedOut || code < 0) return 'failed';
-  if (code !== 0 || stdoutChunks.length === 0) return null;
+  if (timedOut || code !== 0) return 'failed';
+  if (stdoutChunks.length === 0) return null;
 
   try {
     const parsed = JSON.parse(Buffer.concat(stdoutChunks).toString('utf8')) as Record<string, unknown>;

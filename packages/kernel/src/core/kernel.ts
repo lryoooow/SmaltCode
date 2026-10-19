@@ -1,3 +1,6 @@
+import { RpcError, RpcErrorCode } from '../protocol/rpc.js';
+import { VERSION } from '../version.js';
+import { estimateHistoryTokens } from '../models/types.js';
 /**
  * Kernel assembly — wires every subsystem together and exposes:
  *   - `handle(method, params)`: the JSON-RPC method surface (transport-agnostic)
@@ -50,6 +53,8 @@ export interface ClientPort {
 }
 
 export interface KernelOptions {
+  /** Hosts may opt into bounded metadata discovery before a turn. */
+  modelDiscovery?: boolean;
   cwd?: string;
   /** override loaded settings (tests, flags) */
   settings?: Settings;
@@ -58,7 +63,7 @@ export interface KernelOptions {
   log?: (msg: string) => void;
 }
 
-const KERNEL_VERSION = '0.0.1';
+const KERNEL_VERSION = VERSION;
 
 export class Kernel {
   private settings: Settings;
@@ -87,7 +92,7 @@ export class Kernel {
     this.checkpoints = new CheckpointStore();
     this.hooks = new HookBus(this.logFn);
     this.hooks.setCommandHooks(this.settings.hooks as Partial<Record<HookEvent, never>> ?? {});
-    this.gateway = new ModelGateway(this.settings);
+    this.gateway = new ModelGateway(this.settings, { automaticDiscovery: opts.modelDiscovery });
     this.tools = new ToolRegistry();
     this.permissions = new PermissionService(
       this.settings.permissions.deny.map((r) => parseRule(r, 'user')),
@@ -182,7 +187,7 @@ export class Kernel {
     if (rt.runner && rt.settingsRevision === this.settingsRevision && rt.settingsFingerprint === fingerprint) return rt.runner;
     this.updatePermissions(rt);
     const permissions = rt.permissions!;
-    const hooks = this.hooks.fork(settings.hooks ?? {});
+    const hooks = this.hooks.fork(settings.hooks ?? {}, { cwd: rt.meta.cwd, threadId: rt.meta.id });
     const gateway = this.gateway.fork(settings);
     const orchestrator = new ToolOrchestrator({
       checkpoints: this.checkpoints,
@@ -216,7 +221,15 @@ export class Kernel {
 
   /** JSON-RPC method surface. Throws RpcError-shaped Errors on failure. */
   async handle(method: string, params: unknown): Promise<unknown> {
-    const p = (params ?? {}) as Record<string, never>;
+    if (params !== undefined && params !== null && (typeof params !== 'object' || Array.isArray(params))) throw new RpcError(RpcErrorCode.InvalidParams, 'params must be an object');
+    const values = (params ?? {}) as Record<string, unknown>;
+    for (const key of ['cwd', 'model', 'title', 'threadId', 'projectId', 'input', 'displayText', 'checkpointId', 'name', 'instructions']) {
+      const value = values[key];
+      if (value === undefined || value === null && (key === 'projectId' || key === 'cwd')) continue;
+      if (typeof value !== 'string' || value.length > (key === 'input' ? 500000 : key === 'instructions' ? 20000 : 10000)) throw new RpcError(RpcErrorCode.InvalidParams, 'Invalid parameter: ' + key);
+    }
+    if (values.includeArchived !== undefined && typeof values.includeArchived !== 'boolean') throw new RpcError(RpcErrorCode.InvalidParams, 'Invalid includeArchived');
+    const p = values as Record<string, never>;
     switch (method) {
       case Methods.initialize:
         return this.initialize();
@@ -245,7 +258,12 @@ export class Kernel {
 
       case Methods.threadRead: {
         const r = this.threads.read(p.threadId as unknown as string);
-        return { meta: r.meta, items: r.items, status: this.threads.status(p.threadId as unknown as string) };
+        const rt = this.threads.require(r.meta.id), total = rt.snapshotUsage();
+        const activeRunner = rt.stateMachine.isRunning() ? rt.runner : undefined;
+        const threadSettings = loadSettings(rt.meta.cwd, undefined, this.settings);
+        const contextWindow = activeRunner?.contextWindow ?? this.gateway.fork(threadSettings).contextWindowFor(rt.modelRef);
+        const estimate = estimateHistoryTokens(rt.history) + (rt.runner?.contextOverhead ?? 0);
+        return { ...r, status: this.threads.status(r.meta.id), usage: { inputTokens: estimate, outputTokens: total.outputTokens, totalInputTokens: total.inputTokens, totalOutputTokens: total.outputTokens, contextWindow, thresholdTokens: activeRunner?.thresholdTokens ?? Math.floor(contextWindow * threadSettings.compact.threshold), contextUsage: Math.min(1, estimate / contextWindow) } };
       }
 
       case Methods.threadArchive:
@@ -293,14 +311,14 @@ export class Kernel {
         this.checkpoints.assertAvailable(this.threads.require(String(p.threadId)).meta.cwd);
         const outcome = await this.threads.runTurn(
           p.threadId as unknown as string,
-          { text: String(p.input ?? ''), displayText: typeof p.displayText === 'string' ? p.displayText : undefined, references: this.userReferences(p.references) },
+          { text: String(p.input ?? ''), displayText: typeof p.displayText === 'string' ? p.displayText : undefined, references: this.userReferences(p.references), images: this.userImages(p.images) },
         );
         return outcome;
       }
 
       case Methods.turnSteer:
         this.checkpoints.assertAvailable(this.threads.require(String(p.threadId)).meta.cwd);
-        return this.threads.steer(p.threadId as unknown as string, { text: String(p.message ?? ''), displayText: typeof p.displayText === 'string' ? p.displayText : undefined, references: this.userReferences(p.references) });
+        return this.threads.steer(p.threadId as unknown as string, { text: String(p.message ?? ''), displayText: typeof p.displayText === 'string' ? p.displayText : undefined, references: this.userReferences(p.references), images: this.userImages(p.images) });
 
       case 'checkpoint/list': {
         const { meta } = this.threads.read(String(p.threadId));
@@ -336,7 +354,7 @@ export class Kernel {
       }
 
       default:
-        throw new Error(`method not found: ${method}`);
+        throw new RpcError(RpcErrorCode.MethodNotFound, `method not found: ${method}`);
     }
   }
 
@@ -344,6 +362,17 @@ export class Kernel {
     if (value === undefined) return undefined;
     if (!Array.isArray(value) || value.length > 10 || value.some(ref => !ref || typeof ref.path !== 'string' || ref.path.length > 4096 || (ref.label !== undefined && (typeof ref.label !== 'string' || ref.label.length > 4096)))) throw new Error('无效的文件引用');
     return value.map(ref => ({ path: ref.path, label: ref.label }));
+  }
+
+  private userImages(value: unknown): import('../models/types.js').ImagePart[] | undefined {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value) || value.length > 4) throw new Error('每条消息最多添加 4 张图片');
+    let total = 0;
+    return value.map(image => {
+      if (!image || image.type !== 'image' || !['image/png', 'image/jpeg'].includes(image.mimeType) || typeof image.dataBase64 !== 'string' || image.dataBase64.length > 12 * 1024 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.dataBase64)) throw new Error('无效的图片输入');
+      total += image.dataBase64.length; if (total > 28 * 1024 * 1024) throw new Error('图片合计超过 20 MB，请减少图片');
+      return { type: 'image', mimeType: image.mimeType, dataBase64: image.dataBase64 };
+    });
   }
 
   private validMode(value: unknown): ThreadMeta['permissionMode'] {

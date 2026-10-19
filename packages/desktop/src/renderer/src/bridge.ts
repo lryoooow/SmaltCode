@@ -1,17 +1,31 @@
-import type { ApprovalDecision, ApprovalRequest, Item, ThreadMeta, ProjectMeta, ThreadStatus, ThreadTokenUsage, UserInputRequest } from '../../../../kernel/src/protocol/types'
+import type { ApprovalDecision, ApprovalRequest, Item, ThreadMeta, ProjectMeta, ThreadStatus, ThreadTokenUsage, UserInputRequest, ContextNotice } from '../../../../kernel/src/protocol/types'
+import { itemAssessment } from '../../../../kernel/src/protocol/assessment'
+
+function annotateResult(item: Item): Item {
+  if (item.kind !== 'commandExecution' || item.assessment || item.status === 'inProgress') return item
+  const assessment = itemAssessment(item)
+  return assessment ? { ...item, assessment } : item
+}
 
 export type { ApprovalDecision, ApprovalRequest, Item, ThreadMeta, ProjectMeta, ThreadStatus, ThreadTokenUsage, UserInputRequest }
 export type SettingsData = {
-  providers: Record<string, { baseUrl: string; wire: string; apiKeyEnv?: string; hasKey: boolean; defaultModel?: string }>
+  catalogs?: Record<string, import('../../../../kernel/src/models/catalog').CatalogResult>
+  providers: Record<string, { baseUrl: string; wire: 'chat' | 'anthropic'; apiKeyEnv?: string; hasKey: boolean; defaultModel?: string; contextWindow?: number; modelContextWindows?: Record<string, number | null> }>
+  compactThreshold?: number
   effective: { defaultProvider: string; defaultModel: string; permissionMode: string }
   keyStorage: 'encrypted' | 'session'
 }
-export type FilePreview = { binary: boolean; size: number; text: string; reason?: string; digest?: string }
+export type FilePreview = { binary: boolean; size: number; text: string; reason?: string; digest?: string } & Partial<import('../../shared/documents').DocumentContent> & { dataUrl?: string }
+export type Skill = import('../../main/skills').Skill
+export type SkillPreview = import('../../main/skills').SkillPreview & { token: string }
+export type Attachment = import('../../shared/documents').Attachment
+export type DesktopOverview = import('../../shared/overview').DesktopOverview
 export type ContextReference = { path: string; start?: number; end?: number; digest?: string; label?: string }
 export type Checkpoint = import('../../../../kernel/src/storage/checkpoints').CheckpointSummary
 export interface DesktopAPI {
   version: string
   platform: string
+  developmentPreview?: boolean
   call<T = unknown>(method: string, params?: unknown): Promise<T>
   onNotify(cb: (method: string, params: unknown) => void): () => void
   onApproval(cb: (req: ApprovalRequest) => void): () => void
@@ -21,13 +35,21 @@ export interface DesktopAPI {
   respondInput(id: string, text: string): Promise<void>
   pickFolder(defaultPath?: string): Promise<{ canceled: true; reason?: string } | { canceled: false; dir: string }>
   pickFiles(): Promise<string[]>
+  skills<T = unknown>(action: string, value?: unknown): Promise<T>
+  pickAttachments(): Promise<{ attachments: Attachment[]; errors: string[] }>
+  pasteImage(base64: string, mime: string): Promise<Attachment>
+  attachment(id: string): Promise<FilePreview>
+  overview(): Promise<DesktopOverview>
+  exportDiagnostics(): Promise<{ canceled: boolean }>
   searchFiles(cwd: string, query: string): Promise<{ files: string[]; truncated: boolean }>
-  resolveContext(cwd: string, refs: ContextReference[]): Promise<{ text: string; references: Array<{ path: string; label: string }> }>
+  previewFile(cwd: string, path: string): Promise<FilePreview>
+  resolveContext(cwd: string, refs: ContextReference[]): Promise<{ text: string; references: Array<{ path: string; label: string }>; images?: import('../../../../kernel/src/models/types').ImagePart[] }>
   activity(threadId: string | null, enabled: boolean): Promise<void>
   onNavigate(cb: (threadId: string) => void): () => void
   loadSettings(): Promise<SettingsData>
   saveSettings(patch: Record<string, unknown>): Promise<{ ok: boolean }>
   testProvider(provider: string, model: string): Promise<{ ok: boolean }>
+  listModels?(provider: string, force?: boolean, model?: string): Promise<import('../../../../kernel/src/models/catalog').CatalogResult>
   file(threadId: string, path: string, action: 'read' | 'reveal'): Promise<FilePreview>
   windowControl(action: 'minimize' | 'maximize' | 'close'): Promise<void>
 }
@@ -36,10 +58,11 @@ declare global { interface Window { smalt?: DesktopAPI } }
 export const errorText = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : String(error)
 export const folderName = (dir: string) => dir.replace(/\\/g, '/').replace(/\/$/, '').split('/').pop() || dir
 
-export type TurnSummary = { turnId: string; durationMs: number; toolCount: number; fileCount: number; usage: { inputTokens: number; outputTokens: number } }
+export type TurnSummary = import('../../../../kernel/src/protocol/types').TurnSummary
 export type Session = {
   meta: ThreadMeta; items: Item[]; status?: ThreadStatus; usage?: ThreadTokenUsage; error?: string
-  summaries: TurnSummary[]; interrupted?: boolean; unread?: boolean; sending?: boolean
+  contextNotice?: ContextNotice
+  summaries: TurnSummary[]; runningSince?: number; interrupted?: boolean; unread?: boolean; sending?: boolean
   approvals: Record<string, ApprovalRequest>; questions: Record<string, UserInputRequest>
 }
 export type Snapshot = { connected: boolean; loading: boolean; error?: string; sessions: Record<string, Session>; projects: ProjectMeta[]; settings?: SettingsData }
@@ -51,6 +74,11 @@ export class DesktopStore {
   private listeners = new Set<() => void>()
   private boot?: Promise<void>
   private unsubscribe: Array<() => void> = []
+  private epoch = 0
+  private settingsEpoch = 0
+  private catalogRequests = new Map<string, Promise<import('../../../../kernel/src/models/catalog').CatalogResult | undefined>>()
+  private deltaTimer?: ReturnType<typeof setTimeout>
+  private deltas = new Map<string, Map<string, string>>()
   private current: string | null = null
   private seen = readSeen()
   private rememberRead(id: string) {
@@ -73,11 +101,12 @@ export class DesktopStore {
     if (this.current === meta.id) this.rememberRead(meta.id)
     this.commit({ sessions: { ...this.state.sessions, [meta.id]: previous ? { ...previous, meta } : {
       meta, items: [], summaries: [], approvals: {}, questions: {},
-      interrupted: meta.lastOutcome === 'interrupted', error: meta.lastOutcome === 'failed' ? '上次执行失败，请查看对话或继续任务。' : undefined,
+      interrupted: meta.lastOutcome === 'interrupted', error: meta.lastOutcome === 'failed' ? meta.lastError ?? '上次执行失败，请查看下方具体操作记录。旧版未保存任务终止原因。' : undefined,
       unread: meta.turnCount > 0 && Date.parse(meta.updatedAt) > (this.seen[meta.id] ?? 0),
     } } })
   }
   private item(item: Item) {
+    item = annotateResult(item)
     this.update(item.threadId, s => {
       const index = s.items.findIndex(i => i.id === item.id)
       const items = [...s.items]
@@ -88,6 +117,8 @@ export class DesktopStore {
   initialize() {
     if (this.boot) return this.boot
     if (!this.api) { this.commit({ loading: false, error: '桌面内核未连接。请使用 SmaltCode 桌面程序打开这个界面。' }); return Promise.resolve() }
+    const epoch = ++this.epoch
+    this.unsubscribe.splice(0).forEach(off => off())
     this.unsubscribe = [
       this.api.onNotify((m, p) => this.notify(m, p)),
       this.api.onApproval(req => this.update(req.threadId, s => ({ ...s, approvals: { ...s.approvals, [req.itemId]: req } }))),
@@ -105,14 +136,18 @@ export class DesktopStore {
       try {
         await this.api!.call('initialize')
         const [result, settings, projects] = await Promise.all([this.api!.call<{ threads: ThreadMeta[] }>('thread/list', { includeArchived: true }), this.api!.loadSettings(), this.api!.call<{ projects: ProjectMeta[] }>('project/list')])
+        if (epoch !== this.epoch) return
         result.threads.forEach(meta => this.upsert(meta))
         this.commit({ connected: true, loading: false, settings, projects: projects.projects ?? [], error: undefined })
-      } catch (err) { this.commit({ connected: false, loading: false, error: errorText(err) }); this.boot = undefined }
+        this.refreshConfiguredModels()
+      } catch (err) { if (epoch === this.epoch) { this.unsubscribe.splice(0).forEach(off => off()); this.commit({ connected: false, loading: false, error: errorText(err) }); this.boot = undefined } }
     })()
     return this.boot
   }
   private notify(method: string, value: unknown) {
-    const p = value as { threadId?: string; meta?: ThreadMeta; item?: Item; itemId?: string; turnId?: string; delta?: string; error?: string; usage?: ThreadTokenUsage; summary?: Omit<TurnSummary, 'turnId'>; interrupted?: boolean } & Partial<ThreadStatus>
+    const delta = method.endsWith('/delta') || method.endsWith('/textDelta') || method.endsWith('/outputDelta')
+    if (!delta) this.flushDeltas()
+    const p = value as { threadId?: string; meta?: ThreadMeta; item?: Item; itemId?: string; turnId?: string; delta?: string; error?: string; usage?: ThreadTokenUsage; summary?: Omit<TurnSummary, 'turnId'>; interrupted?: boolean; notice?: ContextNotice } & Partial<ThreadStatus>
     if (p.meta) this.upsert(p.meta)
     if ((method === 'item/started' || method === 'item/completed') && p.item) this.item(p.item)
     if (!p.threadId) return
@@ -121,32 +156,54 @@ export class DesktopStore {
     if (method === 'thread/deleted') { const sessions = { ...this.state.sessions }; delete sessions[id]; this.commit({ sessions }); return }
     if (method === 'thread/archived') this.update(id, s => ({ ...s, meta: { ...s.meta, archived: true } }))
     if (method === 'thread/status/changed') this.update(id, s => ({ ...s, status: p as ThreadStatus }))
-    if (method.endsWith('/delta') || method.endsWith('/textDelta') || method.endsWith('/outputDelta')) {
-      this.update(id, s => ({ ...s, items: s.items.map(item => {
-        if (item.id !== p.itemId) return item
-        if (item.kind === 'agentMessage' || item.kind === 'reasoning') return { ...item, text: item.text + (p.delta ?? '') }
-        if (item.kind === 'commandExecution') return { ...item, output: (item.output + (p.delta ?? '')).slice(-30000) }
-        return item
-      }) }))
+    if (delta && p.itemId) {
+      const pending = this.deltas.get(id) ?? new Map<string, string>()
+      const value = (pending.get(p.itemId) ?? '') + (p.delta ?? '')
+      pending.set(p.itemId, method.endsWith('/outputDelta') ? value.slice(-30000) : value); this.deltas.set(id, pending)
+      this.deltaTimer ??= setTimeout(() => this.flushDeltas(), 50)
     }
     if (method === 'thread/tokenUsage/updated') this.update(id, s => ({ ...s, usage: p.usage }))
-    if (method === 'turn/started') this.update(id, s => ({ ...s, error: undefined, interrupted: false, unread: false, sending: false }))
+    if (method === 'thread/context/notice') this.update(id, s => ({ ...s, contextNotice: p.notice }))
+    if (method === 'turn/started') this.update(id, s => ({ ...s, runningSince: Date.now(), error: undefined, contextNotice: undefined, interrupted: false, unread: false, sending: false }))
     if (method === 'turn/failed' || method === 'turn/completed') this.update(id, s => ({
-      ...s, error: p.error, interrupted: p.interrupted, sending: false,
+      ...s, runningSince: undefined, error: p.error, interrupted: p.interrupted, sending: false,
       unread: id !== this.current, approvals: {}, questions: {},
       items: s.items.filter(i => !(i.kind === 'commandExecution' && i.tool === 'plan' && i.status === 'inProgress')).map(i => i.status === 'inProgress' ? { ...i, status: p.interrupted || p.error ? 'failed' : 'completed' } : i),
       summaries: p.summary ? [...s.summaries, { ...p.summary, turnId: p.turnId! }] : s.summaries,
     }))
   }
+  private flushDeltas() {
+    if (this.deltaTimer) clearTimeout(this.deltaTimer)
+    this.deltaTimer = undefined
+    if (!this.deltas.size) return
+    const pending = this.deltas; this.deltas = new Map()
+    const sessions = { ...this.state.sessions }
+    for (const [id, parts] of pending) {
+      const session = sessions[id]; if (!session) continue
+      sessions[id] = { ...session, items: session.items.map(item => {
+        const text = parts.get(item.id); if (!text) return item
+        if (item.kind === 'agentMessage' || item.kind === 'reasoning') return { ...item, text: item.text + text }
+        if (item.kind === 'commandExecution') return { ...item, output: (item.output + text).slice(-30000) }
+        return item
+      }) }
+    }
+    this.commit({ sessions })
+  }
   async open(id: string) {
     this.current = id
-    const result = await this.api!.call<{ meta: ThreadMeta; items: Item[]; status: ThreadStatus }>('thread/read', { threadId: id })
+    this.flushDeltas()
+    const before = this.state.sessions[id]
+    const result = await this.api!.call<{ meta: ThreadMeta; items: Item[]; status: ThreadStatus; usage?: ThreadTokenUsage; summaries?: TurnSummary[]; contextNotice?: ContextNotice }>('thread/read', { threadId: id })
+    this.flushDeltas()
     this.upsert(result.meta)
     this.update(id, s => {
-      const items = new Map(result.items.map(i => [i.id, i]))
-      s.items.forEach(i => items.set(i.id, i))
+      const items = new Map(result.items.map(i => [i.id, annotateResult(i)]))
+      const initial = new Map(before?.items.map(item => [item.id, item]) ?? [])
+      s.items.forEach(i => { if (i !== initial.get(i.id) || i.status === 'inProgress' && result.status?.lifecycle !== 'idle') items.set(i.id, i) })
       if (this.current === id) this.rememberRead(id)
-      return { ...s, items: [...items.values()], status: s.status ?? result.status, unread: this.current === id ? false : s.unread }
+      const liveTurnChanged = s.runningSince !== before?.runningSince || s.status !== before?.status
+      const keepLiveError = liveTurnChanged || result.status.lifecycle !== 'idle' || s.error !== before?.error
+      return { ...s, items: [...items.values()], status: s.status !== before?.status ? s.status : result.status, usage: s.usage !== before?.usage ? s.usage : result.usage ?? s.usage, summaries: s.summaries !== before?.summaries ? s.summaries : result.summaries ?? s.summaries, contextNotice: liveTurnChanged || s.contextNotice !== before?.contextNotice ? s.contextNotice : result.contextNotice, error: keepLiveError ? s.error : result.meta.lastOutcome === 'failed' ? result.meta.lastError ?? s.error : undefined, unread: this.current === id ? false : s.unread }
     })
   }
   select(id: string | null) { this.current = id }
@@ -155,7 +212,7 @@ export class DesktopStore {
     this.commit({ sessions: Object.fromEntries(Object.entries(this.state.sessions).map(([id, s]) => [id, { ...s, unread: false }])) })
   }
   busy(id: string) { const s = this.state.sessions[id]; return !!s && (!!s.sending || (!!s.status && s.status.lifecycle !== 'idle')) }
-  async send(id: string | null, text: string, cwd: string, model: string, permissionMode: string, projectId?: string, context?: { text: string; references: Array<{ path: string; label: string }> }): Promise<string> {
+  async send(id: string | null, text: string, cwd: string, model: string, permissionMode: string, projectId?: string, context?: { text: string; references: Array<{ path: string; label: string }>; images?: import('../../../../kernel/src/models/types').ImagePart[] }): Promise<string> {
     if (!this.api || !this.state.connected) throw new Error('内核未连接')
     let threadId = id
     if (!threadId) {
@@ -165,17 +222,33 @@ export class DesktopStore {
     }
     const input = text + (context?.text ?? ''), displayText = text, references = context?.references
     if (this.busy(threadId)) {
-      await this.api.call('turn/steer', { threadId, message: input, displayText, references })
+      await this.api.call('turn/steer', { threadId, message: input, displayText, references, images: context?.images })
       this.update(threadId, s => ({ ...s, status: s.status ? { ...s.status, queuedMessages: s.status.queuedMessages + 1 } : s.status }))
     } else {
       this.update(threadId, s => ({ ...s, sending: true, error: undefined }))
-      void this.api.call('turn/start', { threadId, input, displayText, references }).catch(err => this.update(threadId!, s => ({ ...s, sending: false, error: errorText(err) })))
+      void this.api.call('turn/start', { threadId, input, displayText, references, images: context?.images }).catch(err => this.update(threadId!, s => ({ ...s, sending: false, error: errorText(err) })))
     }
     return threadId
   }
   async updateSettings(patch: Record<string, unknown>) {
+    ++this.settingsEpoch
     await this.api!.saveSettings(patch)
     this.commit({ settings: await this.api!.loadSettings() })
+    this.refreshConfiguredModels()
+  }
+  private refreshConfiguredModels() {
+    for (const [id, provider] of Object.entries(this.state.settings?.providers ?? {})) if (provider.hasKey && (id !== 'ollama' || this.state.settings?.effective.defaultProvider === id)) void this.loadModels(id).catch(() => {})
+  }
+  loadModels(provider: string, force = false, model?: string): Promise<import('../../../../kernel/src/models/catalog').CatalogResult | undefined> {
+    const epoch = this.settingsEpoch, bootEpoch = this.epoch, key = `${epoch}:${provider}:${model ?? ''}`
+    const pending = this.catalogRequests.get(key); if (pending) return force ? pending.then(() => this.loadModels(provider, true, model)) : pending
+    const task = (async () => {
+      if (!this.api?.listModels) return undefined
+      const result = await this.api.listModels(provider, force, model)
+      if (epoch === this.settingsEpoch && bootEpoch === this.epoch && this.state.settings && (result.revision ?? 0) >= (this.state.settings.catalogs?.[provider]?.revision ?? 0)) this.commit({ settings: { ...this.state.settings, catalogs: { ...this.state.settings.catalogs, [provider]: result } } })
+      return epoch === this.settingsEpoch && bootEpoch === this.epoch ? result : undefined
+    })().finally(() => this.catalogRequests.delete(key))
+    this.catalogRequests.set(key, task); return task
   }
   async updateThread(id: string, patch: Record<string, unknown>, method = 'thread/settings/update') {
     const result = await this.api!.call<{ meta: ThreadMeta }>(method, { threadId: id, ...patch })
@@ -199,6 +272,6 @@ export class DesktopStore {
     await this.api!.call('project/delete', { projectId: id })
     this.commit({ projects: this.state.projects.filter(p => p.id !== id), sessions: Object.fromEntries(Object.entries(this.state.sessions).map(([key, s]) => [key, s.meta.projectId === id ? { ...s, meta: { ...s.meta, projectId: undefined } } : s])) })
   }
-  dispose() { this.unsubscribe.forEach(off => off()); this.unsubscribe = []; this.boot = undefined }
+  dispose() { this.flushDeltas(); this.epoch++; this.unsubscribe.splice(0).forEach(off => off()); this.boot = undefined }
 }
 export const store = new DesktopStore(typeof window === 'undefined' ? undefined : window.smalt)

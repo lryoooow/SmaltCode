@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { HookBus } from '../src/hooks/bus.js';
 
 describe('HookBus merge policy', () => {
+  it('treats nonzero command-hook exits as failures instead of permitting silently', async () => {
+    const bus = new HookBus(); bus.setCommandHooks({ PreToolUse: [{ command: 'exit 7' }] });
+    expect(await bus.emit('PreToolUse', {})).toMatchObject({ decision: 'ask', anyFailed: true });
+  });
+  it('supplies thread and workspace context to forked hooks', async () => {
+    const parent = new HookBus(); let received: unknown;
+    parent.register((_event, payload) => { received = payload; });
+    await parent.fork({}, { cwd: '/workspace', threadId: 'thread' }).emit('PreToolUse', { tool: 'read' });
+    expect(received).toMatchObject({ cwd: '/workspace', threadId: 'thread', tool: 'read' });
+  });
   it('a later allow cannot override an earlier deny (strictest wins)', async () => {
     const bus = new HookBus();
     bus.register(async () => ({ decision: 'deny', reason: 'nope' }), 'guard-1');

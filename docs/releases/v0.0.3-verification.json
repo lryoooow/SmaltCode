@@ -1,0 +1,159 @@
+{
+  "version": "0.0.3",
+  "releaseTag": "v0.0.3",
+  "verifiedAt": "2026-10-19T08:34:25.433Z",
+  "platform": "Windows x64",
+  "passed": true,
+  "automatedTests": {
+    "files": 46,
+    "passedFiles": 45,
+    "skippedFiles": 1,
+    "passed": 402,
+    "failed": 0,
+    "skipped": 3,
+    "skipReason": "CLI SEA executable-only tests; desktop installer is the published artifact"
+  },
+  "typecheck": true,
+  "sourceBuild": true,
+  "desktop": {
+    "passed": true,
+    "packaged": true,
+    "checks": [
+      "native consent dialogs controlled only through a loopback debugger in the isolated test process; shipped authorization checks unchanged",
+      "SmaltCode branding and actual app version match the manifest",
+      "native bridge connected; onboarding persists",
+      "live names and per-model capacities discovered without generation; refresh finds new IDs; offline keeps cached choices; retired/non-tool models disabled; searchable keyboard model picker works in settings/composer and light/dark/narrow layouts",
+      "settings saved encrypted; real connection test completed",
+      "composer has one rounded focus treatment in light/dark, keyboard, bypass and multiline states; button keyboard focus stays visible",
+      "read/shell/ask_user/write/multi-file apply_patch completed via real IPC; actual file and diff previews",
+      "rename, dark theme and persisted conversation reload",
+      "denial reason returned to model; command blocked",
+      "streaming request interrupted without waiting for provider",
+      "project context and persistence; batch approval; archive/restore; project removal preserves chats; conversation deletion preserves workspace files",
+      "category approval applies across model requests and can be revoked; permissions editable and effective during pending approval",
+      "desktop task completes 64 tools beyond the former 50-step limit",
+      "one task card owns live status and plan; execution records have no duplicate live indicator; nonmodal plan keyboard/outside-click behavior, action subject, live plan updates, completion, chat switching, scroll preservation and light/dark/narrow layout verified",
+      "model milestone replies remain visible and chronological between collapsed execution groups",
+      "streaming allows small upward scroll, Home/PageDown, independent file preview and conversation switching with saved position; explicit return resumes following; completion respects history browsing",
+      "multiple file tabs, per-file scroll positions and conversation restoration; exact selected text reaches model; actual scoped patch and checkpoint rollback preserve other content and conversation history",
+      "keyboard @ file search adds visible validated context without premature send; reference drafts remain isolated and survive conversation switching",
+      "task center filters live/background/unread/waiting tasks; streaming completes while browsing; mark-read and deep navigation to pending approval work",
+      "historical plan uses only its final snapshot outside execution records; stopped plan retains actual 1/20 completion; long wrapped plan scrolls by keyboard in a bounded popup",
+      "seven failures show specific reasons outside folded logs; full-record dialog navigates failures; Escape and precise error reload work",
+      "reasoning-only truncated summaries retry with more budget then compact only old tool output; task completes and diagnostic survives reload",
+      "format and suite findings stay distinct from execution errors; isolated pass does not clear suite; masked exit zero and skipped coverage remain unverified; confirmed native recovery keeps original evidence; statuses persist and appear in task-center filters; light/dark/narrow screenshots",
+      "native close hides to tray and live model task completes while hidden",
+      "provider auth error shown, no renderer errors"
+    ],
+    "modelRequests": 113,
+    "catalogRequests": 5,
+    "rendererErrors": [],
+    "fixture": ".qa-work/desktop-1792398758011531200"
+  },
+  "documentsAndSkills": {
+    "passed": true,
+    "network": false,
+    "checks": [
+      "unfinished task is surfaced, old tools never replay, explicit continuation clears recovery",
+      "file import does not execute scripts or call a model; private network URL is rejected",
+      "selected external skill reaches the model but cannot bypass the workspace boundary",
+      "paste and actual image preview work; base64 image part reaches model without leaking into chat text",
+      "Word escaped content, Excel tabs and Chinese PDF pages render; extracted document content reaches model",
+      "document tabs retain PDF page and worksheet across conversation switches; selected text is quoted without patching binary originals",
+      "usage, redacted diagnostic export and recovery list reflect actual state; background completion does not steal page"
+    ],
+    "modelRequests": 7,
+    "rendererErrors": [],
+    "fixture": ".qa-work/preview-1792398586324398600"
+  },
+  "nativeChecks": {
+    "packagedFileMatches": 199,
+    "unpackedWorkerAndPDFResources": 186,
+    "shippedDocumentParser": {
+      "documents": [
+        "docx",
+        "xlsx",
+        "pdf"
+      ],
+      "corruptInputRejected": true,
+      "queueRecovered": true
+    },
+    "startup": true,
+    "tray": {
+      "cycles": 3,
+      "closeHides": true,
+      "restore": true,
+      "explicitQuit": true,
+      "reopen": true,
+      "runtimeFilesUnchanged": 259
+    },
+    "iconsAndVersions": {
+      "win-unpacked/SmaltCode.exe": {
+        "matched": true,
+        "primaryIconId": 1,
+        "iconGroups": [
+          {
+            "id": 1,
+            "lang": 1033,
+            "matched": true
+          }
+        ],
+        "version": "0.0.3",
+        "productName": "SmaltCode",
+        "sizes": [
+          16,
+          24,
+          32,
+          48,
+          64,
+          128,
+          256
+        ]
+      },
+      "SmaltCode-Setup-0.0.3-SFox.exe": {
+        "matched": true,
+        "primaryIconId": 103,
+        "iconGroups": [
+          {
+            "id": 103,
+            "lang": 1033,
+            "matched": true
+          }
+        ],
+        "version": "0.0.3",
+        "productName": "SmaltCode",
+        "sizes": [
+          16,
+          24,
+          32,
+          48,
+          64,
+          128,
+          256
+        ]
+      }
+    }
+  },
+  "artifact": {
+    "name": "SmaltCode-Setup-0.0.3-SFox.exe",
+    "bytes": 118494055,
+    "sha256": "d96da7beb4ceab24a18bd8c480d1321695d683eb2d86bc8673dd6f903c0be501",
+    "signed": false
+  },
+  "bundles": {
+    "main/index.js": "eae084d76ff289953ed0f847da6f50064b2dabc894a0d1b1a3168e2addd35407",
+    "preload/index.js": "82a2ae138eb322d0ed53d8e604012a15be477a254287a220a17460f74dfa4b5e",
+    "renderer/main.js": "e0d73cc9318b1df41baaa02c58afa628ddf681d776ea2989432a68e855a73bfa",
+    "renderer/main.css": "ce3a903286b34008bca37cc3e562dfca0ecc3749dc51dcd50276910fdf47897a"
+  },
+  "remoteCI": {
+    "githubActionsEnabled": false,
+    "verification": "local only"
+  },
+  "limits": [
+    "Simulated inference is not vendor-by-vendor live compatibility certification",
+    "Native consent dialogs are controlled only in the isolated test process",
+    "Office previews are not full native Office editing",
+    "No new real model inference calls were made during release verification"
+  ]
+}

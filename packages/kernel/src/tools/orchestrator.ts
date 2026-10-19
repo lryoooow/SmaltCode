@@ -44,8 +44,9 @@ export interface ToolRunOutcome {
   toolName: string;
   output: string;
   isError: boolean;
+  assessment?: import('../protocol/assessment.js').ExecutionAssessment;
   denied: boolean;
-  /** transient output for streaming display */
+  /** Bounded transient tail for streaming display; final output is separate. */
   deltas: string[];
   /** item payloads emitted by the tool (plans, prompts) */
   emittedItems: Array<{ kind: string; payload: unknown }>;
@@ -265,6 +266,9 @@ export class ToolOrchestrator {
         let userDecision: ApprovalDecision;
         try {
           userDecision = await this.waitForApproval(req, tool, input, baseCtx, !readOutsideWorkspace && !hookResult?.anyFailed && hookResult?.decision !== 'ask' && req.riskLevel !== 'high');
+        } catch (error) {
+          if (baseCtx.signal.aborted) throw error;
+          userDecision = { decision: 'deny', reason: '审批连接已断开或超时，请重新发起操作' };
         } finally {
           this.deps.onState?.(baseCtx.threadId, 'PERMISSION_RESOLVED');
         }
@@ -283,9 +287,9 @@ export class ToolOrchestrator {
           this.deps.permissions.allowCategory(toolName);
           this.deps.onRememberCategory?.(toolName);
         } else if (userDecision.remember === 'session') {
-          this.deps.permissions.addSessionRule(ruleStringFor(toolName, input, tool));
+          for (const rule of ruleStringsFor(toolName, input, tool)) this.deps.permissions.addSessionRule(rule);
         } else if (userDecision.remember === 'always') {
-          this.deps.onRememberAlways?.(ruleStringFor(toolName, input, tool));
+          for (const rule of ruleStringsFor(toolName, input, tool)) this.deps.onRememberAlways?.(rule);
         }
       }
     } else if (permissionAction === 'deny') {
@@ -301,12 +305,12 @@ export class ToolOrchestrator {
       },
       askUser: async (question, options) => {
         this.deps.onState?.(baseCtx.threadId, 'WAITING_FOR_USER');
-        try { return await abortable(this.deps.askUser({
+          try { return await abortable(this.deps.askUser({
           itemId: newId('ui'),
           threadId: baseCtx.threadId,
           question,
           options,
-        }), baseCtx.signal); } finally {
+        }), baseCtx.signal).catch(error => { if (baseCtx.signal.aborted) throw error; return ''; }); } finally {
           this.deps.onState?.(baseCtx.threadId, 'USER_INPUT_RESOLVED');
         }
       },
@@ -321,15 +325,20 @@ export class ToolOrchestrator {
           ? await checkpoints.capture(baseCtx.threadId, baseCtx.turnId, baseCtx.cwd, tool.summarize(input), tool.subjects?.(input) ?? [tool.subject(input)], toolCallId) : undefined;
         let finalText = '';
         let isError = false;
+        let deltaChars = 0;
         try {
           if (baseCtx.signal.aborted || this.deps.permissions.check({ tool: toolName, input, subject: tool.subject(input), subjects: tool.subjects?.(input), cwd: baseCtx.cwd }).action === 'deny') throw new Error('操作已停止或权限已撤销');
           for await (const ev of tool.run(input, runCtx) as AsyncIterable<ToolEvent>) {
             if (ev.type === 'output') {
               outcome.deltas.push(ev.text);
+              deltaChars += ev.text.length;
+              while (deltaChars > 30_000 && outcome.deltas.length > 1) deltaChars -= outcome.deltas.shift()!.length;
+              if (deltaChars > 30_000) { outcome.deltas[0] = outcome.deltas[0]!.slice(-30_000); deltaChars = 30_000; }
               this.deps.onOutput?.(baseCtx.threadId, toolCallId, ev.text);
             } else {
               finalText = ev.text;
               isError = Boolean(ev.isError);
+              outcome.assessment = ev.assessment;
             }
           }
         } finally {
@@ -380,10 +389,13 @@ function abortable<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 function ruleStringFor(toolName: string, input: unknown, tool: ToolDefinition): string {
+  return ruleStringsFor(toolName, input, tool)[0] ?? toolName;
+}
+function ruleStringsFor(toolName: string, input: unknown, tool: ToolDefinition): string[] {
   const subject = tool.subject(input);
-  if (toolName === 'shell') return `shell:${subject.split(/\s+/).slice(0, 3).join(' ')}`;
+  if (toolName === 'shell') return [`shell:${subject.split(/\s+/).slice(0, 3).join(' ')}`];
   if (['write', 'read', 'apply_patch'].includes(toolName) && subject) {
-    return `${toolName === 'apply_patch' ? 'edit' : toolName}:${subject}`;
+    return (tool.subjects?.(input) ?? [subject]).map(path => `${toolName === 'apply_patch' ? 'edit' : toolName}:${path}`);
   }
-  return toolName;
+  return [toolName];
 }

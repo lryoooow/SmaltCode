@@ -10,6 +10,7 @@ const versionArg = process.argv.find((a) => a.startsWith('--smalt-version='));
 contextBridge.exposeInMainWorld('smalt', {
   version: versionArg ? versionArg.split('=')[1]! : '0.0.0',
   platform: process.platform,
+  developmentPreview: process.argv.includes('--smalt-development-preview'),
 
   /** invoke a kernel JSON-RPC method */
   call: (method: string, params?: unknown) => ipcRenderer.invoke('smalt:call', method, params),
@@ -41,8 +42,16 @@ contextBridge.exposeInMainWorld('smalt', {
 
   saveSettings: (patch: Record<string, unknown>) => ipcRenderer.invoke('smalt:settings:save', patch) as Promise<{ ok: boolean }>,
   testProvider: (provider: string, model: string) => ipcRenderer.invoke('smalt:settings:test', provider, model),
+  listModels: (provider: string, force = false, model?: string) => ipcRenderer.invoke('smalt:models:list', provider, force, model),
   pickFiles: () => ipcRenderer.invoke('smalt:pick-files'),
+  skills: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:skills', action, value),
+  pickAttachments: () => ipcRenderer.invoke('smalt:attachments:pick'),
+  pasteImage: (base64: string, mime: string) => ipcRenderer.invoke('smalt:attachments:image', base64, mime),
+  attachment: (id: string) => ipcRenderer.invoke('smalt:attachments:preview', id),
+  overview: () => ipcRenderer.invoke('smalt:overview'),
+  exportDiagnostics: () => ipcRenderer.invoke('smalt:diagnostics:export'),
   searchFiles: (cwd: string, query: string) => ipcRenderer.invoke('smalt:context', cwd, 'search', query),
+  previewFile: (cwd: string, path: string) => ipcRenderer.invoke('smalt:context', cwd, 'preview', path),
   resolveContext: (cwd: string, refs: unknown[]) => ipcRenderer.invoke('smalt:context', cwd, 'resolve', refs),
   activity: (threadId: string | null, enabled: boolean) => ipcRenderer.invoke('smalt:activity', threadId, enabled),
   onNavigate: (cb: (threadId: string) => void) => {

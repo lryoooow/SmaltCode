@@ -35,31 +35,36 @@ export function applyPatch(patchText: string, cwd: string): ApplyReport {
   const original = new Map<string, Buffer | null>();
   const staged = new Map<string, string | null>();
   const dirty = new Set<string>();
+  const physical = new Map<string, string>();
+  const keyOf = (path: string) => { const key = process.platform === 'win32' ? path.toLowerCase() : path; if (!physical.has(key)) physical.set(key, path); return key; };
   const get = (path: string): string | null => {
-    if (!staged.has(path)) {
+    const key = keyOf(path);
+    if (!staged.has(key)) {
       const bytes = existsSync(path) ? readFileSync(path) : null;
-      original.set(path, bytes); staged.set(path, bytes?.toString('utf8') ?? null);
+      original.set(key, bytes); staged.set(key, bytes?.toString('utf8') ?? null);
     }
-    return staged.get(path)!;
+    return staged.get(key)!;
   };
   const filesystem: PatchFilesystem = {
     exists: path => get(path) !== null,
     read: path => { const value = get(path); if (value === null) throw new ApplyError(`Missing file: ${path}`); return value; },
-    write: (path, text) => { get(path); staged.set(path, text); dirty.add(path); },
-    remove: path => { get(path); staged.set(path, null); dirty.add(path); },
-    move: (from, to) => { if (get(to) !== null) throw new ApplyError(`Move destination already exists: ${to}`); const value = get(from); staged.set(to, value); staged.set(from, null); dirty.add(from); dirty.add(to); },
+    write: (path, text) => { get(path); const key = keyOf(path); staged.set(key, text); dirty.add(key); },
+    remove: path => { get(path); const key = keyOf(path); staged.set(key, null); dirty.add(key); },
+    move: (from, to) => { if (get(to) !== null) throw new ApplyError(`Move destination already exists: ${to}`); const value = get(from); const source = keyOf(from), target = keyOf(to); staged.set(target, value); staged.set(source, null); dirty.add(source); dirty.add(target); },
   };
   // Validate and compute every change in memory before touching any file.
   for (const file of files) changes.push(applyOne(file, cwd, filesystem));
   try {
-    for (const path of dirty) {
-      const text = staged.get(path)!;
+    for (const key of dirty) {
+      const path = physical.get(key)!;
+      const text = staged.get(key)!;
       if (text === null) { if (existsSync(path)) rmSync(path); }
       else { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text, 'utf8'); }
     }
   } catch (error) {
-    for (const path of dirty) {
-      const bytes = original.get(path);
+    for (const key of dirty) {
+      const path = physical.get(key)!;
+      const bytes = original.get(key);
       if (bytes === null) { if (existsSync(path)) rmSync(path); }
       else if (bytes) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); }
     }
@@ -115,7 +120,7 @@ function applyOne(file: PatchFile, cwd: string, fs: PatchFilesystem): AppliedCha
       let applied = 0;
 
       for (const hunk of file.hunks) {
-        const { matchedAt, consumed, replaced } = applyHunkAt(beforeLines, hunk.lines, cursor);
+        const { matchedAt, consumed, replaced } = applyHunkAt(beforeLines, hunk.lines, cursor, hunk.endOfFile);
         if (matchedAt < 0) {
           const expected = hunk.lines
             .filter((l) => l.kind !== 'add')
@@ -160,8 +165,7 @@ function readOldForDiff(_abs: string, before: string): string[] {
 }
 
 function toAbs(p: string, cwd: string): string {
-  const path = resolve(cwd, p);
-  return process.platform === 'win32' ? path.toLowerCase() : path;
+  return resolve(cwd, p);
 }
 
 /**
@@ -172,20 +176,21 @@ function applyHunkAt(
   lines: string[],
   hunkLines: PatchLine[],
   from: number,
+  endOfFile = false,
 ): { matchedAt: number; consumed: number; replaced: string[] } {
   const expected = hunkLines.filter((l) => l.kind !== 'add').map((l) => l.text);
   if (!expected.length) {
     // pure insertion with no context — insert at cursor
-    return { matchedAt: from, consumed: 0, replaced: hunkLines.map((l) => l.text) };
+    return { matchedAt: endOfFile ? lines.length : from, consumed: 0, replaced: hunkLines.map((l) => l.text) };
   }
 
-  for (let pos = from; pos <= lines.length - expected.length; pos++) {
+  for (let pos = endOfFile ? Math.max(from, lines.length - expected.length) : from; pos <= lines.length - expected.length; pos++) {
     if (seqMatches(lines, pos, expected, false)) {
       return { matchedAt: pos, consumed: expected.length, replaced: buildReplacement(hunkLines, lines, pos, false) };
     }
   }
   // fuzzy pass: ignore leading/trailing whitespace differences
-  for (let pos = from; pos <= lines.length - expected.length; pos++) {
+  for (let pos = endOfFile ? Math.max(from, lines.length - expected.length) : from; pos <= lines.length - expected.length; pos++) {
     if (seqMatches(lines, pos, expected, true)) {
       return { matchedAt: pos, consumed: expected.length, replaced: buildReplacement(hunkLines, lines, pos, true) };
     }

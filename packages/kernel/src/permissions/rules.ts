@@ -110,6 +110,8 @@ export function splitCommand(command: string): string[] {
       i++;
       continue;
     }
+    // Descriptor duplication is part of the current command, not chaining.
+    if (ch === '&' && /[<>]$/.test(current) && /[\d-]/.test(command[i + 1] ?? '')) { current += ch; continue; }
     if (ch === '&' || ch === '|' || ch === ';' || ch === '\n' || ch === '\r') {
       segments.push(current);
       current = '';
@@ -137,7 +139,9 @@ export function hasInjection(command: string): boolean {
  * pass an explicit approval.
  */
 export function hasRedirection(segment: string): boolean {
-  return /(^|[^\\])>{1,2}\s*\S|(^|[^\\])2>\s*\S|(^|[=\s])<\s*\S|\d>>\s*\S/.test(segment);
+  const unquoted = segment.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, '');
+  const withoutDescriptors = unquoted.replace(/\d*[<>]&(?:\d+|-)(?=\s|$)/g, '');
+  return /[<>]/.test(withoutDescriptors);
 }
 
 /**
@@ -156,10 +160,39 @@ export function commandAllowedBy(pattern: string, command: string): boolean {
 /**
  * DENY/ASK semantics — matching any single segment is enough.
  */
-export function commandMatchesAny(pattern: string, command: string): boolean {
+export function commandMatchesAny(pattern: string, command: string, depth = 0): boolean {
+  if (depth > 8) return true; // ambiguous nested interpreters never bypass a deny
   const segments = splitCommand(command);
   if (!segments.length) return false;
-  return segments.some((seg) => segmentMatches(pattern, seg));
+  return segments.some((seg) => segmentMatches(pattern, seg) || wrappedCommands(seg).some(inner => commandMatchesAny(pattern, inner, depth + 1)));
+}
+
+/** Inspect common shell wrappers for deny rules; never use this to grant consent. */
+function wrappedCommands(command: string): string[] {
+  const match = /^(?:(?:sudo|env)\s+)?(?:[\w:/\\.-]*[\\/])?(?:ba?sh|zsh|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+(?:-[^\s]+\s+)*?(?:-c|-command|\/c)\s+([\s\S]+)$/i.exec(command.trim());
+  if (!match) return [];
+  const body = match[1]!.trim();
+  const inner = /^(["'])([\s\S]*)\1$/.exec(body)?.[2] ?? body;
+  // Each recursion consumes a wrapper, bounded by the original input length.
+  return inner.length < command.length ? [inner] : [];
+}
+
+function destructiveRoot(command: string): boolean {
+  const words = command.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g)?.map(word => word.replace(/^(["'])([\s\S]*)\1$/, '$2')) ?? [];
+  const name = (words[0] ?? '').split(/[\\/]/).at(-1)?.toLowerCase().replace(/\.exe$/, '');
+  if (name === 'sudo') return destructiveRoot(words.slice(1).join(' '));
+  const remove = name === 'rm', windows = ['remove-item', 'ri', 'rd', 'rmdir', 'del', 'erase'].includes(name ?? '');
+  if (!remove && !windows) return false;
+  const recursive = windows || words.slice(1).some(word => /^--recursive(?:=|$)/i.test(word) || /^-[^-]*r/i.test(word));
+  if (!recursive) return false;
+  return words.slice(1).filter(word => !word.startsWith('-') && !/^\/[sq]$/i.test(word)).some(target => {
+    const value = target.replace(/\\/g, '/').replace(/\/+$/, '');
+    return value === '' || /^(?:~|\$\{?HOME\}?|\$env:(?:USERPROFILE|HOME)|%(?:USERPROFILE|HOMEDRIVE|SYSTEMROOT)%)(?:\/|$)/i.test(value)
+      || /^\/(?:[*?]|(?:etc|var|usr|bin|sbin|boot|dev|home|Users)(?:\/|$))/.test(value)
+      || /^[a-z]:(?:\/?[*?])?$/i.test(value)
+      || /^[a-z]:\/(?:windows|program files(?: \(x86\))?)(?:\/|$)/i.test(value)
+      || /^[a-z]:\/users(?:\/[^/*?]+)?(?:\/[*?])?$/i.test(value);
+  });
 }
 
 /**
@@ -168,7 +201,7 @@ export function commandMatchesAny(pattern: string, command: string): boolean {
  * Kept deliberately short and conservative; this is a backstop, not a sandbox.
  */
 const DANGEROUS_PATTERNS: ReadonlyArray<{ re: RegExp; why: string }> = [
-  { re: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b.*\s(\/|~|\$HOME|\/home|\/Users|\/etc|\/var|\/usr)(\s|\/?$)/i, why: 'recursive delete targeting a system or home root' },
+  { re: /\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*-(?:enc|encodedcommand)\b/i, why: 'encoded shell command' },
   { re: /\bmkfs(\.\w+)?\b/i, why: 'filesystem format' },
   { re: /\bdd\b[^|]*\bof=\/dev\//i, why: 'raw write to a device' },
   { re: /:\(\)\s*\{.*\};\s*:/, why: 'fork bomb' },
@@ -182,7 +215,11 @@ const DANGEROUS_PATTERNS: ReadonlyArray<{ re: RegExp; why: string }> = [
 /** Dangerous check runs on the whole command AND per segment: patterns that
  * span separators (pipe-to-shell) need the full text; per-segment checks stop
  * chaining dodges. */
-export function dangerousCommandCheck(command: string): { dangerous: true; why: string } | { dangerous: false } {
+export function dangerousCommandCheck(command: string, depth = 0): { dangerous: true; why: string } | { dangerous: false } {
+  if (depth > 8) return { dangerous: true, why: 'deeply nested shell interpreters require review' };
+  for (const segment of splitCommand(command)) {
+    if (destructiveRoot(segment) || wrappedCommands(segment).some(inner => dangerousCommandCheck(inner, depth + 1).dangerous)) return { dangerous: true, why: 'destructive command targeting a system or home path' };
+  }
   for (const { re, why } of DANGEROUS_PATTERNS) {
     if (re.test(command)) return { dangerous: true, why: `${why} (command: ${command.slice(0, 80)})` };
   }

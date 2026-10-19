@@ -73,13 +73,13 @@ export function useConversationScroll(session: Session, memory: ConversationScro
   }
   const onPointerDownCapture = (event: PointerEvent<HTMLDivElement>) => {
     if (event.target === event.currentTarget) intent.current = 'pointer'
-    else if (event.target instanceof Element && event.target.closest('[data-testid="activity-group"], [data-testid="item-agentMessage"], [data-testid="item-userMessage"]')) pause('inspect')
+    else if (event.target instanceof Element && event.target.closest('[data-testid="activity-group"], [data-testid="plan-history"], [data-testid="item-agentMessage"], [data-testid="item-userMessage"]')) pause('inspect')
   }
   const onKeyDownCapture = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.target instanceof Element && event.target.closest('textarea,input,select,[contenteditable="true"]')) return
     if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) pause('up')
     else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) intent.current = 'down'
-    else if (['Enter', ' '].includes(event.key) && event.target instanceof Element && event.target.closest('[data-testid="activity-group"]')) pause('inspect')
+    else if (['Enter', ' '].includes(event.key) && event.target instanceof Element && event.target.closest('[data-testid="activity-group"], [data-testid="plan-history"]')) pause('inspect')
   }
   return { viewport, content, stick, hasUpdates, latest, onScroll, onWheelCapture, onPointerDownCapture, onKeyDownCapture }
 }

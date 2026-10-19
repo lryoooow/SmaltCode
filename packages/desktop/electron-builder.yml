@@ -13,6 +13,11 @@ files:
   - LICENSE
   - NOTICE
 
+# Node workers and the files they open must have real filesystem paths.
+asarUnpack:
+  - dist/main/document-worker.cjs
+  - dist/main/pdf-assets/**/*
+
 win:
   icon: assets/smalt.ico
   target:

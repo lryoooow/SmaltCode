@@ -75,6 +75,7 @@ export interface ModelAdapter {
  * ModelGateway satisfies this structurally; tests provide fakes.
  */
 export interface ModelStreamer {
+  prepare?(ref: { provider: string; model: string }, signal?: AbortSignal): Promise<number>;
   stream(ref: { provider: string; model: string }, req: Omit<ModelRequest, 'model'>): AsyncIterable<ModelDelta>;
 }
 
@@ -110,6 +111,7 @@ export function estimateTokens(text: string): number {
 export function estimateHistoryTokens(messages: ChatMessage[]): number {
   let total = 0;
   for (const m of messages) {
+    total += 4; // role/message framing
     if (typeof m.content === 'string') total += estimateTokens(m.content);
     else if (Array.isArray(m.content)) {
       for (const part of m.content) {
@@ -120,6 +122,7 @@ export function estimateHistoryTokens(messages: ChatMessage[]): number {
     if (m.role === 'assistant' && m.toolCalls) {
       for (const tc of m.toolCalls) total += estimateTokens(tc.arguments) + 16;
     }
+    if (m.role === 'assistant' && m.reasoningContent) total += estimateTokens(m.reasoningContent);
   }
   return total;
 }

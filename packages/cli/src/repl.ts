@@ -1,8 +1,8 @@
 /** The interactive REPL: one thread, streaming output, steering, commands. */
 
 import * as readline from 'node:readline';
-import { Kernel, PERMISSION_MODES, type PermissionMode, type ThreadMeta } from '@smalt/kernel';
-import { makeAsker } from './port.js';
+import { Kernel, PERMISSION_MODES, VERSION, killAllToolProcesses, type PermissionMode, type ThreadMeta } from '@smalt/kernel';
+import { makeAsker, installInterrupts } from './port.js';
 import { TerminalPort } from './port.js';
 import { TerminalRenderer } from './render.js';
 
@@ -13,12 +13,14 @@ export interface ReplOptions {
   model?: string;
   mode?: PermissionMode;
   initialPrompt?: string;
+  cwd?: string;
 }
 
 export async function runRepl(opts: ReplOptions): Promise<void> {
   const { kernel, renderer } = opts;
 
-  if (opts.initialPrompt) {
+  kernel.threads.recoverInterrupted();
+  if (opts.initialPrompt !== undefined) {
     await runOneShot(opts);
     return;
   }
@@ -33,19 +35,18 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   kernel.setClientPort(port);
   const activeKernel = kernel;
 
-  let meta: ThreadMeta = activeKernel.threads.start({
-    cwd: process.cwd(),
+  let meta: ThreadMeta = opts.threadId ? activeKernel.threads.resume(opts.threadId).meta : activeKernel.threads.start({
+    cwd: opts.cwd ?? process.cwd(),
     model: opts.model,
   }).meta;
   if (opts.threadId) {
-    meta = activeKernel.threads.resume(opts.threadId).meta;
     renderer.info(`resumed ${meta.title} (${meta.turnCount} turns)`);
   }
   if (opts.mode) {
     activeKernel.getPermissions().setMode(opts.mode);
   }
 
-  renderer.banner('0.0.1', `${meta.provider ?? ''}/${meta.model}`.replace(/^\//, ''), meta.cwd);
+  renderer.banner(VERSION, `${meta.provider ?? ''}/${meta.model}`.replace(/^\//, ''), meta.cwd);
 
   let running = false;
   let interruptedOnce = false;
@@ -102,7 +103,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   });
 
   // Ctrl+C: first press interrupts the running turn, second exits
-  process.on('SIGINT', () => {
+  const interrupt = () => {
     if (running && !interruptedOnce) {
       interruptedOnce = true;
       renderer.info('\n  (interrupting… press Ctrl+C again to exit)');
@@ -110,8 +111,10 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       return;
     }
     process.stdout.write('\nbye\n');
+    killAllToolProcesses();
     process.exit(0);
-  });
+  };
+  installInterrupts(rl, interrupt);
 
   async function handleCommand(text: string): Promise<void> {
     const [cmd, ...rest] = text.slice(1).split(/\s+/);
@@ -202,8 +205,10 @@ async function runOneShot(opts: ReplOptions): Promise<void> {
 
   const meta = opts.threadId
     ? kernel.threads.resume(opts.threadId).meta
-    : kernel.threads.start({ cwd: process.cwd(), model: opts.model }).meta;
+    : kernel.threads.start({ cwd: opts.cwd ?? process.cwd(), model: opts.model }).meta;
   if (opts.mode) kernel.getPermissions().setMode(opts.mode);
+  let interrupted = false;
+  const removeInterrupts = rl ? installInterrupts(rl, () => { if (interrupted) { killAllToolProcesses(); process.exit(130); } interrupted = true; kernel.threads.interrupt(meta.id); }) : () => {};
 
   try {
     const outcome = (await kernel.handle('turn/start', {
@@ -216,6 +221,8 @@ async function runOneShot(opts: ReplOptions): Promise<void> {
     renderer.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
   } finally {
+    removeInterrupts();
+    killAllToolProcesses();
     rl?.close();
     // let undici keep-alive sockets drain before a forced exit (Windows libuv
     // asserts otherwise); an empty loop exits on its own sooner

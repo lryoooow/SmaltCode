@@ -16,7 +16,7 @@
  */
 
 import { parseArgs } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import * as readline from 'node:readline';
 import {
@@ -25,6 +25,7 @@ import {
   RpcError,
   createStdioPeer,
   ensureProjectTrust,
+  VERSION, killAllToolProcesses,
   type ApprovalDecision,
   type ApprovalRequest,
   type ClientPort,
@@ -33,9 +34,10 @@ import {
 } from '@smalt/kernel';
 import { runRepl } from './repl.js';
 import { TerminalRenderer } from './render.js';
-import { TerminalPort } from './port.js';
+import { makeAsker, TerminalPort } from './port.js';
 
-const VERSION = '0.0.1';
+process.once('exit', killAllToolProcesses);
+process.once('SIGTERM', () => { killAllToolProcesses(); process.exit(143); });
 
 function fail(msg: string): never {
   process.stderr.write(`smalt: ${msg}\n`);
@@ -43,12 +45,8 @@ function fail(msg: string): never {
 }
 
 async function main(): Promise<void> {
-  const raw = process.argv.slice(2);
-  const sub = raw[0] && !raw[0].startsWith('-') ? raw[0] : undefined;
-  const rest = sub ? raw.slice(1) : raw;
-
-  const { values: flags } = parseArgs({
-    args: rest,
+  const { values: flags, positionals } = parseArgs({
+    args: process.argv.slice(2), allowPositionals: true,
     options: {
       model: { type: 'string', short: 'm' },
       prompt: { type: 'string', short: 'p' },
@@ -59,6 +57,9 @@ async function main(): Promise<void> {
       version: { type: 'boolean', short: 'V' },
     },
   });
+  const sub = positionals[0];
+  if (positionals.length > (sub === 'resume' ? 2 : 1)) fail('unexpected positional arguments');
+  if (flags.prompt !== undefined && !flags.prompt.trim()) fail('prompt cannot be empty');
   if (flags['no-color']) process.env.NO_COLOR = '1';
 
   const renderer = new TerminalRenderer();
@@ -97,10 +98,10 @@ async function main(): Promise<void> {
       break;
     }
     case 'serve':
-      runServer();
-      break;
+      runServer(flags.cwd);
+      return;
     case 'resume': {
-      const id = process.argv[3];
+      const id = positionals[1];
       if (!id) fail('usage: smalt resume <threadId>');
       await runRepl({
         kernel: await makeKernel(renderer, flags.cwd),
@@ -108,8 +109,10 @@ async function main(): Promise<void> {
         threadId: id,
         model: flags.model,
         mode: parseMode(flags.mode),
+        cwd: resolve(flags.cwd ?? process.cwd()),
+        initialPrompt: flags.prompt,
       });
-      break;
+      return;
     }
     default:
       fail(`unknown subcommand "${sub}" — try: smalt help`);
@@ -121,6 +124,7 @@ async function main(): Promise<void> {
     model: flags.model,
     mode: parseMode(flags.mode),
     initialPrompt: flags.prompt,
+    cwd: resolve(flags.cwd ?? process.cwd()),
   });
 }
 
@@ -136,7 +140,7 @@ async function makeKernel(
   opts?: { interactive?: boolean },
 ): Promise<Kernel> {
   const cwd = resolve(cwdFlag ?? process.cwd());
-  if (cwdFlag && !existsSync(cwd)) fail(`cwd does not exist: ${cwdFlag}`);
+  if (cwdFlag && (!existsSync(cwd) || !statSync(cwd).isDirectory())) fail(`cwd is not a directory: ${cwdFlag}`);
   await ensureProjectTrust(
     cwd,
     async (dir) => {
@@ -151,13 +155,9 @@ async function makeKernel(
         `\nThis project ships its own agent settings:\n  ${join(dir, '.smalt', 'settings.json')}\n` +
           `Trusting it lets the project set allow rules, hooks, and model endpoints.\n`,
       );
-      const answer = await new Promise<string>((res) => {
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        rl.question('Trust this project? [y/N] > ', (a) => {
-          rl.close();
-          res(a.trim().toLowerCase());
-        });
-      });
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = (await makeAsker(rl)('Trust this project? [y/N] > ')).trim().toLowerCase();
+      rl.close();
       return answer === 'y' || answer === 'yes';
     },
     (msg) => {
@@ -174,9 +174,11 @@ async function makeKernel(
 }
 
 /** stdio JSON-RPC server mode: the kernel speaks newline-delimited JSON. */
-function runServer(): void {
+function runServer(cwdFlag?: string): void {
+  const cwd = resolve(cwdFlag ?? process.env.SMALT_CWD ?? process.cwd());
+  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) fail('cwd is not a directory');
   const kernel = new Kernel({
-    cwd: process.env.SMALT_CWD ?? process.cwd(),
+    cwd,
     client: {
       notify: () => {},
       requestApproval: () =>
@@ -190,6 +192,7 @@ function runServer(): void {
       if (process.env.SMALT_DEBUG) process.stderr.write(`[kernel] ${msg}\n`);
     },
   });
+  kernel.threads.recoverInterrupted();
 
   const peer = createStdioPeer();
   peer.setRequestHandler(async (method, params) => {
@@ -205,15 +208,20 @@ function runServer(): void {
   const rpcPort: ClientPort = {
     notify: (method, params) => peer.notify(method, params),
     requestApproval: (req: ApprovalRequest) =>
-      peer.request('item/requestApproval', req) as Promise<ApprovalDecision>,
+      peer.request('item/requestApproval', req, 300000).catch(() => ({ decision: 'deny', reason: 'approval connection closed or timed out' })) as Promise<ApprovalDecision>,
     askUser: (req: UserInputRequest) =>
-      peer.request('item/requestUserInput', req) as Promise<string>,
+      peer.request('item/requestUserInput', req, 300000).catch(() => '') as Promise<string>,
   };
   kernel.setClientPort(rpcPort);
 
   process.stdin.resume();
-  process.on('SIGINT', () => process.exit(0));
-  process.on('SIGTERM', () => process.exit(0));
+  const close = () => {
+    for (const meta of kernel.threads.listMetas()) if (kernel.threads.get(meta.id)?.stateMachine.isRunning()) kernel.threads.interrupt(meta.id);
+    killAllToolProcesses(); peer.close();
+    setTimeout(() => process.exit(0), 200).unref();
+  };
+  process.stdin.once('end', close); process.stdin.once('error', close);
+  process.on('SIGINT', close);
 }
 
 function usage(): string {

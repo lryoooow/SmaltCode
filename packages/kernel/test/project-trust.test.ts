@@ -231,7 +231,7 @@ describe('N2/N3/N4/N6: tool-level regressions', () => {
       if (ev.type === 'result') text = ev.text;
     }
     expect(text).toContain('escapes the workspace');
-    expect(out.isError || true).toBe(true); // orchestrator path also guarded
+    expect(out.isError).toBe(true); expect(out.output).toMatch(/workspace|outside/i);
   });
 
   it('N6: ~/.npmrc reads are denied', async () => {

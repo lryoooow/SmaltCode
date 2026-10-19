@@ -1,18 +1,21 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { NtExecutable, NtExecutableResource, Data, Resource } from 'resedit';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const app = join(root, 'packages/desktop');
+const releaseIndex = process.argv.indexOf('--release-dir');
+if (releaseIndex >= 0 && !process.argv[releaseIndex + 1]) throw new Error('--release-dir requires a directory');
+const release = releaseIndex >= 0 ? resolve(process.argv[releaseIndex + 1]) : join(app, 'release');
 const version = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8')).version;
 const icon = Data.IconFile.from(readFileSync(join(app, 'assets/smalt.ico')));
 const hash = data => createHash('sha256').update(Buffer.from(data)).digest('hex');
 const expected = icon.icons.map(i => hash(i.data.bin));
 const result = {};
 for (const name of ['win-unpacked/SmaltCode.exe', `SmaltCode-Setup-${version}-SFox.exe`]) {
-  const exe = NtExecutable.from(readFileSync(join(app, 'release', name)), { ignoreCert: true });
+  const exe = NtExecutable.from(readFileSync(join(release, name)), { ignoreCert: true });
   const entries = NtExecutableResource.from(exe).entries;
   const groups = Resource.IconGroupEntry.fromEntries(entries);
   const groupChecks = groups.map(group => {

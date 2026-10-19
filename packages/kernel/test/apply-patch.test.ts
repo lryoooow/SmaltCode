@@ -179,6 +179,22 @@ describe('applyPatch', () => {
 });
 
 describe('patch correctness regressions', () => {
+  it('accepts blank context and Add File lines without losing following changes', () => {
+    writeFileSync(join(dir, 'blank.txt'), 'first\n\nold\nlast\n');
+    applyPatch('*** Begin Patch\n*** Update File: blank.txt\n@@\n first\n\n-old\n+new\n last\n*** Add File: AddedCase.TS\n+first\n\n+last\n*** End Patch', dir);
+    expect(readFileSync(join(dir, 'blank.txt'), 'utf8')).toBe('first\n\nnew\nlast\n');
+    expect(readFileSync(join(dir, 'AddedCase.TS'), 'utf8')).toBe('first\n\nlast\n');
+  });
+  it('anchors End of File to the last occurrence instead of the first', () => {
+    writeFileSync(join(dir, 'tail.txt'), 'same\nmiddle\nsame\n');
+    applyPatch('*** Begin Patch\n*** Update File: tail.txt\n@@\n-same\n+last\n*** End of File\n*** End Patch', dir);
+    expect(readFileSync(join(dir, 'tail.txt'), 'utf8')).toBe('same\nmiddle\nlast\n');
+  });
+  it.runIf(process.platform === 'win32')('preserves new filename case while sharing staged content across case aliases', () => {
+    applyPatch('*** Begin Patch\n*** Add File: MyComponent.TSX\n+first\n*** Update File: mycomponent.tsx\n@@\n-first\n+second\n*** End Patch', dir);
+    expect(readFileSync(join(dir, 'MyComponent.TSX'), 'utf8')).toBe('second\n');
+    expect(require('node:fs').readdirSync(dir)).toContain('MyComponent.TSX');
+  });
   it('does not partially write when a later file has invalid context', () => {
     writeFileSync(join(dir, 'a.txt'), 'original\n');
     writeFileSync(join(dir, 'b.txt'), 'other\n');

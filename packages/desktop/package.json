@@ -1,6 +1,6 @@
 {
   "name": "@smalt/desktop",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "SmaltCode — 多模型 AI 编程与办公桌面助手",
   "license": "Apache-2.0",
   "private": true,
@@ -21,6 +21,10 @@
   },
   "author": "SmaltCode contributors",
   "dependencies": {
+    "@thednp/dommatrix": "3.1.2",
+    "fast-xml-parser": "5.11.2",
+    "fflate": "0.8.3",
+    "pdfjs-dist": "6.4.299",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   }

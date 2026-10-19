@@ -8,6 +8,8 @@ import { trustProject, isProjectTrusted } from '../src/config/trust.js';
 import { ModelError, type ModelDelta, type ModelStreamer } from '../src/models/types.js';
 import { replayEvents } from '../src/storage/thread-store.js';
 import type { ApprovalRequest, ApprovalDecision } from '../src/protocol/types.js';
+import { executionAssessment } from '../src/protocol/assessment.js';
+import { shellTool } from '../src/tools/defs/shell.js';
 
 let root: string, cwd: string, previousHome: string | undefined;
 beforeEach(() => {
@@ -35,10 +37,137 @@ function kernel(scripts: Array<{ name?: string; input?: unknown; text?: string; 
 async function start(k: Kernel, extra: object = {}) { return (await k.handle('thread/start', { cwd, ...extra }) as { threadId: string }).threadId; }
 
 describe('desktop protocol integration regressions', () => {
+  it('keeps every plan distinct across turns and identical timestamps on reload', async () => {
+    const { k } = kernel([]), id = await start(k), at = '2026-10-19T00:00:00.000Z';
+    k.store.append(id, { t: 'turn-started', turnId: 'old', at });
+    k.store.append(id, { t: 'plan', steps: [{ content: 'old revision', status: 'pending' }], at });
+    k.store.append(id, { t: 'plan', steps: [{ content: 'old final', status: 'completed' }], at });
+    k.store.append(id, { t: 'turn-ended', turnId: 'old', at });
+    k.store.append(id, { t: 'turn-started', turnId: 'new', at });
+    k.store.append(id, { t: 'plan', id: 'persisted-plan-id', steps: [{ content: 'new task', status: 'inProgress' }], at });
+    k.store.append(id, { t: 'turn-ended', turnId: 'new', at });
+    await k.handle('thread/archive', { threadId: id }); await k.handle('thread/restore', { threadId: id });
+    const plans = k.threads.read(id).items.filter(i => i.kind === 'plan');
+    expect(plans).toHaveLength(3); expect(new Set(plans.map(i => i.id)).size).toBe(3);
+    expect(plans.map(i => i.turnId)).toEqual(['old', 'old', 'new']); expect(plans.at(-1)?.id).toBe('persisted-plan-id');
+  });
+  it('completes a read-only inspection with findings and persists honest verification coverage', async () => {
+    const { k, requests } = kernel([{ name: 'shell', input: { command: 'ruff format --check .' } }, { text: '发现待格式化文件，未修改。' }]);
+    k.tools.register({ ...shellTool, async *run() { yield { type: 'result', text: '[exit 1]\nWould reformat: a.py', isError: false, assessment: executionAssessment('ruff format --check .', 'Would reformat: a.py', 1) }; } });
+    const id = await start(k);
+    expect(await k.handle('turn/start', { threadId: id, input: '只检查代码，禁止修改。' })).toMatchObject({ failed: false, summary: { assessment: { status: 'findings', intent: 'inspect', checks: { findings: 1 } } } });
+    expect(requests).toHaveLength(2);
+    await k.handle('thread/archive', { threadId: id }); await k.handle('thread/restore', { threadId: id });
+    expect(k.threads.read(id).meta.lastAssessment?.status).toBe('findings');
+    expect(k.threads.read(id).summaries[0]?.assessment?.checks.findings).toBe(1);
+  });
+  it('gives conflicting status one bounded recovery opportunity, then reports incomplete verification', async () => {
+    const { k, requests } = kernel([{ name: 'shell', input: { command: 'pnpm test & echo EXIT_CODE=0' } }, { text: '检查结果存在冲突，需要单独验证。' }]);
+    k.tools.register({ ...shellTool, async *run() { yield { type: 'result', text: '[exit 0]\n1 failed\nEXIT_CODE=0', isError: false, assessment: executionAssessment('pnpm test & echo EXIT_CODE=0', '1 failed', 0) }; } });
+    const id = await start(k), result = await k.handle('turn/start', { threadId: id, input: '只检查，禁止修改。' }) as any;
+    expect(requests).toHaveLength(3); expect(result).toMatchObject({ failed: false, summary: { assessment: { status: 'unverified' } } });
+    const events = k.store.load(id)!;
+    expect(events.filter(event => event.t === 'verification-reminder')).toHaveLength(1);
+    expect(replayEvents(events).history.some(m => m.role === 'user' && typeof m.content === 'string' && m.content.includes('Completion verification'))).toBe(true);
+    expect(k.threads.read(id).items.filter(i => i.kind === 'userMessage')).toHaveLength(1);
+  });
+  it('does not silently complete an empty model reply or an unfinished plan', async () => {
+    const empty = kernel([{ text: '' }]), id = await start(empty.k);
+    expect(await empty.k.handle('turn/start', { threadId: id, input: '检查' })).toMatchObject({ failed: true, error: expect.stringContaining('未返回任务结果') });
+    expect(empty.requests).toHaveLength(2);
+    const planned = kernel([{ name: 'plan', input: { steps: [{ content: '验证', status: 'inProgress' }] } }, { text: '仍需验证。' }]), p = await start(planned.k);
+    expect(await planned.k.handle('turn/start', { threadId: p, input: '修复项目' })).toMatchObject({ failed: false, summary: { assessment: { status: 'needsAttention', pendingSteps: 1 } } });
+    expect(planned.requests).toHaveLength(3);
+  });
+  it('links a successful native search alternative across reload without erasing the original error', async () => {
+    writeFileSync(join(cwd, 'README.md'), 'fixture');
+    const { k } = kernel([{ name: 'shell', input: { command: 'grep fixture README.md' } }, { name: 'grep', input: { pattern: 'fixture', path: '.', recoveryOf: 'call_1' } }, { text: '已改用文件搜索，找到内容。' }]);
+    k.tools.register({ ...shellTool, async *run() { yield { type: 'result', text: "[exit 1]\n'grep' is not recognized as an internal or external command", isError: true, assessment: executionAssessment('grep fixture README.md', "'grep' is not recognized as an internal or external command", 1) }; } });
+    const id = await start(k); expect(await k.handle('turn/start', { threadId: id, input: '只检查，禁止修改。' })).toMatchObject({ summary: { assessment: { status: 'completed', recovered: 1 } } });
+    await k.handle('thread/archive', { threadId: id }); await k.handle('thread/restore', { threadId: id });
+    const prior = k.threads.read(id).items.find(i => i.id === 'call_1');
+    expect(prior).toMatchObject({ status: 'failed', output: expect.stringContaining('not recognized'), assessment: { recoveredBy: 'call_2', recovery: 'alternative' } });
+  });
+  it('persists a confirmed equivalent process rerun of a masked check', async () => {
+    const { k } = kernel([{ name: 'shell', input: { command: 'pnpm test & echo EXIT_CODE=%ERRORLEVEL%' } }, { name: 'shell', input: { program: 'pnpm', args: ['test'], recoveryOf: 'call_1' } }, { text: '已独立核实整套测试通过。' }]);
+    k.tools.register({ ...shellTool, async *run(value, ctx) {
+      const structured = !!(value as any).program, command = structured ? 'pnpm test' : 'pnpm test & echo EXIT_CODE=%ERRORLEVEL%';
+      const output = structured ? '41 passed' : '1 failed\nEXIT_CODE=0';
+      yield { type: 'result', text: '[exit 0]\n' + output, isError: false, assessment: executionAssessment(command, output, 0, structured ? 'process' : 'shell', ctx.cwd) };
+    } });
+    const id = await start(k); expect(await k.handle('turn/start', { threadId: id, input: '只检查，禁止修改。' })).toMatchObject({ summary: { assessment: { status: 'completed', recovered: 1, checks: { passed: 1, unverified: 0 } } } });
+    await k.handle('thread/archive', { threadId: id }); await k.handle('thread/restore', { threadId: id });
+    expect(k.threads.read(id).items.find(i => i.id === 'call_1')).toMatchObject({ output: expect.stringContaining('1 failed'), assessment: { kind: 'unverified', recoveredBy: 'call_2', recovery: 'retry' } });
+  });
+  it('never treats an alternative search as recovery of a denied operation', async () => {
+    writeFileSync(join(cwd, 'README.md'), 'fixture');
+    const { k, requests } = kernel([{ name: 'shell', input: { command: 'grep fixture README.md' } }, { name: 'grep', input: { pattern: 'fixture', recoveryOf: 'call_1' } }, { text: '搜索已完成，原命令未获许可。' }], async () => ({ decision: 'deny' }));
+    const id = await start(k); expect(await k.handle('turn/start', { threadId: id, input: '只检查' })).toMatchObject({ summary: { assessment: { status: 'needsAttention', recovered: 0 } } });
+    expect(requests).toHaveLength(3); expect(k.store.load(id)!.some(e => e.t === 'tool-recovered')).toBe(false);
+  });
+  it('leaves code changes unverified when the model stops without running a check', async () => {
+    const { k, requests } = kernel([{ name: 'write', input: { path: 'example.py', content: 'value = 1\n' } }, { text: '代码已保存，此环境尚未运行验证。' }]);
+    const id = await start(k); expect(await k.handle('turn/start', { threadId: id, input: '修复代码' })).toMatchObject({ failed: false, summary: { assessment: { status: 'unverified', verificationMissing: true } } });
+    expect(requests).toHaveLength(3); expect(readFileSync(join(cwd, 'example.py'), 'utf8')).toBe('value = 1\n');
+    expect(k.threads.read(id).meta.lastAssessment?.verificationMissing).toBe(true);
+  });
+  it('keeps running after a proactive summary fails while enough context remains, and persists the precise warning', async () => {
+    const { k, events } = kernel([]);
+    const settings = structuredClone(k.getSettings()); settings.providers[settings.defaultProvider]!.contextWindow = 12000; settings.compact = { ...settings.compact, threshold: .3, keepMessages: 2 }; k.applySettings(settings);
+    const id = await start(k), rt = k.threads.require(id);
+    rt.history.push({ role: 'user', content: 'Preserve the task. '.repeat(1100) }, { role: 'assistant', content: 'Acknowledged.' });
+    let summaries = 0, requests = 0;
+    vi.spyOn(k.gateway, 'stream').mockImplementation(async function* (_ref, req) {
+      if (!req.tools.length) { summaries++; throw new ModelError('summary endpoint temporarily unavailable', 503); }
+      requests++; yield { type: 'text', text: 'Task continued successfully.' }; yield { type: 'done', finishReason: 'stop' };
+    });
+    expect(await k.handle('turn/start', { threadId: id, input: 'Continue.' })).toMatchObject({ failed: false, assistantText: 'Task continued successfully.' });
+    expect(summaries).toBe(1); expect(requests).toBe(1);
+    expect(events.find(event => event.method === 'thread/context/notice')?.params.notice.reason).toContain('temporarily unavailable');
+    await k.handle('thread/archive', { threadId: id }); await k.handle('thread/restore', { threadId: id });
+    expect((await k.handle('thread/read', { threadId: id }) as any).contextNotice.reason).toContain('temporarily unavailable');
+  });
+  it('pauses only without headroom and restores the real terminal error after reload', async () => {
+    const { k } = kernel([]);
+    const settings = structuredClone(k.getSettings()); settings.providers[settings.defaultProvider]!.contextWindow = 12000; settings.compact = { ...settings.compact, keepMessages: 2 }; k.applySettings(settings);
+    const id = await start(k), rt = k.threads.require(id);
+    rt.history.push({ role: 'user', content: 'Preserve all constraints. '.repeat(4000) }, { role: 'assistant', content: 'Acknowledged.' });
+    let normalRequests = 0;
+    vi.spyOn(k.gateway, 'stream').mockImplementation(async function* (_ref, req) { if (req.tools.length) normalRequests++; throw new ModelError('summary unavailable (fixture)', 503); });
+    const result = await k.handle('turn/start', { threadId: id, input: 'Continue.' }) as any;
+    expect(result).toMatchObject({ failed: true, error: expect.stringContaining('summary unavailable (fixture)') });
+    expect(result.error).toContain('剩余空间不足'); expect(normalRequests).toBe(0);
+    expect(k.store.load(id)?.findLast(event => event.t === 'turn-ended')).toMatchObject({ error: result.error });
+    await k.handle('thread/archive', { threadId: id }); await k.handle('thread/restore', { threadId: id });
+    expect(k.threads.read(id).meta.lastError).toBe(result.error);
+  });
+  it('restores actual per-turn summaries and cumulative usage after runtime reload', async () => {
+    const { k } = kernel([{ text: 'done' }]), id = await start(k);
+    vi.spyOn(k.gateway, 'stream').mockImplementation(async function* () { yield { type: 'usage', inputTokens: 123, outputTokens: 45 }; yield { type: 'text', text: 'done' }; yield { type: 'done', finishReason: 'stop' }; });
+    await k.handle('turn/start', { threadId: id, input: 'test' });
+    await k.handle('thread/archive', { threadId: id }); await k.handle('thread/restore', { threadId: id });
+    const read = await k.handle('thread/read', { threadId: id }) as any;
+    expect(read.usage).toMatchObject({ totalInputTokens: 123, totalOutputTokens: 45 });
+    expect(read.summaries).toHaveLength(1); expect(read.summaries[0]).toMatchObject({ durationMs: expect.any(Number), usage: { inputTokens: 123, outputTokens: 45 } });
+  });
+  it('honors UserPromptSubmit rejection before making any model request', async () => {
+    const { k, requests } = kernel([{ text: 'should not run' }]);
+    k.hooks.register(event => event === 'UserPromptSubmit' ? { decision: 'deny', reason: 'fixture guard' } : undefined);
+    const id = await start(k); expect(await k.handle('turn/start', { threadId: id, input: 'fixture' })).toMatchObject({ failed: true, error: expect.stringContaining('fixture guard') });
+    expect(requests).toHaveLength(0);
+  });
+  it('marks length-truncated output incomplete and never executes truncated tool arguments', async () => {
+    const { k, events } = kernel([]); const id = await start(k);
+    vi.spyOn(k.gateway, 'stream').mockImplementation(async function* () { yield { type: 'text', text: 'partial reply' }; yield { type: 'toolCallStart', id: 'truncated', name: 'write' }; yield { type: 'toolCallDelta', id: 'truncated', argsDelta: '{"path":"should-not-exist.txt"' }; yield { type: 'done', finishReason: 'length' }; });
+    expect(await k.handle('turn/start', { threadId: id, input: 'fixture' })).toMatchObject({ failed: true, error: expect.stringContaining('尚未完成') });
+    expect(() => readFileSync(join(cwd, 'should-not-exist.txt'))).toThrow();
+    expect(events.some(event => event.method === 'turn/failed')).toBe(true);
+    expect(k.threads.read(id).meta.lastOutcome).toBe('failed');
+  });
   it('continues past the former 50-step wall and completes naturally', async () => {
     const previous = process.env.SMALT_MAX_STEPS; delete process.env.SMALT_MAX_STEPS;
     try {
-      const scripts = [...Array.from({ length: 72 }, () => ({ name: 'plan', input: { steps: [{ content: '持续执行', status: 'inProgress' }] } })), { text: 'completed after 72 tools' }];
+      const scripts = [...Array.from({ length: 71 }, () => ({ name: 'plan', input: { steps: [{ content: '持续执行', status: 'inProgress' }] } })), { name: 'plan', input: { steps: [{ content: '持续执行', status: 'completed' }] } }, { text: 'completed after 72 tools' }];
       const { k, requests } = kernel(scripts); const id = await start(k);
       expect(await k.handle('turn/start', { threadId: id, input: 'long task' })).toMatchObject({ failed: false, assistantText: 'completed after 72 tools' });
       expect(requests).toHaveLength(73);

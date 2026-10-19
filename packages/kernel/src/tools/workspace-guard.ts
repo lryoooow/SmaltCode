@@ -15,6 +15,17 @@ import { smaltHome } from '../config/settings.js';
 
 const CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin';
 
+/** Lexical check must run before realpath/stat to avoid opening SMB/device paths. */
+export function isNetworkPath(path: unknown): boolean {
+  return typeof path !== 'string' || path.includes('\0') || /^(?:[\\/]{2}|\\\?\?\\)/.test(path);
+}
+
+function credentialFile(path: string): boolean {
+  const name = path.replace(/\\/g, '/').split('/').at(-1)!.toLowerCase();
+  if (/^\.env(?:\.|$)/.test(name)) return !/^\.env\.(?:example|sample|template)(?:\.|$)/.test(name);
+  return /^(?:id_rsa|id_dsa|id_ecdsa|id_ed25519|\.git-credentials|\.netrc)$/.test(name) || /\.(?:key|pem|p12|pfx)$/.test(name);
+}
+
 function norm(p: string): string {
   const withSlashes = p.replace(/\\/g, '/');
   return CASE_INSENSITIVE ? withSlashes.toLowerCase() : withSlashes;
@@ -22,6 +33,7 @@ function norm(p: string): string {
 
 /** realpath that walks up to the nearest existing ancestor for new files. */
 export function realPathOf(p: string): string {
+  if (isNetworkPath(p)) return p;
   try {
     return realpathSync(p);
   } catch {
@@ -34,8 +46,10 @@ export function realPathOf(p: string): string {
 
 /** true when target resolves inside cwd (symlink-safe). */
 export function isInsideWorkspace(cwd: string, target: string): boolean {
+  if (isNetworkPath(cwd) || isNetworkPath(target)) return false;
   const root = norm(realPathOf(cwd));
   const abs = norm(realPathOf(resolve(cwd, target)));
+  if (isNetworkPath(root) || isNetworkPath(abs)) return false;
   return abs === root || abs.startsWith(`${root}/`);
 }
 
@@ -62,7 +76,9 @@ export function sensitivePaths(cwd: string): string[] {
   ];
   // project-local config that could escalate privileges on next run (N2)
   paths.push(resolve(cwd, '.smalt'));
+  paths.push(resolve(cwd, '.local-preview')); // development profile can also hold credentials
   paths.push(resolve(cwd, '.git', 'hooks'));
+  paths.push(resolve(cwd, '.git', 'config'));
   if (process.platform === 'win32') {
     paths.push(
       resolve(home, 'AppData/Roaming/Microsoft/Protect'),
@@ -77,7 +93,9 @@ export function sensitivePaths(cwd: string): string[] {
 
 /** true when the target resolves inside (or equals) a sensitive path. */
 export function isSensitivePath(cwd: string, target: string): boolean {
+  if (isNetworkPath(cwd) || isNetworkPath(target) || credentialFile(target)) return true;
   const abs = norm(realPathOf(resolve(cwd, target)));
+  if (isNetworkPath(abs) || credentialFile(abs)) return true;
   return sensitivePaths(cwd).some((dir) => {
     const d = norm(realPathOf(dir));
     return abs === d || abs.startsWith(`${d}/`);

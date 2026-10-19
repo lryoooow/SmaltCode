@@ -39,3 +39,6 @@ docs/RELEASE-0.0.6.md
 *.pem
 *.pfx
 *.key
+
+# Persistent, isolated development preview data (may contain private settings).
+.local-preview/

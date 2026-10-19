@@ -16,6 +16,7 @@ export {
   type RunEvent,
 } from './core/state-machine.js';
 export { baseSystemPrompt } from './core/prompts.js';
+export { VERSION } from './version.js';
 
 export * from './protocol/types.js';
 export {
@@ -45,6 +46,7 @@ export {
 export {
   loadSettings,
   updateUserSettingsFile,
+  apiKeyFor, normalizeEndpoint,
   smaltHome,
   resolveModelRef,
   resolveWorkspacePath,
@@ -94,7 +96,7 @@ export { parsePatch, PatchParseError, type PatchFile, type PatchHunk, type Patch
 export { applyPatch, ApplyError, type AppliedChange, type ApplyReport } from './tools/defs/apply-patch/apply.js';
 
 export { ContextPipeline, envInterceptor, systemInterceptor, type ContextInterceptor, type TurnContext } from './context/pipeline.js';
-export { isInsideWorkspace, isSensitivePath, sensitivePaths, realPathOf } from './tools/workspace-guard.js';
+export { isInsideWorkspace, isSensitivePath, sensitivePaths, realPathOf, isNetworkPath } from './tools/workspace-guard.js';
 export { ensureProjectTrust, isProjectTrusted, hasProjectSettings, trustProject, untrustProject } from './config/trust.js';
 export { Compactor, type CompactOptions, type CompactResult } from './compact/compactor.js';
 export { JsonlThreadStore } from './storage/jsonl.js';

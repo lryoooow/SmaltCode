@@ -14,6 +14,7 @@ import { once } from 'node:events';
 
 const EXE = join(process.cwd(), 'dist-pkg', 'smalt.exe');
 const RUN_AGAINST_EXE = existsSync(EXE);
+if (process.env.SMALT_REQUIRE_EXE === '1' && !RUN_AGAINST_EXE) throw new Error('Required CLI executable is missing: ' + EXE);
 
 describe.skipIf(!RUN_AGAINST_EXE)('packaged exe: security attacks are blocked', () => {
   let server: Server;

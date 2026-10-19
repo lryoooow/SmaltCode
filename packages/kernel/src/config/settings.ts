@@ -3,12 +3,13 @@
  * ← project (.smalt/settings.json). Later layers win.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { PERMISSION_MODES, parseRule, type PermissionMode, type PermissionRule } from '../permissions/rules.js';
 import { isProjectTrusted } from './trust.js';
 import type { CommandHookConfig, HookEvent } from '../hooks/bus.js';
+import { validContextWindow } from '../models/context-window.js';
 
 export interface ProviderConfig {
   baseUrl: string;
@@ -17,7 +18,11 @@ export interface ProviderConfig {
   apiKeyEnv?: string;
   /** literal key from a local config file — never commit these */
   apiKey?: string;
+  /** Credentials are valid only for this explicitly approved service endpoint. */
+  apiKeyEndpoint?: string;
   contextWindow?: number;
+  /** Explicit per-model limits for gateways/local models. Null restores automatic resolution. */
+  modelContextWindows?: Record<string, number | null>;
   defaultModel?: string;
 }
 
@@ -51,56 +56,48 @@ export const BUILTIN_PROVIDERS: Record<string, ProviderConfig> = {
     baseUrl: 'https://api.openai.com/v1',
     wire: 'chat',
     apiKeyEnv: 'OPENAI_API_KEY',
-    contextWindow: 128_000,
     defaultModel: 'gpt-4o-mini',
   },
   anthropic: {
     baseUrl: 'https://api.anthropic.com',
     wire: 'anthropic',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
-    contextWindow: 200_000,
-    defaultModel: 'claude-sonnet-4-5',
+    defaultModel: 'claude-sonnet-5-5',
   },
   deepseek: {
     baseUrl: 'https://api.deepseek.com/v1',
     wire: 'chat',
     apiKeyEnv: 'DEEPSEEK_API_KEY',
-    contextWindow: 128_000,
-    defaultModel: 'deepseek-chat',
+    defaultModel: 'deepseek-flash',
   },
   zhipu: {
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     wire: 'chat',
     apiKeyEnv: 'ZHIPU_API_KEY',
-    contextWindow: 128_000,
-    defaultModel: 'glm-4.6',
+    defaultModel: 'glm-5.3',
   },
   moonshot: {
     baseUrl: 'https://api.moonshot.cn/v1',
     wire: 'chat',
     apiKeyEnv: 'MOONSHOT_API_KEY',
-    contextWindow: 128_000,
-    defaultModel: 'kimi-k2-0905-preview',
+    defaultModel: 'kimi-k3',
   },
   dashscope: {
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     wire: 'chat',
     apiKeyEnv: 'DASHSCOPE_API_KEY',
-    contextWindow: 131_072,
-    defaultModel: 'qwen-max',
+    defaultModel: 'qwen3.8-max',
   },
   openrouter: {
     baseUrl: 'https://openrouter.ai/api/v1',
     wire: 'chat',
     apiKeyEnv: 'OPENROUTER_API_KEY',
-    contextWindow: 200_000,
     defaultModel: 'openai/gpt-4o-mini',
   },
   ollama: {
     baseUrl: 'http://127.0.0.1:11434/v1',
     wire: 'chat',
     apiKey: 'ollama',
-    contextWindow: 32_000,
     defaultModel: 'qwen3:8b',
   },
 };
@@ -139,7 +136,7 @@ function stricterMode(a: PermissionMode, b: PermissionMode): PermissionMode {
   return MODE_STRICTNESS[a] >= MODE_STRICTNESS[b] ? a : b;
 }
 
-export function loadSettings(cwd: string, overrides?: { permissionMode?: PermissionMode }, userSettings?: Settings): Settings {
+export function loadSettings(cwd: string, overrides?: { permissionMode?: PermissionMode }, userSettings?: Settings, includeProject = true): Settings {
   const settings = userSettings ? structuredClone(userSettings) : defaultSettings();
 
   const userFile = join(smaltHome(), 'settings.json');
@@ -156,7 +153,7 @@ export function loadSettings(cwd: string, overrides?: { permissionMode?: Permiss
 
   if (overrides?.permissionMode) settings.permissions.mode = overrides.permissionMode;
   const projectFile = join(cwd, '.smalt', 'settings.json');
-  if (existsSync(projectFile)) {
+  if (includeProject && existsSync(projectFile)) {
     try {
       const raw = JSON.parse(readFileSync(projectFile, 'utf8')) as Record<string, unknown>;
       if (isProjectTrusted(cwd)) {
@@ -214,7 +211,9 @@ function applyLayer(target: Settings, layer: Record<string, unknown>, project = 
         ...(typeof cfg.apiKeyEnv === 'string' ? { apiKeyEnv: cfg.apiKeyEnv } : {}),
         ...(typeof cfg.apiKey === 'string' ? { apiKey: cfg.apiKey } : {}),
         ...(!project && typeof cfg.apiKeyEnc === 'string' ? { apiKeyEnc: cfg.apiKeyEnc } : {}),
-        ...(typeof cfg.contextWindow === 'number' ? { contextWindow: cfg.contextWindow } : {}),
+        ...(!project && typeof cfg.apiKeyEndpoint === 'string' ? { apiKeyEndpoint: cfg.apiKeyEndpoint } : {}),
+        ...(validContextWindow(cfg.contextWindow) ? { contextWindow: cfg.contextWindow } : cfg.contextWindow === null ? { contextWindow: undefined } : {}),
+        ...(cfg.modelContextWindows && typeof cfg.modelContextWindows === 'object' && !Array.isArray(cfg.modelContextWindows) ? { modelContextWindows: { ...existing.modelContextWindows, ...Object.fromEntries(Object.entries(cfg.modelContextWindows).filter(([name, value]) => name.length > 0 && name.length <= 256 && !['__proto__', 'constructor', 'prototype'].includes(name) && (value === null || validContextWindow(value)))) } } : {}),
         ...(typeof cfg.defaultModel === 'string' ? { defaultModel: cfg.defaultModel } : {}),
       };
     }
@@ -254,9 +253,9 @@ function applyLayer(target: Settings, layer: Record<string, unknown>, project = 
   if (layer.compact && typeof layer.compact === 'object') {
     const c = layer.compact as Record<string, unknown>;
     if (typeof c.enabled === 'boolean') target.compact.enabled = c.enabled;
-    if (typeof c.threshold === 'number') target.compact.threshold = Math.min(0.98, Math.max(0.3, c.threshold));
-    if (typeof c.keepMessages === 'number') target.compact.keepMessages = Math.max(2, Math.round(c.keepMessages));
-    if (typeof c.maxConsecutive === 'number') target.compact.maxConsecutive = Math.max(1, Math.round(c.maxConsecutive));
+    if (typeof c.threshold === 'number' && Number.isFinite(c.threshold)) target.compact.threshold = Math.min(0.98, Math.max(0.3, c.threshold));
+    if (typeof c.keepMessages === 'number' && Number.isFinite(c.keepMessages)) target.compact.keepMessages = Math.max(2, Math.round(c.keepMessages));
+    if (typeof c.maxConsecutive === 'number' && Number.isFinite(c.maxConsecutive)) target.compact.maxConsecutive = Math.max(1, Math.round(c.maxConsecutive));
   }
 }
 
@@ -291,9 +290,12 @@ function defaultModelOf(settings: Settings, provider: string): string {
 }
 
 export function apiKeyFor(provider: ProviderConfig): string | undefined {
+  if (provider.apiKeyEndpoint && normalizeEndpoint(provider.baseUrl) !== normalizeEndpoint(provider.apiKeyEndpoint)) return undefined;
   if (provider.apiKeyEnv && process.env[provider.apiKeyEnv]) return process.env[provider.apiKeyEnv];
   return provider.apiKey;
 }
+
+export function normalizeEndpoint(value: string): string { return value.replace(/\/+$/, ''); }
 
 /** Absolute-path helper for tools: input paths are resolved against cwd. */
 /**
@@ -303,6 +305,7 @@ export function apiKeyFor(provider: ProviderConfig): string | undefined {
 export function updateUserSettingsFile(
   cwd: string,
   patch: Record<string, unknown>,
+  includeProject = true,
 ): Settings {
   const file = join(smaltHome(), 'settings.json');
   let data: Record<string, unknown> = {};
@@ -316,8 +319,10 @@ export function updateUserSettingsFile(
     mkdirSync(smaltHome(), { recursive: true });
   }
   deepMerge(data, patch);
-  writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  return loadSettings(cwd);
+  const temporary = file + '.tmp';
+  writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporary, file);
+  return loadSettings(cwd, undefined, undefined, includeProject);
 }
 
 function deepMerge(target: Record<string, unknown>, patch: Record<string, unknown>): void {

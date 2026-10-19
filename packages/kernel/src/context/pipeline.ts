@@ -85,14 +85,10 @@ export function envInterceptor(now = () => new Date()): ContextInterceptor {
     name: 'env',
     priority: 2000,
     async intercept(ctx) {
-      ctx.systemExtras.push(`Current date: ${now().toISOString().slice(0, 10)}`);
-      const last = ctx.prompt[ctx.prompt.length - 1];
-      if (last && last.role === 'user' && typeof last.content === 'string') {
-        ctx.prompt[ctx.prompt.length - 1] = {
-          role: 'user',
-          content: `${last.content}\n\n<system-info>${ctx.systemExtras.join('\n')}</system-info>`,
-        };
-      }
+      const date = now();
+      const localDate = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+      ctx.systemExtras.push(`Current date: ${localDate} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`);
+      ctx.prompt.unshift({ role: 'system', content: '<system-info>' + ctx.systemExtras.join('\n') + '</system-info>' });
     },
   };
 }

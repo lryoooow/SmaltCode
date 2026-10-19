@@ -35,14 +35,14 @@ const manifest = {
   type: 'commonjs',
   bin: { smalt: 'dist-bundle/main.cjs' },
   main: 'dist-bundle/main.cjs',
-  files: ['dist-bundle'],
+  files: ['dist-bundle', 'LICENSE', 'NOTICE'],
   engines: { node: '>=22' },
   keywords: ['ai', 'agent', 'coding-agent', 'cli', 'llm'],
 };
 writeFileSync(join(stage, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
 
 mkdirSync(outDir, { recursive: true });
-execSync('npm pack --pack-destination', { cwd: stage, stdio: 'inherit' });
+execSync('npm pack', { cwd: stage, stdio: 'inherit' });
 // npm pack writes smalt-<version>.tgz into cwd; move it to dist-pkg
 const tgz = `smalt-${pkg.version}.tgz`;
 cpSync(join(stage, tgz), join(outDir, tgz), { force: true });

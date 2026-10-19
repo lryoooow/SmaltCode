@@ -14,7 +14,8 @@ import type { Compactor } from '../compact/compactor.js';
 import type { HookBus } from '../hooks/bus.js';
 import type { ModelStreamer } from '../models/types.js';
 import type { ChatMessage, ToolCall } from '../models/types.js';
-import { estimateHistoryTokens } from '../models/types.js';
+import { estimateHistoryTokens, estimateTokens } from '../models/types.js';
+import { budgetToolOutput } from '../util.js';
 import { ModelError, type ModelDelta, type ModelRequest } from '../models/types.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelRef } from '../config/settings.js';
@@ -26,12 +27,14 @@ import {
   type Item,
   type PlanItem,
   type ThreadTokenUsage,
+  type ContextNotice,
 } from '../protocol/types.js';
 
 import type { ThreadStore } from '../storage/thread-store.js';
 import type { ToolOrchestrator, ToolRunOutcome } from '../tools/orchestrator.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { errorMessage, newId, nowIso } from '../util.js';
+import { assessTurn, displayCommand, itemAssessment, missingProgram, operationAssessments, verifiesSameCheck } from '../protocol/assessment.js';
 import type { SessionRunStateMachine } from './state-machine.js';
 
 export interface TurnRunnerDeps {
@@ -53,16 +56,20 @@ export interface TurnOutcome {
   error?: string;
   assistantText: string;
   usage: { inputTokens: number; outputTokens: number };
+  summary?: Omit<import('../protocol/types.js').TurnSummary, 'turnId'>;
 }
 
 export class TurnRunner {
   constructor(private readonly deps: TurnRunnerDeps) {}
+  get contextWindow(): number { return this.deps.compactor.contextWindow; }
+  get thresholdTokens(): number { return this.deps.compactor.thresholdTokens(); }
+  contextOverhead = 0;
 
-  async compact(state: SessionRunStateMachine, runtime: { threadId: string; modelRef: ModelRef; history: ChatMessage[]; signal: AbortSignal; onHistoryReplaced(history: ChatMessage[]): void }): Promise<{ compacted: boolean; reason?: string }> {
+  async compact(state: SessionRunStateMachine, runtime: { threadId: string; modelRef: ModelRef; history: ChatMessage[]; signal: AbortSignal; contextWindow?(): number; onHistoryReplaced(history: ChatMessage[]): void }): Promise<{ compacted: boolean; reason?: string }> {
     if (state.isRunning()) throw new Error('Stop the task before compacting');
     state.transition('COMPACT_STARTED');
     try {
-      const result = await this.deps.compactor.compact(runtime.history, runtime.modelRef, runtime.signal);
+      const result = await this.deps.compactor.compact(runtime.history, runtime.modelRef, runtime.signal, runtime.contextWindow?.());
       if (result.compacted) {
         runtime.onHistoryReplaced(result.history);
         this.deps.store.append(runtime.threadId, { t: 'compacted', summary: result.summary ?? '', history: result.history, at: nowIso() });
@@ -83,18 +90,20 @@ export class TurnRunner {
       steerQueue: import('../protocol/types.js').UserPrompt[];
       signal: AbortSignal;
       onHistoryReplaced(history: ChatMessage[]): void;
+      onContextNotice?(notice: ContextNotice): void;
       addUsage(input: number, output: number): void;
       usageTotals(): { inputTokens: number; outputTokens: number };
       contextWindow(): number;
     },
     prompt: import('../protocol/types.js').UserPrompt,
   ): Promise<TurnOutcome> {
-    const { text: input, displayText, references } = typeof prompt === 'string' ? { text: prompt, displayText: undefined, references: undefined } : prompt;
+    const { text: input, displayText, references, images } = typeof prompt === 'string' ? { text: prompt, displayText: undefined, references: undefined, images: undefined } : prompt;
     const { threadId } = runtime;
     const startedAt = Date.now();
     const firstItem = runtime.items.length;
     let toolCount = 0;
     let reportedTokens = 0;
+    let contextOverhead = 0;
     const turnId = newId('turn');
     const outcome: TurnOutcome = {
       turnId,
@@ -120,22 +129,26 @@ export class TurnRunner {
       references,
     };
     runtime.items.push(userItem);
-    runtime.history.push({ role: 'user', content: input });
-    this.deps.store.append(threadId, { t: 'user-msg', id: userItem.id, text: input, displayText, references, at: nowIso() });
+    runtime.history.push({ role: 'user', content: images?.length ? [{ type: 'text', text: input }, ...images] : input });
+    this.deps.store.append(threadId, { t: 'user-msg', id: userItem.id, text: input, displayText, references, images, at: nowIso() });
     this.deps.notify(Notifications.itemStarted, { item: userItem });
     this.deps.notify(Notifications.itemCompleted, { item: userItem });
 
-    await this.deps.hooks.emit('UserPromptSubmit', { threadId, turnId, prompt: input });
     state.transition('RUN_ACCEPTED');
 
     let stopHookActive = false;
+    let verificationReminderSent = false;
     // Continuous by default. Hosts can opt into a limit for unattended runs;
     // desktop tasks finish naturally or through the existing interrupt path.
     const requestedSteps = Number(process.env.SMALT_MAX_STEPS);
     const maxSteps = Number.isFinite(requestedSteps) && requestedSteps > 0 ? Math.floor(requestedSteps) : Infinity;
     let step = 0;
+    this.deps.compactor.resetConsecutive();
 
     try {
+      const submitted = await this.deps.hooks.emit('UserPromptSubmit', { threadId, turnId, cwd: runtime.cwd, prompt: input });
+      if (submitted?.decision === 'deny' || submitted?.anyFailed) throw new Error('提交请求被项目 Hook 阻止：' + (submitted?.reason ?? 'Hook 执行失败'));
+      if (this.deps.gateway.prepare) this.deps.compactor.setContextWindow(await this.deps.gateway.prepare(runtime.modelRef, runtime.signal));
       for (; step < maxSteps; step++) {
         if (runtime.signal.aborted) {
           outcome.interrupted = true;
@@ -145,8 +158,8 @@ export class TurnRunner {
         // fold steering messages into the history before the next sample
         while (runtime.steerQueue.length) {
           const queued = runtime.steerQueue.shift()!;
-          const { text: msg, displayText, references } = typeof queued === 'string' ? { text: queued, displayText: undefined, references: undefined } : queued;
-          runtime.history.push({ role: 'user', content: msg });
+          const { text: msg, displayText, references, images } = typeof queued === 'string' ? { text: queued, displayText: undefined, references: undefined, images: undefined } : queued;
+          runtime.history.push({ role: 'user', content: images?.length ? [{ type: 'text', text: msg }, ...images] : msg });
           const steerItem: Item = {
             kind: 'userMessage',
             id: newId('um'),
@@ -158,42 +171,59 @@ export class TurnRunner {
             references,
           };
           runtime.items.push(steerItem);
-          this.deps.store.append(threadId, { t: 'user-msg', id: steerItem.id, text: msg, displayText, references, at: nowIso() });
+          this.deps.store.append(threadId, { t: 'user-msg', id: steerItem.id, text: msg, displayText, references, images, at: nowIso() });
           this.deps.notify(Notifications.itemStarted, { item: steerItem });
           this.deps.notify(Notifications.itemCompleted, { item: steerItem });
         }
 
-        // mid-turn compaction (estimated tokens are the floor, reported the ceiling)
-        const reported = reportedTokens;
-        if (this.deps.compactor.needsCompaction(runtime.history, reported, runtime.contextWindow())) {
+        const specs = this.deps.tools.specs();
+        const assemble = () => {
+          const ctx: TurnContext = { threadId, turnId, cwd: runtime.cwd, modelRef: runtime.modelRef, history: runtime.history, prompt: [...runtime.history], input, toolNames: this.deps.tools.list().map(t => t.name), systemExtras: [] };
+          return this.deps.pipeline.assemble(ctx);
+        };
+        let messages = await assemble();
+        let overhead = Math.max(0, estimateHistoryTokens(messages) - estimateHistoryTokens(runtime.history)) + estimateTokens(JSON.stringify(specs));
+        contextOverhead = overhead;
+        this.contextOverhead = overhead;
+        const window = runtime.contextWindow();
+        this.emitUsage(runtime, reportedTokens, overhead);
+        while (this.deps.compactor.needsCompaction(runtime.history, reportedTokens, window, overhead)) {
           state.transition('COMPACT_STARTED');
-          const result = await this.deps.compactor.compact(runtime.history, runtime.modelRef, runtime.signal);
+          const inputTokens = Math.max(estimateHistoryTokens(messages) + estimateTokens(JSON.stringify(specs)), reportedTokens);
+          const result = await this.deps.compactor.compact(runtime.history, runtime.modelRef, runtime.signal, window, inputTokens);
           if (result.compacted) {
             runtime.onHistoryReplaced(result.history);
             runtime.history = result.history;
+            reportedTokens = 0;
             this.deps.store.append(threadId, { t: 'compacted', summary: result.summary ?? '', history: result.history, at: nowIso() });
             this.deps.notify(Notifications.threadCompacted, { threadId, summary: result.summary });
+            messages = await assemble();
+            overhead = Math.max(0, estimateHistoryTokens(messages) - estimateHistoryTokens(runtime.history)) + estimateTokens(JSON.stringify(specs));
+            this.contextOverhead = contextOverhead = overhead;
+            this.emitUsage(runtime, reportedTokens, overhead);
           }
+          const notice: ContextNotice = {
+            turnId, level: !result.compacted || result.method === 'toolOutputs' ? 'warning' : 'info',
+            message: result.method === 'toolOutputs' ? '模型摘要未生成，已精简早期工具输出，任务继续。' : result.compacted ? '上下文已整理，继续任务。' : '摘要暂未生成，原始记录已保留；有剩余空间时继续任务。',
+            reason: result.reason, beforeTokens: result.beforeTokens, afterTokens: result.afterTokens,
+            contextWindow: window, thresholdTokens: this.deps.compactor.thresholdTokens(window), inputTokens,
+          };
+          this.deps.store.append(threadId, { t: 'context-notice', notice, at: nowIso() });
+          runtime.onContextNotice?.(notice);
+          this.deps.notify(Notifications.threadContextNotice, { threadId, notice });
+          if (result.reason) this.deps.log(`compaction ${threadId}: ${result.reason}`);
           state.transition('COMPACT_ENDED');
           if (runtime.signal.aborted) {
             outcome.interrupted = true;
             break;
           }
+          // Never repeat an identical failing proactive summary in a tight loop.
+          if (!result.compacted && !this.deps.compactor.lacksHeadroom(runtime.history, reportedTokens, window, overhead)) break;
         }
-
-        // assemble context
-        const ctx: TurnContext = {
-          threadId,
-          turnId,
-          cwd: runtime.cwd,
-          modelRef: runtime.modelRef,
-          history: runtime.history,
-          prompt: [...runtime.history],
-          input,
-          toolNames: this.deps.tools.list().map((t) => t.name),
-          systemExtras: [],
-        };
-        const messages = await this.deps.pipeline.assemble(ctx);
+        if (this.deps.compactor.enabled && this.deps.compactor.exhausted && this.deps.compactor.lacksHeadroom(runtime.history, reportedTokens, window, overhead)) {
+          throw new Error(`上下文剩余空间不足，任务已暂停，已有结果与记录已保留。\n具体原因：${this.deps.compactor.lastFailure ?? '无法进一步整理上下文'}\n可更换模型后继续，或减少本次新增引用。当前估算 ${estimateHistoryTokens(messages) + estimateTokens(JSON.stringify(specs))} / ${window} Token（含系统与工具说明）。`);
+        }
+        if (runtime.signal.aborted) { outcome.interrupted = true; break; }
 
         // sample
         state.transition('MODEL_REQUEST_STARTED');
@@ -212,7 +242,7 @@ export class TurnRunner {
         try {
           for await (const delta of this.streamWithRetry(runtime.modelRef, {
             messages,
-            tools: this.deps.tools.specs(),
+            tools: specs,
             signal: runtime.signal,
           }, () => state.transition('RETRYING'), () => state.transition('MODEL_REQUEST_STARTED'))) {
             if (!sawFirstDelta) {
@@ -296,8 +326,26 @@ export class TurnRunner {
           throw streamError;
         }
 
+        if (finish === 'length' || finish === 'contentFilter') {
+          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
+          throw new Error(finish === 'length' ? '模型达到单次输出上限，回复尚未完成。可发送“继续”接着处理；未执行不完整的工具调用。' : '模型服务中止了这次回复，请检查提示与服务端限制后继续。');
+        }
         if (!toolCalls.length) {
           if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
+          const currentItems = runtime.items.slice(firstItem);
+          const assessment = assessTurn(currentItems, input);
+          const results = operationAssessments(currentItems);
+          const recoverable = [...results.values()].some(a => !a.recoveredBy && (a.code === 'commandUnavailable' || a.code === 'invalidInvocation' || a.code === 'exitCodeConflict' || a.code === 'shellStatusMasked'));
+          // One opportunity to repair an incomplete verification, never an unbounded
+          // retry loop or an implicit authorization to repeat denied operations.
+          if (!verificationReminderSent && (!text.trim() || assessment.pendingSteps || assessment.verificationMissing || recoverable || (assessment.intent === 'change' && assessment.checks.findings))) {
+            verificationReminderSent = true;
+            const reminder = '<system-reminder>Completion verification: ' + JSON.stringify(assessment) + '. Before ending, inspect unresolved results and unfinished plan steps. Recover missing commands with available tools; rerun conflicting checks as one program + args, preserving scope. Never repeat denied operations or install dependencies without authorization. Respect read-only requests: report findings rather than editing them. An isolated test pass does not clear a suite failure. If verification cannot be completed, explain the exact limitation and leave it unverified. Provide a substantive final response; do not claim success without evidence.</system-reminder>';
+            runtime.history.push({ role: 'user', content: reminder });
+            this.deps.store.append(threadId, { t: 'verification-reminder', text: reminder, at: nowIso() });
+            continue;
+          }
+          if (!text.trim()) throw new Error('模型未返回任务结果，已有执行记录已保留。请检查模型连接后继续。');
           // model chose to stop → consult stop hooks
           const stopDecision = await this.deps.hooks.emit('Stop', { threadId, turnId });
           if (stopDecision?.decision === 'deny' && !stopDecision.anyFailed) {
@@ -339,7 +387,7 @@ export class TurnRunner {
           const parsed = safeJsonParse(tc.arguments) as Record<string, unknown>;
           this.deps.notify(Notifications.itemStarted, { item: {
             kind: 'commandExecution', id: tc.id, threadId, turnId, createdAt: nowIso(), status: 'inProgress',
-            tool: tc.name, command: typeof parsed.command === 'string' ? parsed.command : `${tc.name} ${String(parsed.path ?? '')}`, output: '', exitCode: null,
+            tool: tc.name, command: tc.name === 'shell' ? displayCommand(parsed) : `${tc.name} ${String(parsed.path ?? '')}`, output: '', exitCode: null,
           } });
           const result = await this.executeToolCall(tc, { threadId, turnId, cwd: runtime.cwd, signal: runtime.signal, approvalBatch: { ...approvalBatch, operations: approvalBatch.operations.slice(toolCalls.indexOf(tc)) } });
           this.recordToolResult(runtime, outcome, tc, result);
@@ -353,16 +401,6 @@ export class TurnRunner {
           break;
         }
 
-        if (finish === 'length') {
-          // context exhausted mid-answer — try compaction once, then continue
-          const forceCompact = await this.deps.compactor.compact(runtime.history, runtime.modelRef, runtime.signal);
-          if (forceCompact.compacted) {
-            runtime.onHistoryReplaced(forceCompact.history);
-            runtime.history = forceCompact.history;
-            this.deps.store.append(threadId, { t: 'compacted', summary: forceCompact.summary ?? '', history: forceCompact.history, at: nowIso() });
-            this.deps.notify(Notifications.threadCompacted, { threadId, summary: forceCompact.summary });
-          }
-        }
         // loop continues → MODEL_REQUEST_STARTED
       }
       if (step >= maxSteps && !outcome.interrupted) throw new Error(`已达到 ${maxSteps} 步执行上限，请检查当前结果后继续。`);
@@ -386,16 +424,20 @@ export class TurnRunner {
         at: nowIso(),
       });
     }
-    this.deps.store.append(threadId, { t: 'turn-ended', turnId, at: nowIso(), interrupted: outcome.interrupted || undefined });
+    const assessment = assessTurn(runtime.items.slice(firstItem), input, outcome.interrupted);
+    if (outcome.failed) assessment.status = 'needsAttention';
+    const summary = { durationMs: Date.now() - startedAt, toolCount, fileCount: new Set(runtime.items.slice(firstItem).filter(i => i.kind === 'fileChange' && i.status === 'completed').map(i => (i as FileChangeItem).path)).size, usage: outcome.usage, assessment };
+    outcome.summary = summary;
+    this.deps.store.append(threadId, { t: 'turn-ended', turnId, at: nowIso(), interrupted: outcome.interrupted || undefined, error: outcome.error, summary });
     state.transition(outcome.failed ? 'RUN_FAILED' : 'FORCE_IDLE');
-    const summary = { durationMs: Date.now() - startedAt, toolCount, fileCount: new Set(runtime.items.slice(firstItem).filter(i => i.kind === 'fileChange' && i.status === 'completed').map(i => (i as FileChangeItem).path)).size, usage: outcome.usage };
 
     if (outcome.failed) {
+      await this.deps.hooks.emit('StopFailure', { threadId, turnId, cwd: runtime.cwd, error: outcome.error });
       this.deps.notify(Notifications.turnFailed, { threadId, turnId, error: outcome.error });
     } else {
       this.deps.notify(Notifications.turnCompleted, { threadId, turnId, interrupted: outcome.interrupted, summary });
     }
-    this.emitUsage(runtime, reportedTokens);
+    this.emitUsage(runtime, reportedTokens, contextOverhead);
     return outcome;
   }
 
@@ -457,7 +499,7 @@ export class TurnRunner {
         const steps = (emitted.payload as { steps: PlanItem['steps'] }).steps;
         const item: PlanItem = { ...base, kind: 'plan', status: 'completed', steps };
         runtime.items.push(item);
-        this.deps.store.append(threadId, { t: 'plan', steps, at });
+        this.deps.store.append(threadId, { t: 'plan', id: item.id, steps, at });
         this.deps.notify(Notifications.itemCompleted, { item });
       }
     }
@@ -465,16 +507,20 @@ export class TurnRunner {
     let item: Item;
     if (emittedFiles.length) {
       item = emittedFiles[0]!;
+    } else if (tc.name === 'ask_user') {
+      const input = safeJsonParse(tc.arguments) as { question?: string; options?: string[] };
+      item = { ...base, kind: 'userInputRequest', status: result.isError ? 'failed' : 'completed', question: input.question ?? '询问用户', options: input.options, answer: result.output || '未回答' };
     } else if (tc.name === 'shell') {
-      const command = String((safeJsonParse(tc.arguments) as Record<string, unknown>)?.command ?? '');
+      const command = displayCommand(safeJsonParse(tc.arguments) as Record<string, unknown>);
       item = {
         ...base,
         kind: 'commandExecution',
         status: result.denied ? 'blocked' : result.isError ? 'failed' : 'completed',
         command: command || result.deltas.join(''),
         tool: tc.name,
-        exitCode: result.isError ? 1 : 0,
+        exitCode: result.assessment?.exitCode ?? (result.output.match(/^\[exit (-?\d+)\]/) ? Number(result.output.match(/^\[exit (-?\d+)\]/)![1]) : null),
         output: result.output,
+        assessment: result.assessment,
       } as CommandExecutionItem;
     } else if (tc.name === 'write' || tc.name === 'apply_patch') {
       const diffMatch = result.output.match(/^(Created|Updated) (.+)$/m);
@@ -508,33 +554,47 @@ export class TurnRunner {
       runtime.items.push(completed);
       this.deps.notify(Notifications.itemCompleted, { item: completed });
     }
+    const recoveryId = (safeJsonParse(tc.arguments) as Record<string, unknown>).recoveryOf;
+    const prior = typeof recoveryId === 'string' ? runtime.items.find(i => i.id === recoveryId && i.turnId === outcome.turnId && i.status !== 'blocked') : undefined;
+    const priorAssessment = prior ? itemAssessment(prior) : undefined;
+    const replacement = tc.name === 'grep' ? /\b(?:grep|findstr)\b/i : tc.name === 'read' ? /\b(?:head|tail|cat|type)\b/i : tc.name === 'glob' ? /\b(?:ls|find|dir)\b/i : undefined;
+    const nativeAlternative = prior?.kind === 'commandExecution' && !priorAssessment?.check && priorAssessment?.code === 'commandUnavailable' && replacement?.test(missingProgram(prior.output) ?? '');
+    const verifiedRetry = prior?.kind === 'commandExecution' && priorAssessment && item.kind === 'commandExecution' && item.assessment && verifiesSameCheck({ command: prior.command, assessment: priorAssessment }, { command: item.command, assessment: item.assessment });
+    if (!result.isError && !result.denied && prior?.kind === 'commandExecution' && priorAssessment && (nativeAlternative || verifiedRetry)) {
+      const recovery = verifiedRetry ? 'retry' : 'alternative';
+      prior.assessment = { ...priorAssessment, recoveredBy: tc.id, recovery };
+      this.deps.store.append(threadId, { t: 'tool-recovered', id: prior.id, recoveredBy: tc.id, recovery, at });
+      this.deps.notify(Notifications.itemCompleted, { item: prior });
+    }
 
+    const contextOutput = budgetToolOutput(result.output || '(no output)');
     runtime.history.push({
       role: 'tool',
       toolCallId: tc.id,
-      content: result.output || '(no output)',
+      content: contextOutput,
       isError: result.isError,
     });
     this.deps.store.append(threadId, {
       t: 'tool-result',
       id: tc.id,
       tool: tc.name,
-      output: result.output,
+      output: contextOutput,
       isError: result.isError,
       at,
       items,
     });
   }
 
-  private emitUsage(runtime: { threadId: string; usageTotals(): { inputTokens: number; outputTokens: number }; contextWindow(): number; history: ChatMessage[] }, reportedTokens = 0): void {
+  private emitUsage(runtime: { threadId: string; usageTotals(): { inputTokens: number; outputTokens: number }; contextWindow(): number; history: ChatMessage[] }, reportedTokens = 0, overhead = 0): void {
     const totals = runtime.usageTotals();
-    const est = estimateHistoryTokens(runtime.history);
+    const est = estimateHistoryTokens(runtime.history) + overhead;
     const usage: ThreadTokenUsage = {
-      inputTokens: reportedTokens || est,
+      inputTokens: Math.max(reportedTokens, est),
       outputTokens: totals.outputTokens,
       totalInputTokens: totals.inputTokens,
       totalOutputTokens: totals.outputTokens,
       contextWindow: runtime.contextWindow(),
+      thresholdTokens: this.deps.compactor.thresholdTokens(runtime.contextWindow()),
       contextUsage: Math.min(1, Math.max(reportedTokens, est) / runtime.contextWindow()),
     };
     this.deps.notify(Notifications.threadTokenUsage, { threadId: runtime.threadId, usage });

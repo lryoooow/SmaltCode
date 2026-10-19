@@ -25,7 +25,7 @@ import {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 interface ChatToolCallDelta {
-  index: number;
+  index?: number;
   id?: string;
   type?: string;
   function?: { name?: string; arguments?: string };
@@ -116,6 +116,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
         headers,
         body: JSON.stringify(body),
         signal: req.signal,
+        redirect: 'error',
       });
     } catch (err) {
       throw new ModelError(
@@ -124,7 +125,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
     }
 
     // Some OpenAI-compatible backends reject unknown stream_options with 400.
-    if (res.status === 400 && 'stream_options' in body) {
+    if (res.status === 400 && 'stream_options' in body && /stream_options/i.test(await readErrorBody(res.clone()))) {
       const retryBody = { ...body };
       delete retryBody.stream_options;
       void res.body?.cancel().catch(() => {});
@@ -134,6 +135,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
           headers,
           body: JSON.stringify(retryBody),
           signal: req.signal,
+          redirect: 'error',
         });
       } catch (err) {
         throw new ModelError(
@@ -172,7 +174,11 @@ export class ChatCompletionsAdapter implements ModelAdapter {
       }));
     }
     if (req.temperature !== undefined) body.temperature = req.temperature;
-    if (req.maxOutputTokens) body.max_tokens = req.maxOutputTokens;
+    if (req.maxOutputTokens) {
+      const endpoint = new URL(this.opts.baseUrl);
+      const modernOpenAI = endpoint.origin === 'https://api.openai.com' && /^\/(?:v1)\/?$/.test(endpoint.pathname) && /^(?:gpt-[56](?:[.-]|$)|o[134](?:-|$))/.test(req.model);
+      body[modernOpenAI ? 'max_completion_tokens' : 'max_tokens'] = req.maxOutputTokens;
+    }
 
     const res = await this.doRequest(body, req);
     if (!res.body) {
@@ -215,12 +221,25 @@ export class ChatCompletionsAdapter implements ModelAdapter {
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls as ChatToolCallDelta[]) {
-          const existing = toolCallsByIndex.get(tc.index);
+          // Providers omitting index must identify parallel calls by ID. A
+          // lone ID-less continuation is safe only when exactly one call exists.
+          let index = tc.index;
+          if (index === undefined) {
+            const identified = tc.id ? [...toolCallsByIndex].find(([, call]) => call.id === tc.id) : undefined;
+            if (identified) index = identified[0];
+            else if (tc.id) { index = 0; while (toolCallsByIndex.has(index)) index++; }
+            else if (toolCallsByIndex.size === 1) index = toolCallsByIndex.keys().next().value!;
+            else if (toolCallsByIndex.size === 0 && delta.tool_calls.length === 1) index = 0;
+            else throw new ModelError('Ambiguous tool-call stream: parallel calls require index or id');
+          }
+          if (!Number.isSafeInteger(index) || index < 0) throw new ModelError('Invalid tool-call index');
+          const existing = toolCallsByIndex.get(index);
+          if (existing && tc.id && existing.id !== tc.id) throw new ModelError('Tool-call identity changed during streaming');
           if (!existing) {
-            const id = tc.id ?? `call_${tc.index}`;
+            const id = tc.id ?? `call_${index}`;
             const name = tc.function?.name ?? '';
             const args = tc.function?.arguments ?? '';
-            toolCallsByIndex.set(tc.index, { id, name, args });
+            toolCallsByIndex.set(index, { id, name, args });
             if (name) {
               yield { type: 'toolCallStart', id, name };
               emittedToolCall = true;

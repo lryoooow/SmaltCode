@@ -14,7 +14,7 @@ if (process.platform === 'win32') app.setAppUserModelId(desktopAppId(app.isPacka
 
 let tray: DesktopTray | undefined;
 
-if (process.env.SMALT_HOME && testing) app.setPath('userData', join(process.env.SMALT_HOME, 'desktop-test-profile'));
+if (process.env.SMALT_HOME && (testing || app.commandLine.hasSwitch('development-preview'))) app.setPath('userData', join(process.env.SMALT_HOME, testing ? 'desktop-test-profile' : 'desktop-preview-profile'));
 
 // single instance: a second launch focuses the existing window
 if (!app.requestSingleInstanceLock()) {
@@ -39,11 +39,11 @@ if (!app.requestSingleInstanceLock()) {
       opacity: app.commandLine.hasSwitch('tray-smoke-test') ? 0 : 1,
       focusable: !app.commandLine.hasSwitch('tray-smoke-test'),
       show: false,
-      title: 'SmaltCode',
+      title: app.commandLine.hasSwitch('development-preview') ? 'SmaltCode 开发预览' : 'SmaltCode',
       icon: join(__dirname, 'smalt.png'),
       webPreferences: {
         preload: join(__dirname, '..', 'preload', 'index.js'),
-        additionalArguments: [`--smalt-version=${app.getVersion()}`],
+        additionalArguments: [`--smalt-version=${app.getVersion()}`, ...(app.commandLine.hasSwitch('development-preview') ? ['--smalt-development-preview'] : [])],
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -52,6 +52,14 @@ if (!app.requestSingleInstanceLock()) {
         backgroundThrottling: false,
       },
     });
+    if (process.platform === 'win32') {
+      win.setAppDetails({
+        appId: desktopAppId(app.isPackaged, testing),
+        appIconPath: join(__dirname, 'smalt.ico'), appIconIndex: 0,
+        relaunchDisplayName: app.commandLine.hasSwitch('development-preview') ? 'SmaltCode 开发预览' : 'SmaltCode',
+        relaunchCommand: app.isPackaged ? '"' + process.execPath + '"' : '"' + process.execPath + '" "' + app.getAppPath() + '"' + (app.commandLine.hasSwitch('development-preview') ? ' --development-preview' : ''),
+      });
+    }
 
     // Windows: soft Mica backdrop when supported (best-effort)
     try {
@@ -61,6 +69,8 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     // the app is a single local page: no navigation, no popups, ever
+    win.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    win.webContents.session.setPermissionCheckHandler(() => false);
     const rendererPath = join(__dirname, '..', 'renderer', 'index.html');
     const rendererURL = pathToFileURL(rendererPath).href;
     win.webContents.on('will-navigate', (e, url) => {

@@ -9,8 +9,10 @@
 import { execSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
 
 function run(cmd, opts = {}) {
   console.log(`\n▶ ${cmd}`);
@@ -24,8 +26,8 @@ run('npm run -w @smalt/cli pack:tgz');
 run('node scripts/build-sea.mjs');
 
 console.log('\n▶ post-packaging security tests (against dist-pkg/smalt.exe)');
-run('npx vitest run packages/cli/test/exe-security.test.ts');
+run('npx vitest run packages/cli/test/exe-security.test.ts', { env: { ...process.env, SMALT_REQUIRE_EXE: '1' } });
 
 console.log('\n✔ packaging complete:');
-console.log('  dist-pkg/smalt-0.0.1.tgz');
+console.log(`  dist-pkg/smalt-${version}.tgz`);
 console.log('  dist-pkg/smalt.exe');
