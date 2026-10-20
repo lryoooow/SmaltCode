@@ -76,6 +76,7 @@ export interface ModelAdapter {
  */
 export interface ModelStreamer {
   prepare?(ref: { provider: string; model: string }, signal?: AbortSignal): Promise<number>;
+  validateRequest?(ref: { provider: string; model: string }, req: Pick<ModelRequest, 'messages' | 'tools'>): void;
   stream(ref: { provider: string; model: string }, req: Omit<ModelRequest, 'model'>): AsyncIterable<ModelDelta>;
 }
 

@@ -132,7 +132,8 @@ export class ToolOrchestrator {
       return this.finish(outcome, `Error: unknown tool "${toolName}"`, true);
     }
 
-    const validated = validateInput(tool.inputSchema, rawInput);
+    const inputSchema = { ...tool.inputSchema, properties: { ...(tool.inputSchema.properties as object), recoveryOf: { type: 'string', maxLength: 256 } } };
+    const validated = validateInput(inputSchema, rawInput);
     if (!validated.ok) {
       return this.finish(outcome, `Error: invalid input for ${toolName}: ${validated.error}`, true);
     }
@@ -157,7 +158,8 @@ export class ToolOrchestrator {
     // 1. PreToolUse hooks may allow/deny/ask or rewrite the input
     const hookResult = await this.deps.hooks.emit('PreToolUse', { tool: toolName, input });
     if (hookResult?.modifiedInput !== undefined) {
-      const revalidated = validateInput(tool.inputSchema, hookResult.modifiedInput);
+      const revalidated = validateInput(inputSchema, hookResult.modifiedInput);
+      if (!revalidated.ok) return this.finish(outcome, `Error: invalid hook input for ${toolName}: ${revalidated.error}`, true);
       if (revalidated.ok) {
         input = revalidated.value;
         // N3: the rewritten input goes through the SAME hard boundaries

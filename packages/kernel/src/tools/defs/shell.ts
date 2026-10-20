@@ -77,9 +77,9 @@ export const shellTool: ToolDefinition = {
     properties: {
       command: { type: 'string', description: 'The command line to execute' },
       program: { type: 'string', description: 'Executable name or path, e.g. node, python, pnpm. No shell interpreters; use command for shell syntax.' },
-      args: { type: 'array', items: { type: 'string' }, description: 'Literal program arguments, e.g. ["--dir", "frontend", "exec", "vitest", "run"]. No shell escaping.' },
+      args: { type: 'array', maxItems: 1024, items: { type: 'string' }, description: 'Literal program arguments, e.g. ["--dir", "frontend", "exec", "vitest", "run"]. No shell escaping.' },
       cwd: { type: 'string', description: 'Working directory inside the current workspace; default is workspace root' },
-      timeoutMs: { type: 'number', description: 'Optional timeout in milliseconds (default 120000)' },
+      timeoutMs: { type: 'integer', minimum: 1, maximum: 2147483647, description: 'Optional timeout in milliseconds (default 120000)' },
     },
   },
   subject: input => displayCommand(input as Record<string, unknown>),

@@ -13,10 +13,11 @@ export const askUserTool: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
-      question: { type: 'string', description: 'The question to ask, with any needed context' },
+      question: { type: 'string', minLength: 1, maxLength: 8000, description: 'The question to ask, with any needed context' },
       options: {
         type: 'array',
-        items: { type: 'string' },
+        maxItems: 30,
+        items: { type: 'string', minLength: 1, maxLength: 1000 },
         description: 'Optional short answer choices the user can pick from',
       },
     },

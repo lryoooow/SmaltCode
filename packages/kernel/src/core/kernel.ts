@@ -284,7 +284,7 @@ export class Kernel {
         return { meta: this.threads.update(String(p.threadId), { projectId }) };
       }
       case Methods.projectList:
-        return { projects: this.projects.list() };
+        return { projects: this.projects.list(), notice: this.projects.notice };
       case Methods.projectCreate:
         return { project: this.projects.create({ name: String(p.name ?? ''), instructions: p.instructions, cwd: p.cwd }) };
       case Methods.projectUpdate:

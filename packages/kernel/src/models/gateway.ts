@@ -97,9 +97,17 @@ export class ModelGateway {
   }
 
   /** Stream a request using a provider/model reference. */
-  async *stream(ref: ModelRef, req: Omit<ModelRequest, 'model'>): AsyncIterable<ModelDelta> {
+  validateRequest(ref: ModelRef, req: Pick<ModelRequest, 'messages' | 'tools'>): void {
     const model = this.modelsFor(ref.provider).models.find(m => m.id === ref.model);
-    if (model?.unavailableReason && req.tools.length) throw new ModelError(model.unavailableReason + '：' + ref.model, 400);
+    if (model?.lifecycle === 'retired') throw new ModelError('该模型已下线，请切换可用模型：' + ref.model, 400);
+    if (req.tools.length && (model?.tools === false || model?.unavailableReason)) throw new ModelError((model.unavailableReason ?? '此模型不支持智能体工具调用，请切换支持工具的模型') + '：' + ref.model, 400);
+    if (model?.vision === false && req.messages.some(m => m.role === 'user' && Array.isArray(m.content) && m.content.some(p => p.type === 'image'))) {
+      throw new ModelError('当前模型不支持图片理解，本次未发出推理请求。请切换支持图片的模型；对话中的历史图片也需要图片能力：' + ref.model, 400);
+    }
+  }
+  async *stream(ref: ModelRef, req: Omit<ModelRequest, 'model'>): AsyncIterable<ModelDelta> {
+    this.validateRequest(ref, req);
+    const model = this.modelsFor(ref.provider).models.find(m => m.id === ref.model);
     const adapter = this.adapterFor(ref.provider);
     const requestedOutput = req.maxOutputTokens ?? (adapter.wire === 'anthropic' ? 8192 : undefined);
     const maxOutputTokens = model?.maxOutputTokens && requestedOutput ? Math.min(requestedOutput, model.maxOutputTokens) : req.maxOutputTokens;

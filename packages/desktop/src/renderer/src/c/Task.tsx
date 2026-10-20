@@ -1,4 +1,4 @@
-import { useId, useState, useMemo, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { useId, useState, useMemo, useRef, useEffect, useCallback, useLayoutEffect, type ReactNode } from 'react'
 import Icon from './icons'
 import Composer, { type ModelChoice } from './Composer'
 import { Btn, cx, Menu } from './ui'
@@ -88,6 +88,25 @@ export default function TaskView({ session, scrollPositions, onOpenFile, model, 
   const lifecycle = session.status?.lifecycle
   const lastTurnId = session.items.at(-1)?.turnId
   const timeline = useMemo(() => activityTimeline(session.items, lastTurnId), [session.items, lastTurnId])
+  const [historyLimit, setHistoryLimit] = useState(() => scrollPositions.get(session.meta.id)?.historyLimit ?? 60)
+  const prependAnchor = useRef<{ top: number; height: number }>(), previousLength = useRef(timeline.length)
+  useLayoutEffect(() => {
+    const added = timeline.length - previousLength.current
+    if (previousLength.current > 0 && added > 0 && !scroll.stick) setHistoryLimit(count => count + added)
+    previousLength.current = timeline.length
+  }, [timeline.length, scroll.stick])
+  useLayoutEffect(() => {
+    const el = scroll.viewport.current, anchor = prependAnchor.current
+    if (el && anchor) { el.scrollTop = anchor.top + el.scrollHeight - anchor.height; prependAnchor.current = undefined }
+    const saved = scrollPositions.get(session.meta.id) ?? { top: 0, following: true }
+    scrollPositions.set(session.meta.id, { ...saved, historyLimit })
+  }, [historyLimit, scrollPositions, session.meta.id])
+  const earlier = Math.max(0, timeline.length - historyLimit)
+  const loadEarlier = () => {
+    const el = scroll.viewport.current
+    if (el) prependAnchor.current = { top: el.scrollTop, height: el.scrollHeight }
+    scroll.pauseBrowsing(); setHistoryLimit(count => count + 60)
+  }
   const plan = useMemo(() => latestPlan(session.items, lastTurnId), [session.items, lastTurnId])
   const assessments = useMemo(() => operationAssessments(session.items), [session.items])
   const issues = useMemo(() => operationIssues(session.items.filter(item => item.turnId === lastTurnId), session.items, assessments), [session.items, lastTurnId, assessments])
@@ -117,7 +136,8 @@ export default function TaskView({ session, scrollPositions, onOpenFile, model, 
         {session.meta.recovery && !running && <div data-testid="recovery-banner" className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4"><div className="font-medium text-[13px]">上次任务未完整结束</div><p className="mt-1 text-[12px] text-[var(--muted)] leading-relaxed">记录与已有文件已保留。请先检查实际结果，继续时会重新核对，避免重复执行。</p><Btn v="outline" disabled={!!session.meta.archived} className="mt-3" onClick={() => setDraft('继续上次任务，先检查已完成内容和实际文件状态，避免重复执行。')}>填写继续任务的说明</Btn></div>}
         {session.meta.archived && <div className="rounded-xl border border-[var(--line)] p-3 flex items-center gap-3 bg-[var(--sunken)]"><Icon n="archive" s={16} /><span className="flex-1 text-[12px] text-[var(--muted)]">这段对话已归档，恢复后可继续。</span><Btn v="outline" onClick={() => void store.restore(session.meta.id).catch(e => onError(errorText(e)))}>恢复对话</Btn></div>}
         {session.items.length === 0 && <div className="py-12 text-center text-[var(--muted)]">继续描述你希望完成的工作。</div>}
-        {timeline.map(entry => entry.kind !== 'activity'
+        {earlier > 0 && <button data-testid="load-earlier-history" onClick={loadEarlier} className="w-full py-2 text-[12px] text-accent rounded-lg hover:bg-[var(--hover)]">查看更早的记录（还有 {earlier} 条）</button>}
+        {timeline.slice(earlier).map(entry => entry.kind !== 'activity'
           ? <div key={entry.item.id} data-testid={'item-' + entry.item.kind}><BlockView b={block(entry.item)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} /></div>
           : <ActivityGroup key={entry.id} entry={entry} allItems={session.items} assessments={assessments} memory={scrollPositions} threadId={session.meta.id} onOpenFile={onOpenFile} onInspect={inspect} />)}
         {Object.values(session.approvals).map(req => <div key={req.itemId} data-testid="approval"><BlockView b={{ k: 'approval', id: req.itemId, risk: req.riskLevel ?? 'normal', title: req.batch ? '同组 ' + (req.categoryLabel ?? '操作') + ' · ' + req.batch.length + ' 项' : operationTitle(req.tool, req.input, req.title), detail: JSON.stringify(req.batch ?? req.input, null, 2), reason: approvalReason(req.detail), rule: req.suggestedRule ?? req.tool, category: req.category === 'other' ? undefined : req.categoryLabel, batch: req.batch?.length, operations: req.batch?.map(op => ({ ...op, title: operationTitle(op.tool, op.input, op.title) })) }} onResolve={(decision, reason) => respond(req.itemId, decision, reason)} onAnswer={() => {}} onOpenFile={onOpenFile} /></div>)}
@@ -146,6 +166,17 @@ function ActivityGroup({ entry, allItems, assessments, memory, threadId, onOpenF
   onInspect: (issues: OperationIssue[], index: number) => void
 }) {
   const [expanded, setExpanded] = useState(() => memory.get(threadId)?.activities?.has(entry.id) ?? false)
+  const [detailLimit, setDetailLimit] = useState(() => memory.get(threadId)?.detailLimits?.[entry.id] ?? 80)
+  const detailRef = useRef<HTMLDivElement>(null), anchor = useRef<{ top: number; height: number }>()
+  useLayoutEffect(() => {
+    const el = detailRef.current
+    if (el && anchor.current) { el.scrollTop = anchor.current.top + el.scrollHeight - anchor.current.height; anchor.current = undefined }
+  }, [detailLimit])
+  const showEarlier = () => {
+    const el = detailRef.current; if (el) anchor.current = { top: el.scrollTop, height: el.scrollHeight }
+    const count = detailLimit + 80, saved = memory.get(threadId) ?? { top: 0, following: false }
+    memory.set(threadId, { ...saved, detailLimits: { ...saved.detailLimits, [entry.id]: count } }); setDetailLimit(count)
+  }
   const detailId = useId()
   const issues = operationIssues(entry.items, allItems, assessments)
   return <section data-testid="activity-group" className="rounded-xl border border-[var(--line)] bg-[var(--surface-solid)] overflow-hidden">
@@ -160,8 +191,9 @@ function ActivityGroup({ entry, allItems, assessments, memory, threadId, onOpenF
       <span className="shrink-0 mt-0.5 flex items-center gap-1 text-[11px] text-[var(--muted)]"><span className="hidden sm:inline">{expanded ? '收起' : '详情'}</span><Icon n="chevron" s={13} className={cx('transition-transform', expanded && 'rotate-90')} /></span>
     </button>
     {issues.length > 0 && <button type="button" data-testid="activity-issue-preview" onClick={() => onInspect(issues, 0)} className={cx('w-full border-t border-[var(--line)] px-3.5 py-2.5 text-left flex items-start gap-2', issues[0]!.kind === 'error' ? 'bg-rose-500/[.035] text-rose-700 dark:text-rose-300' : 'bg-amber-500/[.035] text-amber-700 dark:text-amber-300')}><Icon n="alert" s={13} className="shrink-0 mt-0.5" /><span className="flex-1 min-w-0 text-[12px] line-clamp-2 break-words">{issues[0]!.reason}</span><span className="text-[11px] shrink-0 text-[var(--accent)]">查看原因{issues.length > 1 ? ` (${issues.length})` : ''}</span></button>}
-    {expanded && <div id={detailId} role="region" aria-label="思考与执行详情" data-testid="activity-details" className="border-t border-[var(--line)] p-3 space-y-2.5 max-h-[480px] overflow-y-auto">
-      {entry.items.map(item => <div key={item.id} data-testid={'item-' + item.kind}>{item.kind === 'reasoning'
+    {expanded && <div ref={detailRef} id={detailId} role="region" aria-label="思考与执行详情" data-testid="activity-details" className="border-t border-[var(--line)] p-3 space-y-2.5 max-h-[480px] overflow-y-auto">
+      {entry.items.length > detailLimit && <button data-testid="load-earlier-execution" onClick={showEarlier} className="w-full py-2 text-[12px] text-accent hover:bg-[var(--hover)] rounded-lg">查看更早的 {entry.items.length - detailLimit} 项执行记录</button>}
+      {entry.items.slice(-detailLimit).map(item => <div key={item.id} data-testid={'item-' + item.kind}>{item.kind === 'reasoning'
         ? <div className="border-l-2 border-[var(--line)] pl-3 py-1"><div className="flex items-center gap-1.5 text-[11px] text-[var(--muted)] mb-1"><Icon n="brain" s={12} />{item.status === 'inProgress' ? '正在思考' : '思考过程'}</div><div className="text-[12.5px] leading-relaxed whitespace-pre-wrap break-words text-[var(--muted)]">{item.text || '正在分析任务…'}</div></div>
         : <BlockView b={block(item, assessments.get(item.id))} commandOpen={memory.get(threadId)?.commands?.has(item.id)} onCommandToggle={open => rememberExpansion(memory, threadId, 'commands', item.id, open)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} />}</div>)}
     </div>}
@@ -223,7 +255,7 @@ function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onA
         </button>
       )
     case 'reply':
-      return <div className={cx('anim-fade text-[14px] leading-[1.75] pt-1', !b.done && 'caret')}><Md text={b.text} /></div>
+      return <div className={cx('anim-fade text-[14px] leading-[1.75] pt-1', !b.done && 'caret')}>{!b.done && b.text.length > 16000 ? <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{b.text}</div> : <Md text={b.text} />}</div>
     case 'question':
       return <QuestionCard b={b} onAnswer={onAnswer} />
     case 'summary':

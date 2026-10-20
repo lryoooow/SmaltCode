@@ -547,8 +547,11 @@ export class DesktopBridge {
       const runtime = this.kernel.threads.get(meta.id);
       let usage = runtime?.snapshotUsage() ?? meta.usage;
       if (!usage) {
-        const event = [...(this.kernel.store.load(meta.id) ?? [])].reverse().find(event => event.t === 'usage');
-        if (event?.t === 'usage') usage = { inputTokens: event.inputTokens, outputTokens: event.outputTokens };
+        if (this.kernel.store.latestUsage) usage = this.kernel.store.latestUsage(meta.id);
+        else {
+          const event = [...(this.kernel.store.load(meta.id) ?? [])].reverse().find(event => event.t === 'usage');
+          if (event?.t === 'usage') usage = { inputTokens: event.inputTokens, outputTokens: event.outputTokens };
+        }
       }
       const inputTokens = Number.isFinite(usage?.inputTokens) ? Math.max(0, usage!.inputTokens) : 0;
       const outputTokens = Number.isFinite(usage?.outputTokens) ? Math.max(0, usage!.outputTokens) : 0;

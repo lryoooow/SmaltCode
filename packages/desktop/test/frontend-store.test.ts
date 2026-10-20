@@ -16,6 +16,14 @@ function fixture() {
 }
 const item = { id: 'stream', kind: 'agentMessage', threadId: 'a', turnId: 'turn', createdAt: '', status: 'inProgress', text: '' };
 describe('renderer session store', () => {
+  it('keeps the desktop connected when project storage reports recovery, and initializes thousands of metadata rows in one update', async () => {
+    const { store, api, metas } = fixture();
+    const original = api.call;
+    api.call = async (method: string, params?: unknown) => method === 'project/list' ? { projects: [], notice: '项目资料损坏，原文件已保留' } as any : method === 'thread/list' ? { threads: Array.from({ length: 3000 }, (_, i) => ({ ...metas[0], id: 'history-' + i })) } as any : original(method, params);
+    let updates = 0; store.subscribe(() => updates++); await store.initialize();
+    expect(store.getSnapshot().connected).toBe(true); expect(store.getSnapshot().projectNotice).toContain('原文件已保留');
+    expect(Object.keys(store.getSnapshot().sessions)).toHaveLength(3000); expect(updates).toBeLessThan(5); store.dispose();
+  });
   it('does not let a slower model list overwrite newer capacity metadata', async () => {
     const { store, api } = fixture();
     api.loadSettings = async () => ({ providers: { test: { baseUrl: 'https://test/v1', wire: 'chat', hasKey: false, defaultModel: 'test' } }, effective: { defaultProvider: 'test', defaultModel: 'test', permissionMode: 'default' }, keyStorage: 'session' });

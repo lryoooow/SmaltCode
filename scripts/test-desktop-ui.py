@@ -163,6 +163,8 @@ server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 settings = {"defaultProvider":"openai","defaultModel":"ui-test-model","providers":{"openai":{"baseUrl":"http://127.0.0.1:" + str(server.server_port) + "/v1","apiKey":"initial-test-key"}}}
 (home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+if '--resilience' in sys.argv:
+    (home / 'projects.json').write_text('{broken-project-fixture', encoding='utf8')
 with socket.socket() as sock:
     sock.bind(("127.0.0.1",0)); debug_port = sock.getsockname()[1]
 env = {**os.environ, "SMALT_HOME":str(home)}
@@ -246,6 +248,11 @@ await new Promise((resolve,reject)=>{
     page.reload(); page.wait_for_load_state("networkidle")
     page.screenshot(animations="disabled", path=str(shots / "home.png"))
     checks.append("native bridge connected; onboarding persists")
+    if '--resilience' in sys.argv:
+        expect(page.get_by_test_id('project-storage-notice')).to_contain_text('原项目文件未覆盖')
+        assert (home / 'projects.json').read_text(encoding='utf8') == '{broken-project-fixture'
+        page.screenshot(animations='disabled', path=str(shots / 'project-storage-recovery.png'))
+        checks.append('corrupt project storage leaves the desktop connected, visibly explains recovery and preserves the original bytes')
     if '--features-only' not in sys.argv:
         page.get_by_role("button",name="设置 (Ctrl+,)",exact=True).click()
         page.get_by_role('button',name='DeepSeek',exact=False).click()
@@ -902,6 +909,44 @@ await new Promise((resolve,reject)=>{
     center.get_by_role('button',name='待验证',exact=True).click()
     expect(center.get_by_test_id('activity-row').filter(has_text='检查结果分类验收')).to_be_visible()
     checks.append('format and suite findings stay distinct from execution errors; isolated pass does not clear suite; masked exit zero and skipped coverage remain unverified; confirmed native recovery keeps original evidence; statuses persist and appear in task-center filters; light/dark/narrow screenshots')
+    if '--resilience' in sys.argv:
+        assert list(home.glob('projects.json.corrupt-*.json')), 'project repair did not retain the corrupt original'
+        large_id = 'th_large_history_fixture'
+        at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        large = [{'t':'meta','meta':{'id':large_id,'title':'大历史性能验收','cwd':str(workspace),'provider':'openai','model':'ui-test-model','createdAt':at,'updatedAt':at,'turnCount':1001,'lastOutcome':'completed'}}]
+        for i in range(1000):
+            tid = 'large-turn-' + str(i)
+            large.extend([{'t':'turn-started','turnId':tid,'at':at},{'t':'user-msg','id':'lu-'+str(i),'text':'历史提问-'+str(i),'at':at},{'t':'agent-msg','id':'la-'+str(i),'text':'历史回复-'+str(i),'at':at},{'t':'turn-ended','turnId':tid,'at':at}])
+        large.append({'t':'turn-started','turnId':'large-operations','at':at})
+        for i in range(500):
+            large.extend([{'t':'tool-call','id':'lc-'+str(i),'tool':'shell','input':{'command':'echo record-'+str(i)},'at':at},{'t':'tool-result','id':'lc-'+str(i),'tool':'shell','output':'[exit 0]\nrecord-'+str(i),'isError':False,'at':at}])
+        large.extend([{'t':'agent-msg','id':'large-answer','text':'大历史资料已保留，可以浏览更早记录。','at':at},{'t':'turn-ended','turnId':'large-operations','at':at}])
+        (home / 'threads' / (large_id + '.jsonl')).write_text('\n'.join(json.dumps(e,ensure_ascii=False) for e in large)+'\n',encoding='utf8')
+        page.reload(); page.wait_for_load_state('networkidle')
+        page.get_by_text('大历史性能验收',exact=True).click()
+        expect(page.get_by_test_id('load-earlier-history')).to_be_visible(timeout=15000)
+        assert page.locator('[data-testid="item-userMessage"], [data-testid="item-agentMessage"]').count() <= 60
+        viewport = page.get_by_test_id('conversation-scroll'); viewport.evaluate('e=>e.scrollTop=0')
+        first_text = page.get_by_test_id('item-userMessage').first.inner_text()
+        before_y = page.get_by_text(first_text,exact=True).bounding_box()['y']
+        page.get_by_test_id('load-earlier-history').click()
+        assert abs(page.get_by_text(first_text,exact=True).bounding_box()['y'] - before_y) < 5, 'prepending history moved the reading anchor'
+        assert page.locator('[data-testid="item-userMessage"], [data-testid="item-agentMessage"]').count() <= 120
+        page.get_by_test_id('activity-toggle').last.click()
+        details = page.get_by_test_id('activity-details')
+        expect(details).to_be_visible(); assert details.get_by_test_id('item-commandExecution').count() == 80
+        details.get_by_test_id('load-earlier-execution').click()
+        assert details.get_by_test_id('item-commandExecution').count() == 160
+        page.screenshot(animations='disabled',path=str(shots / 'large-history-light.png'))
+        page.get_by_role('button',name='切换主题',exact=True).click(); page.set_viewport_size({'width':920,'height':660})
+        assert viewport.evaluate('e=>e.scrollWidth<=e.clientWidth+1')
+        page.screenshot(animations='disabled',path=str(shots / 'large-history-dark-narrow.png'))
+        page.set_viewport_size({'width':1240,'height':820}); page.get_by_role('button',name='切换主题',exact=True).click()
+        page.get_by_role('button',name='新建任务',exact=True).click()
+        page.get_by_text('大历史性能验收',exact=True).click()
+        assert page.locator('[data-testid="item-userMessage"], [data-testid="item-agentMessage"]').count() <= 120
+        assert page.get_by_test_id('activity-details').get_by_test_id('item-commandExecution').count() == 160
+        checks.append('2000 historical messages and 500 executions remain intact, render in bounded pages, prepend without losing the reading anchor and retain expanded pages across conversation switching')
     page.get_by_role('button',name='新建任务',exact=True).click()
     page.get_by_label("任务输入",exact=True).fill("验证托盘驻留")
     page.get_by_role("button",name="发送",exact=True).click()

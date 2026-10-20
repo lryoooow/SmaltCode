@@ -35,7 +35,8 @@ describe('unfinished task recovery', () => {
     const result = await kernel.handle('thread/start', { cwd: dir }) as { threadId: string };
     store.append(result.threadId, { t: 'turn-started', turnId: 'done', at: '2026-10-15T01:00:00Z' });
     store.append(result.threadId, { t: 'turn-ended', turnId: 'done', at: '2026-10-15T01:01:00Z' });
-    const count = store.load(result.threadId)!.length; kernel.threads.recoverInterrupted(); expect(store.load(result.threadId)).toHaveLength(count);
+    const count = store.load(result.threadId)!.length, load = vi.spyOn(store, 'load');
+    kernel.threads.recoverInterrupted(); expect(load).not.toHaveBeenCalled(); expect(store.load(result.threadId)).toHaveLength(count);
   });
 });
 describe('image input survives replay and context assembly', () => {

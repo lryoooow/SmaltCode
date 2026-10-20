@@ -13,8 +13,8 @@ export const readTool: ToolDefinition = {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'File path, absolute or relative to the workspace root' },
-      offset: { type: 'number', description: '1-based line to start reading from' },
-      limit: { type: 'number', description: 'Maximum number of lines to return' },
+      offset: { type: 'integer', minimum: 1, description: '1-based line to start reading from' },
+      limit: { type: 'integer', minimum: 1, description: 'Maximum number of lines to return' },
     },
     required: ['path'],
   },

@@ -16,11 +16,12 @@ Statuses: pending → inProgress → completed. Submitting the full list replace
     properties: {
       steps: {
         type: 'array',
+        maxItems: 200,
         description: 'The complete current plan',
         items: {
           type: 'object',
           properties: {
-            content: { type: 'string', description: 'What this step does (short)' },
+            content: { type: 'string', minLength: 1, maxLength: 2000, description: 'What this step does (short)' },
             status: { type: 'string', enum: ['pending', 'inProgress', 'completed'] },
           },
           required: ['content', 'status'],

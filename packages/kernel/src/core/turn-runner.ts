@@ -149,6 +149,7 @@ export class TurnRunner {
       const submitted = await this.deps.hooks.emit('UserPromptSubmit', { threadId, turnId, cwd: runtime.cwd, prompt: input });
       if (submitted?.decision === 'deny' || submitted?.anyFailed) throw new Error('提交请求被项目 Hook 阻止：' + (submitted?.reason ?? 'Hook 执行失败'));
       if (this.deps.gateway.prepare) this.deps.compactor.setContextWindow(await this.deps.gateway.prepare(runtime.modelRef, runtime.signal));
+      this.deps.gateway.validateRequest?.(runtime.modelRef, { messages: runtime.history, tools: this.deps.tools.specs() });
       for (; step < maxSteps; step++) {
         if (runtime.signal.aborted) {
           outcome.interrupted = true;
@@ -182,6 +183,7 @@ export class TurnRunner {
           return this.deps.pipeline.assemble(ctx);
         };
         let messages = await assemble();
+        this.deps.gateway.validateRequest?.(runtime.modelRef, { messages, tools: specs });
         let overhead = Math.max(0, estimateHistoryTokens(messages) - estimateHistoryTokens(runtime.history)) + estimateTokens(JSON.stringify(specs));
         contextOverhead = overhead;
         this.contextOverhead = overhead;

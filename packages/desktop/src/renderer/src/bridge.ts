@@ -65,7 +65,7 @@ export type Session = {
   summaries: TurnSummary[]; runningSince?: number; interrupted?: boolean; unread?: boolean; sending?: boolean
   approvals: Record<string, ApprovalRequest>; questions: Record<string, UserInputRequest>
 }
-export type Snapshot = { connected: boolean; loading: boolean; error?: string; sessions: Record<string, Session>; projects: ProjectMeta[]; settings?: SettingsData }
+export type Snapshot = { connected: boolean; loading: boolean; error?: string; projectNotice?: string; sessions: Record<string, Session>; projects: ProjectMeta[]; settings?: SettingsData }
 function readSeen(): Record<string, number> { try { const data = JSON.parse(localStorage.getItem('smalt.ui.seen') ?? '{}'); return data && typeof data === 'object' && !Array.isArray(data) ? Object.fromEntries(Object.entries(data).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))) : {} } catch { return {} } }
 
 /** One subscription owns all sessions. Changing the visible task never interrupts it. */
@@ -99,11 +99,14 @@ export class DesktopStore {
   private upsert(meta: ThreadMeta) {
     const previous = this.state.sessions[meta.id]
     if (this.current === meta.id) this.rememberRead(meta.id)
-    this.commit({ sessions: { ...this.state.sessions, [meta.id]: previous ? { ...previous, meta } : {
+    this.commit({ sessions: { ...this.state.sessions, [meta.id]: this.sessionFromMeta(meta, previous) } })
+  }
+  private sessionFromMeta(meta: ThreadMeta, previous?: Session): Session {
+    return previous ? { ...previous, meta } : {
       meta, items: [], summaries: [], approvals: {}, questions: {},
       interrupted: meta.lastOutcome === 'interrupted', error: meta.lastOutcome === 'failed' ? meta.lastError ?? '上次执行失败，请查看下方具体操作记录。旧版未保存任务终止原因。' : undefined,
       unread: meta.turnCount > 0 && Date.parse(meta.updatedAt) > (this.seen[meta.id] ?? 0),
-    } } })
+    }
   }
   private item(item: Item) {
     item = annotateResult(item)
@@ -135,10 +138,11 @@ export class DesktopStore {
     this.boot = (async () => {
       try {
         await this.api!.call('initialize')
-        const [result, settings, projects] = await Promise.all([this.api!.call<{ threads: ThreadMeta[] }>('thread/list', { includeArchived: true }), this.api!.loadSettings(), this.api!.call<{ projects: ProjectMeta[] }>('project/list')])
+        const [result, settings, projects] = await Promise.all([this.api!.call<{ threads: ThreadMeta[] }>('thread/list', { includeArchived: true }), this.api!.loadSettings(), this.api!.call<{ projects: ProjectMeta[]; notice?: string }>('project/list')])
         if (epoch !== this.epoch) return
-        result.threads.forEach(meta => this.upsert(meta))
-        this.commit({ connected: true, loading: false, settings, projects: projects.projects ?? [], error: undefined })
+        const sessions = { ...this.state.sessions }
+        for (const meta of result.threads) sessions[meta.id] = this.sessionFromMeta(meta, sessions[meta.id])
+        this.commit({ sessions, connected: true, loading: false, settings, projects: projects.projects ?? [], projectNotice: projects.notice, error: undefined })
         this.refreshConfiguredModels()
       } catch (err) { if (epoch === this.epoch) { this.unsubscribe.splice(0).forEach(off => off()); this.commit({ connected: false, loading: false, error: errorText(err) }); this.boot = undefined } }
     })()
@@ -265,12 +269,12 @@ export class DesktopStore {
   }
   async saveProject(id: string | undefined, patch: { name: string; instructions: string; cwd?: string | null }) {
     const result = await this.api!.call<{ project: ProjectMeta }>(id ? 'project/update' : 'project/create', { projectId: id, ...patch })
-    this.commit({ projects: [...this.state.projects.filter(p => p.id !== result.project.id), result.project] })
+    this.commit({ projectNotice: undefined, projects: [...this.state.projects.filter(p => p.id !== result.project.id), result.project] })
     return result.project
   }
   async deleteProject(id: string) {
     await this.api!.call('project/delete', { projectId: id })
-    this.commit({ projects: this.state.projects.filter(p => p.id !== id), sessions: Object.fromEntries(Object.entries(this.state.sessions).map(([key, s]) => [key, s.meta.projectId === id ? { ...s, meta: { ...s.meta, projectId: undefined } } : s])) })
+    this.commit({ projectNotice: undefined, projects: this.state.projects.filter(p => p.id !== id), sessions: Object.fromEntries(Object.entries(this.state.sessions).map(([key, s]) => [key, s.meta.projectId === id ? { ...s, meta: { ...s.meta, projectId: undefined } } : s])) })
   }
   dispose() { this.flushDeltas(); this.epoch++; this.unsubscribe.splice(0).forEach(off => off()); this.boot = undefined }
 }

@@ -103,6 +103,7 @@ export class ThreadManager {
   recoverInterrupted(): void {
     for (const meta of this.deps.store.listMetas(true)) {
       if (this.get(meta.id)?.stateMachine.isRunning()) continue;
+      if (this.deps.store.hasInterruptedTurn?.(meta.id) === false) continue;
       const events = this.deps.store.load(meta.id) ?? [];
       const latest = [...events].reverse().find(event => event.t === 'turn-started');
       if (!latest || latest.t !== 'turn-started' || events.some(event => event.t === 'turn-ended' && event.turnId === latest.turnId)) continue;

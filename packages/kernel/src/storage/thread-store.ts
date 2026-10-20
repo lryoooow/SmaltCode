@@ -31,6 +31,9 @@ export interface ThreadStore {
   load(threadId: string): StoreEvent[] | null;
   listMetas(includeArchived?: boolean): ThreadMeta[];
   exists(threadId: string): boolean;
+  /** Optional bounded lifecycle probe; full replay is needed only for unfinished turns. */
+  hasInterruptedTurn?(threadId: string): boolean;
+  latestUsage?(threadId: string): { inputTokens: number; outputTokens: number } | undefined;
   archive(threadId: string): boolean;
   restore?(threadId: string): boolean;
   delete?(threadId: string): boolean;

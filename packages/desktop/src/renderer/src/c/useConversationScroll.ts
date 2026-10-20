@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type UIEvent, type WheelEvent, type PointerEvent, type KeyboardEvent } from 'react'
 import type { Session } from '../bridge'
 
-export type ConversationScrollMemory = Map<string, { top: number; following: boolean; activities?: Set<string>; commands?: Set<string> }>
+export type ConversationScrollMemory = Map<string, { top: number; following: boolean; historyLimit?: number; detailLimits?: Record<string, number>; activities?: Set<string>; commands?: Set<string> }>
 
 export function rememberExpansion(memory: ConversationScrollMemory, threadId: string, kind: 'activities' | 'commands', itemId: string, open: boolean) {
   const previous = memory.get(threadId) ?? { top: 0, following: true }
@@ -81,5 +81,5 @@ export function useConversationScroll(session: Session, memory: ConversationScro
     else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) intent.current = 'down'
     else if (['Enter', ' '].includes(event.key) && event.target instanceof Element && event.target.closest('[data-testid="activity-group"], [data-testid="plan-history"]')) pause('inspect')
   }
-  return { viewport, content, stick, hasUpdates, latest, onScroll, onWheelCapture, onPointerDownCapture, onKeyDownCapture }
+  return { viewport, content, stick, hasUpdates, latest, pauseBrowsing: () => pause('inspect'), onScroll, onWheelCapture, onPointerDownCapture, onKeyDownCapture }
 }

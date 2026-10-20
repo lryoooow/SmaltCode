@@ -8,18 +8,18 @@
   <p><strong>让 AI 的思考、执行与项目管理，回到一个清爽的工作区。</strong></p>
   <p>多模型 AI 编程与办公桌面助手 · 中文界面 · 本地项目 · 可控执行</p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.3%20preview-2F4FD0" alt="0.0.3 公开测试版" />
+    <img src="https://img.shields.io/badge/version-0.0.4%20preview-2F4FD0" alt="0.0.4 公开测试版" />
     <img src="https://img.shields.io/badge/platform-Windows%20x64-5B6475" alt="Windows x64" />
     <img src="https://img.shields.io/badge/license-Apache--2.0-23A075" alt="Apache-2.0" />
   </p>
-  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.3">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a> · <a href="CONTRIBUTING.md">参与贡献</a></p>
+  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.4">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a> · <a href="CONTRIBUTING.md">参与贡献</a></p>
 </div>
 
-> **v0.0.3 是公开测试版本。** 我们希望和大家一起把 SmaltCode 做好：欢迎试用、报告 Bug、提出交互和功能建议，也欢迎提交代码与文档改进。功能、兼容性和模型适配仍在持续打磨，请先在可以备份和恢复的项目中体验。
+> **v0.0.4 是公开测试版本。** 我们希望和大家一起把 SmaltCode 做好：欢迎试用、报告 Bug、提出交互和功能建议，也欢迎提交代码与文档改进。功能、兼容性和模型适配仍在持续打磨，请先在可以备份和恢复的项目中体验。
 
 ![SmaltCode 对话与执行界面](docs/images/conversation.png)
 
-> **0.0.3 已纳入技能与资料工作台。** 本次新增模型目录与上下文容量识别、技能导入、截图与 PDF/Word/Excel 预览、用量诊断和异常恢复，改善执行验收与任务进度。详见 [0.0.3 更新说明](docs/releases/v0.0.3.md) 与 [功能及本地验收说明](docs/development-preview.md)。
+> **0.0.4 聚焦可靠性与长历史体验。** 项目数据损坏时可保留有效内容并提示恢复；执行前校验嵌套工具参数和已知模型能力；大历史采用派生索引与分批展示，保留阅读位置。详见 [0.0.4 更新说明](docs/releases/v0.0.4.md) 与 [功能及本地验收说明](docs/development-preview.md)。
 
 ## 目录
 
@@ -28,6 +28,7 @@
 - [下载与安装](#下载与安装)
 - [快速开始](#快速开始)
 - [权限与运行体验](#权限与运行体验)
+- [v0.0.4 更新内容](#v004-更新内容)
 - [v0.0.3 更新内容](#v003-更新内容)
 - [v0.0.2 更新内容](#v002-更新内容)
 - [v0.0.1 更新内容](#v001-更新内容)
@@ -81,21 +82,21 @@ SmaltCode 把模型对话连接到实际工作文件夹。你可以让它理解�
 
 </details>
 
-截图来自 0.0.2/0.0.3 的真实桌面验收场景，使用模拟模型服务和测试资料；截图中的模型名称、路径与任务内容仅用于展示。
+上方截图来自 0.0.2/0.0.3 的真实桌面验收场景，使用模拟模型服务和测试资料；截图中的模型名称、路径与任务内容仅用于展示。
 
 ## 下载与安装
 
-**当前安装包：Windows x64，版本 0.0.3，S Fox 狐狸图标。**
+**当前安装包：Windows x64，版本 0.0.4，S Fox 狐狸图标。**
 
-1. 打开 [v0.0.3 Release](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.3)。
-2. 下载 [SmaltCode-Setup-0.0.3-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.3/SmaltCode-Setup-0.0.3-SFox.exe)。
+1. 打开 [v0.0.4 Release](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.4)。
+2. 下载 [SmaltCode-Setup-0.0.4-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.4/SmaltCode-Setup-0.0.4-SFox.exe)。
 3. 升级前先从托盘退出旧版，再按安装向导选择原目录，使用桌面或开始菜单中的 **SmaltCode** 打开程序。
 4. 在设置中配置模型服务，选择工作文件夹，即可开始。
 
-Release 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.3/SHA256SUMS.txt) 供校验安装包。PowerShell 示例：
+Release 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.4/SHA256SUMS.txt) 供校验安装包。PowerShell 示例：
 
 ```powershell
-Get-FileHash .\SmaltCode-Setup-0.0.3-SFox.exe -Algorithm SHA256
+Get-FileHash .\SmaltCode-Setup-0.0.4-SFox.exe -Algorithm SHA256
 ```
 
 安装包目前未做代码签名，Windows 可能显示发布者未验证的提示。请从本仓库的 Release 下载，并核对文件哈希。macOS、Linux 暂未提供经过桌面验收的安装包。
@@ -106,7 +107,7 @@ Get-FileHash .\SmaltCode-Setup-0.0.3-SFox.exe -Algorithm SHA256
 
 打开 **设置 → 模型服务商**，选择服务商，填写 **API Key、服务地址、模型 ID**，点击“保存并测试连接”。
 
-0.0.3 保存连接后，可打开“浏览服务商模型”并刷新列表，也可在输入框旁的模型菜单搜索名称、筛选服务商和刷新目录；仍支持手动填写自定义 ID。接口没有容量字段时，确切官方端点使用官方规格；未确认的容量会明确标注。自动发现与各厂商的支持范围见 [模型目录与容量说明](docs/development-preview.md#模型目录与容量自动识别)。
+0.0.4 保存连接后，可打开“浏览服务商模型”并刷新列表，也可在输入框旁的模型菜单搜索名称、筛选服务商和刷新目录；仍支持手动填写自定义 ID。接口没有容量字段时，确切官方端点使用官方规格；未确认的容量会明确标注。自动发现与各厂商的支持范围见 [模型目录与容量说明](docs/development-preview.md#模型目录与容量自动识别)。
 
 ![模型搜索与上下文容量](docs/images/model-picker.png)
 
@@ -163,7 +164,24 @@ Get-FileHash .\SmaltCode-Setup-0.0.3-SFox.exe -Algorithm SHA256
 - 上翻、键盘翻页、查看输出、选取文字和切换对话时，可以保留阅读位置。
 - 关闭窗口后程序驻留托盘。单击托盘恢复窗口，右键选择 **“退出 SmaltCode”** 完全退出并结束工具子进程。
 
-0.0.3 按**具体模型与服务地址**解析容量：优先采用手动设置，再读取服务接口元数据与已确认的官方规格；切换模型后在下一轮执行前更新预算。窗口与最大输入分别处理，不把最大输出量当成上下文容量。默认约使用 80% 时整理，并为输出保留空间；官方 DeepSeek V4 Pro / Flash 的 1M 窗口约在 800K 时整理，容量依据：[DeepSeek 官方说明](https://api-docs.deepseek.com/quick_start/pricing/)。未知网关和未能确认实际分配的本地模型会标注“容量待确认”，可手动修正或恢复自动容量。状态栏与右侧“统计”展示同一预算及整理前后用量；摘要失败后，只有输入明显增长或空间即将耗尽才重试。
+0.0.4 按**具体模型与服务地址**解析容量：优先采用手动设置，再读取服务接口元数据与已确认的官方规格；切换模型后在下一轮执行前更新预算。窗口与最大输入分别处理，不把最大输出量当成上下文容量。默认约使用 80% 时整理，并为输出保留空间；官方 DeepSeek V4 Pro / Flash 的 1M 窗口约在 800K 时整理，容量依据：[DeepSeek 官方说明](https://api-docs.deepseek.com/quick_start/pricing/)。未知网关和未能确认实际分配的本地模型会标注“容量待确认”，可手动修正或恢复自动容量。状态栏与右侧“统计”展示同一预算及整理前后用量；摘要失败后，只有输入明显增长或空间即将耗尽才重试。
+
+## v0.0.4 更新内容
+
+相较于 0.0.3，本次修复审查中发现的数据恢复、执行校验和大历史性能问题：
+
+| 更新 | 带来的体验 |
+| --- | --- |
+| 项目数据容错 | 隔离坏记录、读取有效备份，界面直接显示恢复提示；修复写入前保留损坏原件，读取失败或外部改动时保护数据 |
+| 工具参数校验 | 递归检查嵌套字段、数组、枚举、整数和边界；错误指向具体字段，Hook 改写后仍需通过校验 |
+| 模型能力校验 | 已知下线、不支持工具或图片的模型在请求前给出明确原因，历史图片也参与检查；未知能力保留兼容 |
+| 大历史性能 | 自动重建派生索引，减少启动全量读取；对话与执行明细分批加载，切换保留阅读位置，超长回复改善流式渲染 |
+
+![大历史分批展示与加载更早记录](docs/images/v0.0.4/large-history-light.png)
+
+默认先展示最近 60 条时间线记录、展开详情最近 80 项，可继续加载更早记录；原始历史和模型上下文不会因此删减。项目备份可能早于最后一次编辑，恢复后请检查项目说明。
+
+Windows x64 安装包为 **SmaltCode-Setup-0.0.4-SFox.exe**。本地 422 项测试通过、3 项 CLI SEA 检查跳过；实际打包桌面和文档流程验收通过。完整更新、测试范围和升级方式见 [0.0.4 发布说明](docs/releases/v0.0.4.md)。GitHub Actions 继续关闭。
 
 ## v0.0.3 更新内容
 
@@ -281,11 +299,11 @@ node scripts/test-desktop-tray.mjs --packaged
 node scripts/test-desktop-tray.mjs --installed-dir "D:\smalt\SmaltCode"
 ```
 
-当前源码的安装包输出到 `packages/desktop/release/SmaltCode-Setup-0.0.3-SFox.exe`。UI 验收使用 Electron 自带浏览器、本地模拟模型与隔离临时目录，无需真实 API Key；截图和报告生成到 `docs/screenshots/`。
+当前源码的安装包输出到 `packages/desktop/release/SmaltCode-Setup-0.0.4-SFox.exe`。UI 验收使用 Electron 自带浏览器、本地模拟模型与隔离临时目录，无需真实 API Key；截图和报告生成到 `docs/screenshots/`。本轮数据容错和大历史验收使用 `python scripts/test-desktop-ui.py --packaged --resilience`。
 
 Windows 托盘检查复用同一份隔离测试配置完成三轮退出与重启，并校验运行文件没有被修改或删除。开发与测试进程使用独立应用标识；正式安装版仍与安装程序中的 `app.smaltcode.desktop` 保持一致。
 
-本次公开版本的验收结果与范围见 [发布说明](docs/releases/v0.0.3.md)。模拟服务测试覆盖实际执行链路，不代表已对所有外部服务商做真实 API 兼容测试。
+本次公开版本的验收结果与范围见 [发布说明](docs/releases/v0.0.4.md)。模拟服务测试覆盖实际执行链路，不代表已对所有外部服务商做真实 API 兼容测试。
 
 ## 项目结构
 
