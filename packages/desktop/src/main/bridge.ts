@@ -67,6 +67,7 @@ import type { DesktopOverview } from '../shared/overview.js';
 import { WorkspaceAccess } from './workspace-access.js';
 import { LocalSpaces } from './local-spaces.js';
 import { readBounded } from './read-bounded.js';
+import { WebSearchManager } from './web-search.js';
 
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
 
@@ -115,6 +116,9 @@ export class DesktopBridge {
   private readonly feedback = new FeedbackStore();
   private readonly browser: BrowserManager;
   private readonly integrations: Integrations;
+  private readonly webSearch: WebSearchManager;
+  private webSearchTest?: AbortController;
+  private webSearchTestDone?: Promise<unknown>;
   private readonly autonomy: Autonomy;
   private readonly collaborations: Collaborations;
   private readonly remotes: Remotes;
@@ -189,6 +193,8 @@ export class DesktopBridge {
       log: (msg) => console.log(`[kernel] ${msg}`),
     });
     this.kernel.threads.recoverInterrupted();
+    this.webSearch = new WebSearchManager({ directory: smaltHome() });
+    for (const tool of this.webSearch.tools()) this.kernel.tools.register(tool);
     this.processes = new ProcessManager({ directory: smaltHome(), runtime: __dirname, thread: id => this.kernel.threads.read(id).meta, canInput: id => {
       const permission = this.kernel.permissionsForThread(id);
       return !['plan', 'dontAsk'].includes(permission.mode) && permission.check({ tool: 'shell', input: {}, subject: 'powershell.exe', cwd: this.kernel.threads.require(id).meta.cwd }).action !== 'deny';
@@ -292,6 +298,7 @@ export class DesktopBridge {
   /** A reloaded/crashed window can never answer pending approvals → deny all. */
   private watchWindowLifecycle(): void {
     const failAll = () => {
+      this.webSearchTest?.abort();
       this.ssh.suspend();
       void this.remotes.host.stop().catch(error => console.error('[remote window]', error));
       for (const meta of this.kernel.threads.listMetas()) {
@@ -334,6 +341,30 @@ export class DesktopBridge {
   }
 
   private registerHandlers(): void {
+    ipcMain.handle('smalt:web-search', async (e, action: string, value: unknown = {}) => {
+      if (!this.trusted(e)) throw new Error('不可信的联网搜索设置请求');
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('联网搜索设置格式无效');
+      if (action === 'get') return this.webSearch.state();
+      if (action === 'save') return this.webSearch.update(value);
+      if (action === 'cancel-test') {
+        this.webSearchTest?.abort();
+        if (this.webSearchTestDone) await Promise.allSettled([this.webSearchTestDone]);
+        return { ok: true };
+      }
+      if (action === 'test') {
+        const provider = (value as { provider?: unknown }).provider;
+        if (provider !== 'tavily' && provider !== 'deepseek') throw new Error('请选择 Tavily 或 DeepSeek');
+        if (this.webSearchTest) throw new Error('已有联网搜索测试进行中，请先取消或等待完成');
+        const controller = new AbortController(); this.webSearchTest = controller;
+        try {
+          this.webSearchTestDone = this.webSearch.test(provider, controller.signal);
+          return await this.webSearchTestDone;
+        } finally {
+          if (this.webSearchTest === controller) { this.webSearchTest = undefined; this.webSearchTestDone = undefined; }
+        }
+      }
+      throw new Error('未知的联网搜索设置操作');
+    });
     ipcMain.handle('smalt:local-space', async (e, action: string) => {
       if (!this.trusted(e)) throw new Error('untrusted local storage request');
       if (action === 'create') { const space = this.localSpaces.create(); this.workspaceAccess.grant(space.cwd); this.filesContext.draft(space.cwd); return space; }
@@ -987,11 +1018,13 @@ export class DesktopBridge {
     return { usage: { rows, conversations: rows.length, inputTokens: rows.reduce((sum, row) => sum + row.inputTokens, 0), outputTokens: rows.reduce((sum, row) => sum + row.outputTokens, 0), unreported: rows.filter(row => !row.recorded).length }, diagnostics: { version: app.getVersion(), platform: process.platform, packaged: app.isPackaged, electron: process.versions.electron ?? '—', node: process.versions.node, keyStorage: safeStorage.isEncryptionAvailable() ? 'encrypted' : 'session', runtimeFiles, parserReady: existsSync(documentWorkerPath(__dirname)), skills: (await this.skills.list()).length } };
   }
 
-  async shutdown(): Promise<void> { await this.artifacts.shutdown(); await this.devcontainers.shutdown();await this.containerExecution.shutdown();await this.containers.shutdown();await this.sshExecution.shutdown(); await Promise.all([this.ssh.shutdown(),this.remotes.shutdown(), this.collaborations.shutdown(), this.autonomy.shutdown()]); await this.integrations.shutdown(); await this.processes.shutdown(); await this.kernel.threads.waitForIdle(); this.browser.dispose(); }
+  async shutdown(): Promise<void> { this.webSearchTest?.abort(); await this.webSearch.cancelActive(); await this.artifacts.shutdown(); await this.devcontainers.shutdown();await this.containerExecution.shutdown();await this.containers.shutdown();await this.sshExecution.shutdown(); await Promise.all([this.ssh.shutdown(),this.remotes.shutdown(), this.collaborations.shutdown(), this.autonomy.shutdown()]); await this.integrations.shutdown(); await this.processes.shutdown(); await this.kernel.threads.waitForIdle(); this.browser.dispose(); }
 
   cancelArtifactQuit(){this.artifacts.cancelQuit();}
 
   dispose(): void {
+    this.webSearchTest?.abort();
+    void this.webSearch.shutdown();
     void this.devcontainers.shutdown().catch(error=>console.error(error));
     void this.containerExecution.shutdown().finally(()=>this.containers.shutdown()).catch(error=>console.error(error));
     void this.sshExecution.shutdown().finally(()=>this.ssh.shutdown()).catch(error=>console.error(error));
@@ -1005,7 +1038,7 @@ export class DesktopBridge {
     this.lifecycle.splice(0).forEach(remove => remove());
     this.notifications.dispose();
     for (const channel of [
-      'smalt:call',
+      'smalt:call', 'smalt:web-search',
       'smalt:approval:respond',
       'smalt:input:respond',
       'smalt:pick-folder', 'smalt:local-space',

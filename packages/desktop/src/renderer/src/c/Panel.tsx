@@ -14,12 +14,12 @@ import { errorText, store, type Session, type ContextReference } from '../bridge
 import Md from './Markdown'
 import Review from './Review'
 import DocumentView from './DocumentView'
-import { applyPreviewRequest, closePreview, emptyPreview, openPreview, trimPreviewMemory, type PreviewMemory, type PreviewState } from './preview-state'
+import { applyBrowserPreviewRequest, applyPreviewRequest, closePreview, emptyPreview, openPreview, trimPreviewMemory, type BrowserPreviewRequest, type PreviewMemory, type PreviewState } from './preview-state'
 
-export default function Panel({ files, sel, setSel, onClose, session, onError, memory, onReference, focus, onFocus, planPinned, planRequest, onUnpinPlan, errorRequest, processRequest, browserRequest, onOpenThread }: { browserRequest?: number; processRequest?: number; onOpenThread: (id: string) => void; errorRequest?: { id: string; sequence: number }; focus: boolean; onFocus: () => void; planPinned: boolean; planRequest: number; onUnpinPlan: () => void;  files: FileItem[]; sel: FileItem | null; setSel: (file: FileItem | null) => void; onClose: () => void; session: Session; onError: (message: string) => void; memory: PreviewMemory; onReference: (ref: ContextReference) => void }) {
+export default function Panel({ files, sel, setSel, onClose, session, onError, memory, onReference, focus, onFocus, planPinned, planRequest, onUnpinPlan, errorRequest, processRequest, browserRequest, onOpenThread }: { browserRequest?: BrowserPreviewRequest; processRequest?: number; onOpenThread: (id: string) => void; errorRequest?: { id: string; sequence: number }; focus: boolean; onFocus: () => void; planPinned: boolean; planRequest: number; onUnpinPlan: () => void;  files: FileItem[]; sel: FileItem | null; setSel: (file: FileItem | null) => void; onClose: () => void; session: Session; onError: (message: string) => void; memory: PreviewMemory; onReference: (ref: ContextReference) => void }) {
   const id = session.meta.id
   useEffect(() => { if (processRequest) change(value => applyPreviewRequest(value, 'processes', processRequest)) }, [processRequest])
-  useEffect(() => { if (browserRequest) change(value => applyPreviewRequest(value, 'browser', browserRequest)) }, [browserRequest])
+  useEffect(() => { if (browserRequest) change(value => applyBrowserPreviewRequest(value, browserRequest)) }, [browserRequest?.sequence, browserRequest?.target])
   const hasIssues = operationIssues(session.items).length > 0
   useEffect(() => { if (errorRequest) change(value => applyPreviewRequest(value, 'issues', errorRequest.sequence)) }, [errorRequest?.sequence])
   const [statistics, setStatistics] = useState(false), [tabMenu, setTabMenu] = useState<string>()

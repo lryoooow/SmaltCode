@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { activityProgress, activityTimeline, latestPlan, planProgress } from '../src/renderer/src/c/activity';
+import { operationIssues } from '../src/renderer/src/c/issues';
 import type { Item } from '../src/renderer/src/bridge';
 
 const base = { threadId: 'thread', turnId: 'turn', createdAt: '', status: 'completed' as const };
@@ -9,6 +10,18 @@ const file = (id: string, path = 'result.md', status: Item['status'] = 'complete
 const message = (id: string, kind: 'userMessage' | 'agentMessage', text = '消息'): Item => ({ ...base, id, kind, text });
 
 describe('conversation activity presentation', () => {
+  it('shows real web activity outside the collapsed execution details and exposes actionable search failures', () => {
+    const search = { ...command('search', 'web_search', 'inProgress'), command: '联网搜索 · SmaltCode 文档' };
+    expect(activityProgress([search], { running: true }).label).toBe('正在联网搜索');
+    const fetch = { ...command('fetch', 'web_fetch', 'inProgress'), command: '读取网页 · https://example.com/docs' };
+    expect(activityProgress([fetch], { running: true }).label).toBe('正在读取网页');
+    const completed = activityProgress([{ ...search, status: 'completed', exitCode: 0 }, { ...fetch, status: 'completed', exitCode: 0 }]);
+    expect(completed.milestones).toContain('已完成 1 次查找');
+    expect(completed.milestones).toContain('已读取 1 项资料');
+    const failed = operationIssues([{ ...search, status: 'failed', exitCode: 1, output: 'DeepSeek 余额不足，请检查账户额度' }]);
+    expect(failed[0].reason).toContain('余额不足');
+    expect(failed[0].hint).toContain('联网搜索');
+  });
   it('groups records without putting plan revisions inside execution details', () => {
     const first = command('first', 'write', 'inProgress');
     expect(activityTimeline([first])[0]).toMatchObject({ id: 'first' });

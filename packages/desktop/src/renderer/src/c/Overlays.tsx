@@ -4,6 +4,7 @@ import { Btn, cx, Kbd, Logo, MODES, type Task } from './ui'
 import { errorText, folderName, store, type SettingsData } from '../bridge'
 import { resolveContextWindow, validContextWindow } from '../../../../../kernel/src/models/context-window'
 import ModelPicker from './ModelPicker'
+import WebSearchSettings from './WebSearchSettings'
 import { capacitySource, modelChoices } from './model-choices'
 
 export function Modal({ children, onClose, w = 'w-[860px]', label = '对话框', bare = false, layer = 70 }: { children: React.ReactNode; onClose: () => void; w?: string; label?: string; bare?: boolean; layer?: number }) {
@@ -111,10 +112,11 @@ export function Settings({ onClose, dark, setDark, settings }: { onClose: () => 
     try { await store.updateSettings({ permissions: { mode: permission } }); setResult('权限模式已保存') }
     catch (err) { setError(errorText(err)) } finally { setBusy(false) }
   }
-  const sections = [['general', '通用', 'gear'], ['look', '外观', 'sun'], ['model', '模型服务商', 'cpu'], ['perm', '权限与安全', 'shield'], ['keys', '快捷键', 'list'], ['about', '关于', 'info']]
+  const sections = [['general', '通用', 'gear'], ['look', '外观', 'sun'], ['model', '模型服务商', 'cpu'], ['web-search', '联网搜索', 'search'], ['perm', '权限与安全', 'shield'], ['keys', '快捷键', 'list'], ['about', '关于', 'info']]
   return <Modal onClose={onClose} label="设置"><div className="flex h-[580px] max-h-[85vh]">
-    <nav className="w-44 shrink-0 bg-[var(--sunken)] border-r border-[var(--line)] p-2.5"><div className="px-2.5 py-2 text-[15px] font-semibold">设置</div>{sections.map(([id, label, icon]) => <button key={id} onClick={() => { setSec(id); setResult(undefined); setError(undefined) }} className={cx('w-full flex items-center gap-2.5 px-2.5 h-9 rounded-lg text-left transition', sec === id ? 'bg-[var(--surface-solid)] shadow-sm font-medium' : 'text-[var(--muted)] hover:bg-[var(--hover)]')}><Icon n={icon} s={15} className={sec === id ? 'text-accent' : ''} />{label}</button>)}</nav>
-    <div className="flex-1 min-w-0 min-h-0 relative"><button aria-label="关闭设置" onClick={onClose} className="absolute z-10 right-4 top-4 size-7 grid place-items-center rounded-md bg-[var(--surface-solid)] hover:bg-[var(--hover)] text-[var(--muted)]"><Icon n="x" s={16} /></button><div className="h-full overflow-y-auto p-7">
+    <nav className="w-32 sm:w-44 shrink-0 overflow-y-auto bg-[var(--sunken)] border-r border-[var(--line)] p-2.5"><div className="px-2.5 py-2 text-[15px] font-semibold">设置</div>{sections.map(([id, label, icon]) => <button key={id} data-testid={'settings-' + id} aria-current={sec === id ? 'page' : undefined} onClick={() => { setSec(id); setResult(undefined); setError(undefined) }} className={cx('w-full flex items-center gap-2.5 px-2.5 min-h-9 py-1.5 rounded-lg text-left transition', sec === id ? 'bg-[var(--surface-solid)] shadow-sm font-medium' : 'text-[var(--muted)] hover:bg-[var(--hover)]')}><Icon n={icon} s={15} className={sec === id ? 'text-accent shrink-0' : 'shrink-0'} />{label}</button>)}</nav>
+    <div className="flex-1 min-w-0 min-h-0 relative"><button aria-label="关闭设置" onClick={onClose} className="absolute z-10 right-4 top-4 size-7 grid place-items-center rounded-md bg-[var(--surface-solid)] hover:bg-[var(--hover)] text-[var(--muted)]"><Icon n="x" s={16} /></button><div className="h-full overflow-y-auto p-4 sm:p-7">
+      {sec === 'web-search' && <WebSearchSettings />}
       {sec === 'model' && <div><h2 className="text-[18px] font-semibold">模型服务商</h2><p className="text-[var(--muted)] mt-1">{settings.keyStorage === 'encrypted' ? 'API Key 由系统加密保存在本机。' : '系统加密不可用，输入的密钥仅用于本次运行。'}</p>
         <div className="grid grid-cols-4 gap-2 mt-5">{Object.entries(settings.providers).map(([id, config]) => <button key={id} onClick={() => setProvider(id)} disabled={busy} className={cx('p-2.5 rounded-xl border text-left transition', provider === id ? 'border-accent bg-[var(--accent-soft)]' : 'border-[var(--line)] hover:bg-[var(--hover)]')}><div className="text-[12px] font-medium">{PROVIDER_NAMES[id] ?? id}</div><div className={cx('text-[10.5px] mt-1', config.hasKey ? 'text-emerald-600' : 'text-[var(--muted)]')}>{config.hasKey ? '已配置' : '待配置'}</div></button>)}</div>
         <div className="mt-5 space-y-3">

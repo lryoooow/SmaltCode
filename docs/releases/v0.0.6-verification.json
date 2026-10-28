@@ -1,0 +1,100 @@
+{
+  "version": "0.0.6",
+  "status": "passed",
+  "prerelease": true,
+  "verifiedAt": "2026-10-28T10:25:15.789619+00:00",
+  "installer": {
+    "passed": true,
+    "files": 319,
+    "exactMatch": true,
+    "installer": "SmaltCode-Setup-0.0.6-SFox.exe",
+    "bytes": 122142966,
+    "sha256": "2b0e8edaf2b1fb08c7e58d31db8ec0dcfba992a3d3da308df2457e4dea8da800",
+    "validationMode": "Actual NSIS app-64.7z payload extracted into isolated QA directory; existing installation and registry unchanged"
+  },
+  "source": {
+    "coreSHA256": "8b54dce7f0a6e2851ee170d28542117eacc84e496d82f05026fb2c865ddd2328",
+    "publicationSHA256": "8b54dce7f0a6e2851ee170d28542117eacc84e496d82f05026fb2c865ddd2328",
+    "files": 490,
+    "applicationChangedAfterCoreRegression": false,
+    "verificationScriptSHA256": "5e582f280c1e3fd8c3cbc64624d3b10f97dd8aaf38d42e338dbb56aa4e109624"
+  },
+  "localCore": {
+    "passed": 1027,
+    "failed": 0,
+    "skipped": 3,
+    "filesPassed": 85,
+    "filesSkipped": 1,
+    "skipReason": "CLI SEA security fixtures are not built for this Windows desktop installer release",
+    "typecheck": true,
+    "independentRecoveryRegression": true,
+    "webBackendCasesIncluded": 55,
+    "sourceLinkCasesIncluded": 30
+  },
+  "desktop": {
+    "existingGroupsPassed": 26,
+    "nativeGroupsPassed": 4,
+    "afterGroupIdentityGuardsPassed": 30,
+    "newWebGuiChecksPassed": 12,
+    "webGuiSyntheticProfile": true,
+    "webGuiRealTransportToLocalFixtures": true,
+    "webGuiForcedCleanup": false,
+    "webGuiRendererErrors": 0,
+    "webGuiNaturalExitCode": 0,
+    "sourceSandboxAndConversationIsolation": true,
+    "postCitationFixAffectedGuiGroupsPassed": 6,
+    "canonicalShortcutRepairedAndRelaunchVerified": true,
+    "maintainerConfirmedRunningTaskbarIcon": true,
+    "taskbarVisualConfirmationScope": "current source development preview; latest installer resources and window identity tested automatically"
+  },
+  "webProviders": {
+    "providers": [
+      "Tavily",
+      "DeepSeek"
+    ],
+    "tools": [
+      "web_search",
+      "web_fetch"
+    ],
+    "officialUnauthenticatedRoutes": [
+      {
+        "provider": "tavily",
+        "httpStatus": 401
+      },
+      {
+        "provider": "deepseek",
+        "httpStatus": 401
+      }
+    ],
+    "authenticatedLiveAccountSearchVerified": false,
+    "note": "Successful search/fetch and error/cancellation paths use local protocol fixtures with synthetic credentials. Official TLS endpoints returned expected HTTP 401 without keys. Account permissions, balance and billing require the user to configure their own key."
+  },
+  "packaged": {
+    "iconsAndVersion": true,
+    "buildFilesCompared": 307,
+    "unpackedResourcesChecked": 246,
+    "documentParser": [
+      "docx",
+      "xlsx",
+      "pdf"
+    ],
+    "realSSHKeyDecryption": true,
+    "realPTYApprovalInputAndCleanup": true,
+    "realOfficeSaveFormats": [
+      "docx",
+      "xlsx",
+      "pptx"
+    ],
+    "visibleMainAndReviewWindowIdentity": true,
+    "trayCycles": 3
+  },
+  "installerPayload": {
+    "bytesMatchVerifiedRuntime": true,
+    "files": 319,
+    "parser": true,
+    "startup": true,
+    "trayCycles": 3,
+    "existingInstallationChanged": false
+  },
+  "githubActionsEnabled": false
+}

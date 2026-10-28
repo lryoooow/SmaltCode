@@ -1,13 +1,13 @@
 {
   "name": "@smalt/desktop",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "SmaltCode — 多模型 AI 编程与办公桌面助手",
   "license": "Apache-2.0",
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
     "bundle": "node bundle.mjs",
-    "start": "npm run bundle && electron .",
+    "start": "node ../../scripts/start-desktop-preview.mjs",
     "smoke": "npm run bundle && electron . --smoke-test",
     "dist": "npm run bundle && electron-builder --win nsis"
   },

@@ -45,7 +45,7 @@ harness.write_text(harness.read_text(encoding='utf8')+"\nsetInterval(()=>{const 
 env={**os.environ,'SMALT_HOME':str(home)}
 for key in list(env):
  if any(part in key.upper() for part in ['API_KEY','TOKEN','SECRET','PASSWORD','CREDENTIAL']) or key=='ELECTRON_RUN_AS_NODE':env.pop(key,None)
-log=open(run/'electron.log','w',encoding='utf8');process=subprocess.Popen([str(root/'node_modules/electron/dist/electron.exe'),str(harness),'--development-preview','--remote-debugging-port='+str(port)],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
+log=open(run/'electron.log','w',encoding='utf8');process=subprocess.Popen([str(os.environ.get('SMALT_TEST_ELECTRON_EXECUTABLE',root/'node_modules/electron/dist/electron.exe')),str(harness),'--development-preview','--identity-test','--remote-debugging-port='+str(port)],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
 checks=[];errors=[]
 def until(test,seconds=15):
  end=time.time()+seconds

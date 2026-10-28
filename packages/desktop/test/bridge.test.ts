@@ -40,6 +40,70 @@ beforeEach(() => {
 afterEach(() => { bridge.dispose(); mocks.ask.mockClear(); if (previous === undefined) delete process.env.SMALT_HOME; else process.env.SMALT_HOME = previous; rmSync(directory, { recursive: true, force: true }); });
 const event = () => ({ sender: contents, senderFrame: contents.mainFrame });
 describe('desktop IPC and project trust', () => {
+  it('keeps web credentials behind trusted IPC and independently gates tool availability', async () => {
+    const request = mocks.handlers.get('smalt:web-search')!;
+    await expect(request({ sender: contents, senderFrame: { url: 'https://foreign.example' } }, 'get')).rejects.toThrow('不可信');
+    expect((await request(event(), 'get')).enabled).toBe(false);
+    expect(bridge.kernel.tools.specs({ cwd: workspace, threadId: 'fixture' }).map(tool => tool.name)).not.toContain('web_search');
+    const key = 'fixture-web-token-must-never-leak';
+    const state = await request(event(), 'save', { enabled: true, provider: 'tavily', maxResults: 4, apiKey: key });
+    expect(state.providers.tavily.configured).toBe(true);
+    expect(JSON.stringify(state)).not.toContain(key);
+    expect(bridge.kernel.tools.specs({ cwd: workspace, threadId: 'fixture' }).map(tool => tool.name)).toContain('web_search');
+    await request(event(), 'save', { enabled: false });
+    expect(bridge.kernel.tools.specs({ cwd: workspace, threadId: 'fixture' }).map(tool => tool.name)).not.toContain('web_search');
+    await expect(request(event(), 'test', { provider: 'other' })).rejects.toThrow('Tavily');
+    await expect(request(event(), 'unknown')).rejects.toThrow('未知');
+  });
+
+  it('cancels only the native settings test on explicit cancellation and renderer loss', async () => {
+    const request = mocks.handlers.get('smalt:web-search')!;
+    const manager = (bridge as any).webSearch;
+    const signals: AbortSignal[] = [];
+    vi.spyOn(manager, 'test').mockImplementation((_provider: unknown, signal: unknown) => new Promise((_resolve, reject) => {
+      const value = signal as AbortSignal; signals.push(value);
+      value.addEventListener('abort', () => reject(new Error('fixture test cancelled')), { once: true });
+    }));
+    const first = request(event(), 'test', { provider: 'tavily' });
+    const firstResult = expect(first).rejects.toThrow('cancelled');
+    await expect(request(event(), 'test', { provider: 'deepseek' })).rejects.toThrow('进行中');
+    await request(event(), 'cancel-test'); await firstResult;
+    expect(signals[0].aborted).toBe(true);
+    const second = request(event(), 'test', { provider: 'deepseek' });
+    const secondResult = expect(second).rejects.toThrow('cancelled');
+    contents.emit('render-process-gone'); await secondResult;
+    expect(signals[1].aborted).toBe(true);
+  });
+
+  it('preserves web settings and availability when another subsystem prevents quitting', async () => {
+    const request = mocks.handlers.get('smalt:web-search')!;
+    await request(event(), 'save', { enabled: true, provider: 'tavily', apiKey: 'fixture-preserve-after-failed-quit' });
+    vi.spyOn((bridge as any).artifacts, 'shutdown').mockRejectedValueOnce(new Error('fixture Office recovery needs attention'));
+    await expect(bridge.shutdown()).rejects.toThrow('Office recovery');
+    bridge.cancelArtifactQuit();
+    expect(bridge.kernel.tools.specs({ cwd: workspace, threadId: 'fixture' }).map(tool => tool.name)).toContain('web_search');
+    await expect(request(event(), 'save', { provider: 'tavily', maxResults: 2 })).resolves.toMatchObject({ maxResults: 2 });
+    vi.spyOn((bridge as any).artifacts, 'shutdown').mockResolvedValue(undefined);
+    vi.spyOn((bridge as any).devcontainers, 'shutdown').mockRejectedValueOnce(new Error('fixture later cleanup failed'));
+    await expect(bridge.shutdown()).rejects.toThrow('later cleanup failed');
+    bridge.cancelArtifactQuit();
+    expect(bridge.kernel.tools.specs({ cwd: workspace, threadId: 'fixture' }).map(tool => tool.name)).toContain('web_fetch');
+    await expect(request(event(), 'save', { maxResults: 3 })).resolves.toMatchObject({ maxResults: 3 });
+  });
+
+  it('keeps host web evidence available in remote chats while preserving local file and shell isolation', async () => {
+    await mocks.handlers.get('smalt:web-search')!(event(), 'save', { enabled: true, provider: 'tavily', apiKey: 'fixture-remote-search-token' });
+    const { threadId } = await bridge.kernel.handle('thread/start', { cwd: workspace }) as any;
+    bridge.kernel.markSshTarget(threadId, { profileId: 'fixture', name: 'fixture', host: 'public.example', port: 22, username: 'tester', root: '/project', fingerprint: 'fixture-key' });
+    const names = () => bridge.kernel.tools.specs({ cwd: workspace, threadId }).map(tool => tool.name);
+    expect(names()).toEqual(expect.arrayContaining(['web_search', 'web_fetch', 'ssh_read']));
+    expect(names()).not.toContain('read'); expect(names()).not.toContain('shell');
+    bridge.kernel.markSshTarget(threadId, undefined);
+    bridge.kernel.markContainerTarget(threadId, { profileId: 'fixture', readOnly: true } as any);
+    expect(names()).toEqual(expect.arrayContaining(['web_search', 'web_fetch', 'container_read']));
+    expect(names()).not.toContain('container_exec'); expect(names()).not.toContain('container_write');
+    expect(names()).not.toContain('shell'); expect(names()).not.toContain('read');
+  });
   it('binds native file context independently of command cwd and rejects cross-task materials and foreign frames',async()=>{
     mocks.ask.mockResolvedValue({response:0});
     const local=mocks.handlers.get('smalt:local-space')!,files=mocks.handlers.get('smalt:file-context')!,call=mocks.handlers.get('smalt:call')!;

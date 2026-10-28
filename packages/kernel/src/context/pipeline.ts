@@ -73,6 +73,8 @@ export function systemInterceptor(): ContextInterceptor {
           cwd: ctx.cwd,
           model: ctx.modelRef.model,
           hasPlanTool: ctx.toolNames.includes('plan'),
+          hasWebSearch: ctx.toolNames.includes('web_search'),
+          hasWebFetch: ctx.toolNames.includes('web_fetch'),
         }),
       });
     },

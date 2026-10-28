@@ -60,7 +60,7 @@ function block(item: Item, assessment = itemAssessment(item)): Block {
 function operationTitle(tool: string, input: unknown, fallback: string) {
   const value = input as Record<string, unknown> | undefined
   if (tool === 'shell' && value) return '运行命令 · ' + displayCommand(value)
-  const labels: Record<string, string> = { write: '写入文件', apply_patch: '修改文件', shell: '运行命令', read: '读取文件', grep: '搜索内容', glob: '查找文件' }
+  const labels: Record<string, string> = { write: '写入文件', apply_patch: '修改文件', shell: '运行命令', read: '读取文件', grep: '搜索内容', glob: '查找文件', web_search: '联网搜索', web_fetch: '读取网页' }
   return (labels[tool] ?? fallback) + (typeof value?.path === 'string' ? ' · ' + value.path : '')
 }
 function approvalReason(reason?: string) {
@@ -75,7 +75,7 @@ function operationContent(input: unknown) {
   const value = input as Record<string, unknown> | undefined
   return String(value?.command ?? value?.patch ?? value?.content ?? JSON.stringify(input, null, 2))
 }
-export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, session, scrollPositions, onOpenFile, model, setModel, models, mode, setMode, draft, setDraft, onSend, onError, onSettings, references, onReferencesChange, planPinned, onPinPlan, onInspectIssue, onOpenProcesses, onOpenBrowser }: { onSsh?:()=>void;onRemote?: () => void; onCollaborations?: () => void; onManage?: () => void; onOpenBrowser: () => void; onOpenProcesses: () => void; onInspectIssue: (id: string) => void;
+export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, session, scrollPositions, onOpenFile, model, setModel, models, mode, setMode, draft, setDraft, onSend, onError, onSettings, references, onReferencesChange, planPinned, onPinPlan, onInspectIssue, onOpenProcesses, onOpenBrowser }: { onSsh?:()=>void;onRemote?: () => void; onCollaborations?: () => void; onManage?: () => void; onOpenBrowser: (tabId?: string) => void; onOpenProcesses: () => void; onInspectIssue: (id: string) => void;
   session: Session; onOpenFile: (file: FileItem) => void; model: string; setModel: (model: string) => void; models: ModelChoice[]
   planPinned?: boolean; onPinPlan: () => void
   scrollPositions: ConversationScrollMemory
@@ -84,6 +84,14 @@ export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, s
   onError: (error: string) => void; onSettings: () => void
 }) {
   const scroll = useConversationScroll(session, scrollPositions)
+  const browserOpener = useRef(onOpenBrowser); browserOpener.current = onOpenBrowser
+  const openSource = useCallback(async (url: string) => {
+    if (!store.api) throw new Error('桌面浏览接口暂时不可用，请稍后重试。')
+    browserOpener.current()
+    const opened = await store.api.browser<{ id: string }>('open', { threadId: session.meta.id, url })
+    if (typeof opened.id !== 'string' || !opened.id) throw new Error('网页已创建，但未返回有效的标签，请在浏览侧栏检查。')
+    browserOpener.current(opened.id)
+  }, [session.meta.id])
   const running = store.busy(session.meta.id)
   const [managedLocked, setManagedLocked] = useState(false)
   const lifecycle = session.status?.lifecycle
@@ -165,7 +173,7 @@ export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, s
 
     {onCollaborations && <CollaborationBadge session={session} onManage={onCollaborations} />}
     {onManage && !session.meta.collaboration && <ManagedTaskBadge onLockChange={setManagedLocked} threadId={session.meta.id} onManage={onManage} onError={onError} />}
-    <div className="conversation-tools gap-3"><button className="status-action" aria-label="打开浏览与网页预览" onClick={onOpenBrowser}><Icon n="eye" s={13} />浏览预览</button><button className="status-action" aria-label="打开终端与后台进程" onClick={onOpenProcesses}><Icon n="terminal" s={13} />终端与进程</button><button ref={searchButton} className="status-action" aria-label="搜索对话 (Ctrl+F)" onClick={() => setSearchOpen(value => !value)}><Icon n="search" s={13} />搜索对话</button></div>
+    <div className="conversation-tools gap-3"><button className="status-action" aria-label="打开浏览与网页预览" onClick={() => onOpenBrowser()}><Icon n="eye" s={13} />浏览预览</button><button className="status-action" aria-label="打开终端与后台进程" onClick={onOpenProcesses}><Icon n="terminal" s={13} />终端与进程</button><button ref={searchButton} className="status-action" aria-label="搜索对话 (Ctrl+F)" onClick={() => setSearchOpen(value => !value)}><Icon n="search" s={13} />搜索对话</button></div>
     {searchOpen && <ConversationSearch items={session.items} issues={searchIssues} onLocate={locate} onClose={() => { setSearchOpen(false); searchButton.current?.focus({ preventScroll: true }) }} />}
     <div ref={scroll.viewport} data-testid="conversation-scroll" role="region" aria-label="对话内容" tabIndex={0} onScroll={scroll.onScroll} onWheelCapture={scroll.onWheelCapture} onPointerDownCapture={scroll.onPointerDownCapture} onKeyDownCapture={scroll.onKeyDownCapture} className="flex-1 min-h-0 overflow-y-auto outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--line)]">
       <div ref={scroll.content} className="max-w-[760px] mx-auto px-5 lg:px-8 pt-6 pb-10 space-y-3">
@@ -174,7 +182,7 @@ export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, s
         {session.items.length === 0 && <div className="py-12 text-center text-[var(--muted)]">继续描述你希望完成的工作。</div>}
         {earlier > 0 && <button data-testid="load-earlier-history" onClick={loadEarlier} className="w-full py-2 text-[12px] text-accent rounded-lg hover:bg-[var(--hover)]">查看更早的记录（还有 {earlier} 条）</button>}
         {timeline.slice(earlier, visibleEnd).map(entry => entry.kind !== 'activity'
-          ? <div key={entry.item.id} data-search-item={entry.item.id} className={located?.id === entry.item.id ? 'search-located' : undefined} data-testid={'item-' + entry.item.kind}><BlockView b={block(entry.item)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} /></div>
+          ? <div key={entry.item.id} data-search-item={entry.item.id} className={located?.id === entry.item.id ? 'search-located' : undefined} data-testid={'item-' + entry.item.kind}><BlockView b={block(entry.item)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} onOpenLink={openSource} /></div>
           : <ActivityGroup located={located} key={entry.id} entry={entry} allItems={session.items} assessments={assessments} memory={scrollPositions} threadId={session.meta.id} onOpenFile={onOpenFile} onInspect={inspect} />)}
         {visibleEnd < timeline.length && <button data-testid="load-newer-history" onClick={() => setSearchWindow(before => before ? { ...before, end: Math.min(timeline.length, before.end + 60) } : before)} className="w-full py-2 text-[12px] text-accent rounded-lg hover:bg-[var(--hover)]">查看较新的记录（还有 {timeline.length - visibleEnd} 条）</button>}
         {Object.values(session.approvals).map(req => <div key={req.itemId} data-testid="approval"><BlockView b={{ k: 'approval', external: req.external, id: req.itemId, risk: req.riskLevel ?? 'normal', title: req.batch ? '同组 ' + (req.categoryLabel ?? '操作') + ' · ' + req.batch.length + ' 项' : operationTitle(req.tool, req.input, req.title), detail: JSON.stringify(req.batch ?? req.input, null, 2), reason: approvalReason(req.detail), rule: req.suggestedRule ?? req.tool, category: req.category === 'other' ? undefined : req.categoryLabel, batch: req.batch?.length, operations: req.batch?.map(op => ({ ...op, title: operationTitle(op.tool, op.input, op.title) })) }} onResolve={(decision, reason) => respond(req.itemId, decision, reason)} onAnswer={() => {}} onOpenFile={onOpenFile} /></div>)}
@@ -260,7 +268,7 @@ function Fold({ head, children, open: init = false, tone }: { head: ReactNode; c
   )
 }
 
-function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onAnswer }: { b: Block; commandOpen?: boolean; onCommandToggle?: (open: boolean) => void; onResolve: (r: string, reason?: string) => void | Promise<void>; onOpenFile: (f: FileItem) => void; onAnswer: (a: string) => void | Promise<void> }) {
+function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onAnswer, onOpenLink }: { b: Block; commandOpen?: boolean; onCommandToggle?: (open: boolean) => void; onResolve: (r: string, reason?: string) => void | Promise<void>; onOpenFile: (f: FileItem) => void; onAnswer: (a: string) => void | Promise<void>; onOpenLink?: (url: string) => Promise<void> | void }) {
   switch (b.k) {
     case 'user':
       return (
@@ -303,7 +311,7 @@ function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onA
         </button>
       )
     case 'reply':
-      return <div className={cx('anim-fade text-[14px] leading-[1.75] pt-1', !b.done && 'caret')}>{!b.done && b.text.length > 16000 ? <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{b.text}</div> : <Md text={b.text} />}</div>
+      return <div className={cx('anim-fade text-[14px] leading-[1.75] pt-1', !b.done && 'caret')}>{!b.done && b.text.length > 16000 ? <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{b.text}</div> : <Md text={b.text} onOpenLink={onOpenLink} />}</div>
     case 'question':
       return <QuestionCard b={b} onAnswer={onAnswer} />
     case 'summary':

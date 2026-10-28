@@ -188,7 +188,7 @@ export class TurnRunner {
 
         const specs = allowedSpecs();
         const assemble = () => {
-          const ctx: TurnContext = { threadId, turnId, cwd: runtime.cwd, modelRef: runtime.modelRef, history: runtime.history, prompt: [...runtime.history], input, toolNames: this.deps.tools.list().map(t => t.name), systemExtras: [] };
+          const ctx: TurnContext = { threadId, turnId, cwd: runtime.cwd, modelRef: runtime.modelRef, history: runtime.history, prompt: [...runtime.history], input, toolNames: specs.map(t => t.name), systemExtras: [] };
           return this.deps.pipeline.assemble(ctx);
         };
         let messages = await assemble();

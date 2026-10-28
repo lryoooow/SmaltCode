@@ -3,18 +3,24 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareDesktopPreviewRuntime } from './prepare-desktop-preview-runtime.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const home = join(root, '.local-preview', 'data');
 const desktop = join(root, 'packages', 'desktop');
-const executable = join(root, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron');
-if (!existsSync(executable)) {
+const sourceExecutable = join(root, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron');
+if (!existsSync(sourceExecutable)) {
   console.error('缺少开发依赖，请先在仓库目录运行 npm ci。'); process.exit(1);
 }
 if (!process.argv.includes('--no-build')) {
   const build = spawnSync(process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : 'npm', process.platform === 'win32' ? ['/d', '/c', 'npm run build'] : ['run', 'build'], { cwd: root, stdio: 'inherit', windowsHide: true });
   if (build.error || build.status !== 0) { console.error('本地源码构建失败，未启动预览。', build.error?.message ?? ''); process.exit(1); }
 }
+// The preview must have its own branded executable as well as a window icon.
+// Windows may resolve the taskbar group through executable/shortcut resources.
+let executable;
+try { ({ executable } = await prepareDesktopPreviewRuntime(root)); }
+catch (error) { console.error('独立预览运行时准备失败：' + (error?.message ?? error)); process.exit(1); }
 mkdirSync(home, { recursive: true });
 const log = openSync(join(home, 'preview-launch.log'), 'a');
 const env = { ...process.env, SMALT_HOME: home };

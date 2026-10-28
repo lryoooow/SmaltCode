@@ -59,7 +59,7 @@ log=open(run/'electron.log','w',encoding='utf8');process=None;checks=[];errors=[
 def launch():
  global process
  quit_file.unlink(missing_ok=True)
- process=subprocess.Popen([str(root/'node_modules/electron/dist/electron.exe'),str(harness),'--development-preview','--remote-debugging-port='+str(port)],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
+ process=subprocess.Popen([str(os.environ.get('SMALT_TEST_ELECTRON_EXECUTABLE',root/'node_modules/electron/dist/electron.exe')),str(harness),'--development-preview','--identity-test','--remote-debugging-port='+str(port)],env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
 def until(check,seconds=20):
  end=time.time()+seconds
  while time.time()<end:

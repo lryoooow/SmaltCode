@@ -1,6 +1,7 @@
 import type { FileItem } from './Task'
 import type { FilePreview } from '../bridge'
 export type PreviewSectionRequest = 'processes' | 'browser' | 'issues' | 'plan'
+export type BrowserPreviewRequest = { sequence: number; target?: string }
 export type PreviewState = { tabs: FileItem[]; active: string | null; section: string; browserActive?: string; requests?: Partial<Record<PreviewSectionRequest, number>>; previews: Record<string, FilePreview>; diff: Record<string, boolean>; scroll: Record<string, number>; versions: Record<string, string>; documentPositions?: Record<string, { page?: number; sheet?: number; zoom?: number }> }
 export type PreviewMemory = Map<string, PreviewState>
 export const emptyPreview = (): PreviewState => ({ tabs: [], active: null, section: 'out', previews: {}, diff: {}, scroll: {}, versions: {} })
@@ -8,6 +9,11 @@ export const emptyPreview = (): PreviewState => ({ tabs: [], active: null, secti
 export function applyPreviewRequest(state: PreviewState, section: PreviewSectionRequest, sequence: number): PreviewState {
   if (!Number.isSafeInteger(sequence) || sequence <= 0 || sequence <= (state.requests?.[section] ?? 0)) return state
   return { ...state, active: null, section, requests: { ...state.requests, [section]: sequence } }
+}
+/** A source chooses its new tab once; restoring this chat preserves later user selections. */
+export function applyBrowserPreviewRequest(state: PreviewState, request: BrowserPreviewRequest): PreviewState {
+  const next = applyPreviewRequest(state, 'browser', request.sequence)
+  return next === state || !request.target ? next : { ...next, browserActive: request.target }
 }
 export function trimPreviewMemory(memory: PreviewMemory, currentId: string, currentPath: string | null, limit = 48 * 1024 * 1024) {
   const entries: Array<{ id: string; path: string; bytes: number }> = []

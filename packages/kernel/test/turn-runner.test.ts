@@ -139,6 +139,24 @@ beforeEach(() => {
 /* ------------------------------------------------------------------ */
 
 describe('TurnRunner', () => {
+  it('keeps web guidance aligned with the tools actually available at each model step', async () => {
+    let enabled = false;
+    tools.register({ name: 'read', description: 'fixture', inputSchema: { type: 'object' }, subject: () => 'fixture.txt', summarize: () => 'read fixture', async *run() { enabled = true; yield { type: 'result', text: 'host enabled search' }; } });
+    tools.register({ name: 'web_search', description: 'fixture', inputSchema: { type: 'object' }, available: () => enabled, subject: () => 'fixture query', summarize: () => 'search fixture', async *run() { enabled = false; yield { type: 'result', text: 'external evidence: https://example.com/source' }; } });
+    const streamer = new ScriptedStreamer([
+      toolCalls({ id: 'read', name: 'read', args: {} }),
+      toolCalls({ id: 'web', name: 'web_search', args: {} }),
+      text('Evidence received'),
+    ]);
+    const { sm, adapter } = runtime();
+    expect((await build(streamer).runTurn(sm, adapter, 'research')).failed).toBe(false);
+    expect(streamer.requests.map(request => request.tools.includes('web_search'))).toEqual([false, true, false]);
+    const systems = streamer.requests.map(request => request.messages.filter((message: any) => message.role === 'system').map((message: any) => message.content).join('\n'));
+    expect(systems[0]).toContain('No web search service is currently available');
+    expect(systems[1]).toContain('Cite the original source URLs');
+    expect(systems[1]).not.toContain('No web search service is currently available');
+    expect(systems[2]).toContain('No web search service is currently available');
+  });
   it('completes a plain text turn', async () => {
     const streamer = new ScriptedStreamer([text('Hello!')]);
     const { sm, rt, adapter } = runtime();

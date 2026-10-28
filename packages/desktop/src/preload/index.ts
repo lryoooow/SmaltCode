@@ -8,6 +8,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 const versionArg = process.argv.find((a) => a.startsWith('--smalt-version='));
 
 contextBridge.exposeInMainWorld('smalt', {
+  webSearch: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:web-search', action, value),
   fileContext: (action:string,value:unknown={})=>ipcRenderer.invoke('smalt:file-context',action,value),
   artifacts:(action:string,value:unknown={})=>ipcRenderer.invoke('smalt:artifacts',action,value),
   onArtifactSelection:(cb:(v:{threadId:string;text:string})=>void)=>{const h=(_e:unknown,v:{threadId:string;text:string})=>cb(v);ipcRenderer.on('smalt:artifact-selection',h);return()=>ipcRenderer.removeListener('smalt:artifact-selection',h);},

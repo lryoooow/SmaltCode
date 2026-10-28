@@ -105,6 +105,11 @@ writeFileSync(join(candidate, 'SHA256SUMS.txt'), checksum + '  ' + installerName
 for (const [script, args] of [['test-desktop-icons.mjs', []], ['test-desktop-package.mjs', []], ['test-desktop-runtime.mjs', []], ['test-desktop-smoke.mjs', ['--packaged']], ['test-desktop-tray.mjs', ['--packaged']]]) {
   execFileSync(process.execPath, [join(root, 'scripts', script), ...args, '--release-dir', candidate], { cwd: root, stdio: 'inherit', windowsHide: true });
 }
+if (process.env.SMALT_TEST_DESKTOP_UI_PYTHON) {
+  const { prepareDesktopPreviewRuntime } = await import('./prepare-desktop-preview-runtime.mjs');
+  const preview = await prepareDesktopPreviewRuntime(root);
+  execFileSync(process.env.SMALT_TEST_DESKTOP_UI_PYTHON, [join(root, 'scripts/test-desktop-taskbar.py'), '--release-dir', candidate, '--preview-executable', preview.executable], { cwd: root, stdio: 'inherit', windowsHide: true, timeout: 180000 });
+}
 assertBuildDirectory(releaseDir);
 const previous = join(stage, 'previous-release');
 if (existsSync(releaseDir)) renameSync(releaseDir, previous);

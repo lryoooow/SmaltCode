@@ -16,6 +16,12 @@ export type SettingsData = {
   keyStorage: 'encrypted' | 'session'
 }
 export type FilePreview = { binary: boolean; size: number; text: string; reason?: string; digest?: string } & Partial<import('../../shared/documents').DocumentContent> & { dataUrl?: string }
+export type WebSearchProvider = 'tavily' | 'deepseek'
+export type WebSearchSettingsView = {
+  enabled: boolean; provider: WebSearchProvider; maxResults: number; storage: 'encrypted' | 'session'; notice?: string
+  providers: Record<WebSearchProvider, { configured: boolean; endpoint: string }>
+}
+export type WebSearchTestResult = { provider: WebSearchProvider; count: number; sources: Array<{ title: string; url: string }>; message: string }
 export type Skill = import('../../main/skills').Skill
 export type SkillPreview = import('../../main/skills').SkillPreview & { token: string }
 export type Attachment = import('../../shared/documents').Attachment
@@ -25,6 +31,7 @@ export type Checkpoint = import('../../../../kernel/src/storage/checkpoints').Ch
 export type { ManagedProcess, ProcessOutput, ProcessEvent } from '../../shared/processes'
 import type { ManagedProcess, ProcessOutput, ProcessEvent } from '../../shared/processes'
 export interface DesktopAPI {
+  webSearch<T = unknown>(action: 'get' | 'save' | 'test' | 'cancel-test', value?: unknown): Promise<T>
   fileContext?<T=any>(action:string,value?:unknown):Promise<T>
   localSpace?(action: 'create'): Promise<{ cwd: string; kind: 'managed' }>;
   containers<T=unknown>(action:string,value?:unknown):Promise<T>

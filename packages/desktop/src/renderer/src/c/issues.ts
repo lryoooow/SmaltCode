@@ -3,7 +3,7 @@ import type { Item } from '../bridge'
 import { operationAssessments, type ExecutionAssessment } from '../../../../../kernel/src/protocol/assessment'
 
 export type OperationIssue = { id: string; title: string; reason: string; hint: string; output: string; command?: string; blocked: boolean; kind: 'error' | 'finding' | 'unverified' }
-const labels: Record<string, string> = { read: '读取文件', glob: '查找文件', grep: '搜索内容', shell: '执行命令', write: '写入文件', apply_patch: '修改文件' }
+const labels: Record<string, string> = { read: '读取文件', glob: '查找文件', grep: '搜索内容', web_search: '联网搜索', web_fetch: '读取网页', shell: '执行命令', write: '写入文件', apply_patch: '修改文件' }
 
 /** Extract actual diagnostic lines; never turn successful stderr into a failure. */
 export function operationIssues(items: Item[], allItems = items, assessments: Map<string, ExecutionAssessment> = operationAssessments(allItems)): OperationIssue[] {
@@ -17,6 +17,11 @@ export function operationIssues(items: Item[], allItems = items, assessments: Ma
     const lines = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/).map(line => line.trim()).filter(line=>!!line&&!/^\[assessment:/i.test(line))
     let hint = '查看完整执行记录，核对命令、文件路径和运行环境后再处理。'
     let reason = ''
+    if (item.kind === 'commandExecution' && (item.tool === 'web_search' || item.tool === 'web_fetch')) {
+      reason = lines.find(line => !line.startsWith('[exit')) ?? '联网请求未完成'
+      hint = '打开设置中的“联网搜索”，核对所选服务、API Key 和额度；取消、限速或超时后由你决定是否重试，不会自动换用另一付费服务。'
+      return [{ id: item.id, title: labels[item.tool] + ' · ' + item.command, reason: reason.slice(0, 500), hint, output, command: item.command, blocked: item.status === 'blocked', kind }]
+    }
     if(output.includes(sshSetupMarker)){reason='此对话尚未授权 SSH 执行目标';hint='点击“打开 SSH 连接”，在软件中填写用户名和密码，连接后绑定当前对话；不要求免密登录，也不自动重试原命令。'}
     else if(/credential\/config directories are off-limits|sensitive path/i.test(output)&&/\.ssh[\\/]/i.test(output+' '+(item.kind==='commandExecution'?item.command:''))){reason='SSH 凭据与配置目录受固定保护，不能由模型直接读取';hint='请使用软件 SSH 认证入口。普通权限或跳过审批不会开放凭据目录；密码和私钥不应粘贴到对话。'}
     else if(/Permission denied \((?:publickey|password|keyboard-interactive)/i.test(output)){reason=lines.find(line=>/Permission denied/i.test(line))??'SSH 认证未通过';hint='当前命令没有完成认证，主机信任记录不能证明在线或登录成功。使用软件 SSH 用户名/密码入口连接，再绑定此对话。'}

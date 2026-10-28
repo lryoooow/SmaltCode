@@ -52,7 +52,7 @@ class Desktop:
   self.quit.unlink(missing_ok=True);env={**os.environ,'SMALT_HOME':str(self.home)}
   for key in list(env):
    if any(v in key.upper()for v in ['API_KEY','TOKEN','SECRET','PASSWORD','CREDENTIAL'])or key=='ELECTRON_RUN_AS_NODE':env.pop(key,None)
-  self.process=subprocess.Popen([str(root/'node_modules/electron/dist/electron.exe'),str(self.harness),'--development-preview','--remote-debugging-port='+str(self.port)],env=env,stdout=self.log,stderr=self.log,creationflags=subprocess.CREATE_NO_WINDOW)
+  self.process=subprocess.Popen([str(os.environ.get('SMALT_TEST_ELECTRON_EXECUTABLE',root/'node_modules/electron/dist/electron.exe')),str(self.harness),'--development-preview','--identity-test','--remote-debugging-port='+str(self.port)],env=env,stdout=self.log,stderr=self.log,creationflags=subprocess.CREATE_NO_WINDOW)
   for _ in range(150):
    try:self.browser=p.chromium.connect_over_cdp(f'http://127.0.0.1:{self.port}',timeout=500);break
    except Exception:time.sleep(.1)

@@ -8,14 +8,14 @@
   <p><strong>从一句需求，到看得见、可核对的工作成果。</strong></p>
   <p>多模型 AI 编程与办公桌面助手 · 中文界面 · 本地保存 · 可控执行</p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.5%20preview-2F4FD0" alt="0.0.5 公开测试版" />
+    <img src="https://img.shields.io/badge/version-0.0.6%20preview-2F4FD0" alt="0.0.6 公开测试版" />
     <img src="https://img.shields.io/badge/platform-Windows%20x64-5B6475" alt="Windows x64" />
     <img src="https://img.shields.io/badge/license-Apache--2.0-23A075" alt="Apache-2.0" />
   </p>
-  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.5">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/releases/v0.0.5.md">本次更新</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a></p>
+  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.6">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/releases/v0.0.6.md">本次更新</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a></p>
 </div>
 
-> **0.0.5 是公开测试版本。** 欢迎体验、报告 Bug、提出交互与功能建议，也欢迎参与代码和文档改进。Office、远程主机及第三方模型的兼容性仍需更多真实场景验证。
+> **0.0.6 是公开测试版本。** 本次加入 Tavily / DeepSeek 联网搜索，并修复 Windows 任务栏图标与开发预览身份。欢迎体验、报告 Bug、提出交互与功能建议，也欢迎参与代码和文档改进。Office、远程主机及第三方模型的兼容性仍需更多真实场景验证。
 
 ![SmaltCode 0.0.5 首页](docs/images/v0.0.5/home.png)
 
@@ -45,6 +45,7 @@ SmaltCode 将对话、代码执行、文档编辑、终端和任务管理放在�
 | 远程开发 | SSH 用户名/密码、私钥或本机 agent；指纹核验、只读项目、按对话授权的终端/执行/回环转发 |
 | 容器 | 本机 Linux 容器、受限 Dev Containers、配置审查、手动生命周期节点和 SSH 容器目标 |
 | 外部工具 | 隔离浏览、MCP 服务连接、工具发现、认证与插件权限管理 |
+| 联网资料 | 独立配置 Tavily / DeepSeek 搜索和网页读取；按所选服务商调用，提供来源，不自动切换服务商 |
 | 跨设备 | 显式开启的 HTTPS 主机连接、配对、设备/会话撤销和手机查看/回答 |
 | 多模型 | 服务商模型发现、搜索和容量来源提示；上下文整理、错误检查与用量诊断 |
 
@@ -67,16 +68,16 @@ SmaltCode 将对话、代码执行、文档编辑、终端和任务管理放在�
 
 ## 下载与安装
 
-**Windows x64 · v0.0.5 公开测试版 · S Fox 统一图标**
+**Windows x64 · v0.0.6 公开测试版 · 联网搜索与图标修复**
 
-1. 下载 [SmaltCode-Setup-0.0.5-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.5/SmaltCode-Setup-0.0.5-SFox.exe)。
+1. 下载 [SmaltCode-Setup-0.0.6-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.6/SmaltCode-Setup-0.0.6-SFox.exe)。
 2. 升级前从系统托盘退出旧版，并备份已有工作资料；按向导选择安装目录。
 3. 从桌面或开始菜单打开 **SmaltCode**，配置模型即可开始对话。
 
-[Release 与更新说明](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.5) 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.5/SHA256SUMS.txt)。在 PowerShell 中核对：
+[Release 与更新说明](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.6) 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.6/SHA256SUMS.txt)。在 PowerShell 中核对：
 
 ```powershell
-Get-FileHash .\SmaltCode-Setup-0.0.5-SFox.exe -Algorithm SHA256
+Get-FileHash .\SmaltCode-Setup-0.0.6-SFox.exe -Algorithm SHA256
 ```
 
 当前安装包未做代码签名，Windows 可能显示未验证发布者。macOS、Linux 暂未提供经过桌面验收的安装包。
@@ -108,19 +109,32 @@ Get-FileHash .\SmaltCode-Setup-0.0.5-SFox.exe -Algorithm SHA256
 
 MCP、插件、持续任务、协作任务和容器均有独立入口。先检查来源、目标和权限，再按具体任务启用。
 
+### 5. 配置联网搜索（可选）
+
+![联网搜索设置：独立选择 Tavily 或 DeepSeek](docs/images/v0.0.6/web-search-settings.png)
+
+进入 **设置 → 联网搜索**，选择 Tavily 或 DeepSeek，填写该服务商的搜索 API Key，设置每次结果数量，再保存并开启。两个服务商的密钥分别保存，与对话模型配置分开；切换服务商后需要保存，留空不会删除已有密钥。
+
+DeepSeek Search / Fetch 使用 DeepSeek 开放平台 API Key，可自行填写与模型相同的 Key，软件不会自动读取模型密钥。搜索服务仅接收模型提交的检索词或指定 URL，不自动附加项目文件或完整对话；请避免在检索词中包含私有资料。
+
+**保存并测试连接** 会发送一条内置公开查询，可能产生服务费用；你可以取消测试或关闭设置。实际任务按权限调用联网搜索和网页读取工具，不会因打开设置自动外发对话，也不会在失败后自动切换其他服务商。费用与额度以 [Tavily 官方说明](https://docs.tavily.com/documentation/api-credits) 和 [DeepSeek Search & Fetch 官方说明](https://api-docs.deepseek.com/guides/search/) 为准。
+
+点击回复中的公开 HTTPS 来源，可在**原对话的隔离浏览侧栏**查看原文，首次访问需经原生站点确认；旁边的复制按钮继续可用。网页无法访问 Node.js 或应用桥。HTTP、带凭据等不能直接预览的链接会提示复制，不扩大现有浏览权限。
+
+普通对话与 SSH / 容器对话均可使用独立的主机端搜索服务。托管或无人值守任务仍受各自工具白名单限制，全局启用搜索不会自动扩大其工具范围。
+
 ## 本次更新
 
-**0.0.5 将阶段 1–17 已完成的预览能力集中发布**，重点包括：
+**0.0.6 加入双服务联网搜索，并修复 Windows 任务栏仍显示 Electron 或空白图标的问题**，重点包括：
 
-- 搜索定位、错误与上下文检查、待处理说明队列，及统一侧栏/浮层和结果展示。
-- 后台进程、交互式终端、多会话管理、MCP/插件、持续任务和并行协作。
-- 远程设备与会话、SSH 认证/终端/执行/受控转发、本机容器和受限 Dev Containers。
-- Office 编辑会话、保存确认、崩溃恢复、Calc/Impress/Writer 工作流，以及多文档审阅。
-- 项目、资料、执行环境和产物分离，保留不选目录也能直接对话。
-- 修复 SSH 错误密码重试与迟到认证响应、Office 最终关闭收取、退出并发和恢复清理。
-- 修复安装后外部 Office 脚本/SSH 解密线程路径，补充打包运行时验收。
+- 新增独立联网搜索设置，支持 Tavily / DeepSeek 搜索与网页读取、分别管理密钥、公开查询测试与取消；认证、余额或限流失败直接提示。
+- 开发预览使用独立的 `SmaltCode Preview.exe`，嵌入 S Fox 图标、产品名称和当前版本，不修改共享 Electron 运行时。
+- 安装版与品牌预览向 Windows Shell 提供真实 EXE 图标路径；主窗口和文档审阅窗统一应用身份与重启入口。
+- 创建专用“SmaltCode 开发预览”快捷方式；仅迁移严格匹配本仓库与预览身份的旧 `Electron.lnk`，先备份再处理。
+- GUI 回归使用独立测试身份，避免测试重新生成普通预览的旧 Electron 快捷方式；增加启动脚本契约检查。
+- 在真实桌面核对窗口、EXE 与快捷方式图标，维护者已确认当前任务栏显示正确。
 
-详见 [0.0.5 Release 说明](docs/releases/v0.0.5.md)、[发布验收记录](docs/releases/v0.0.5-verification.json)。历史版本：[0.0.4](docs/releases/v0.0.4.md) · [0.0.3](docs/releases/v0.0.3.md) · [0.0.2](docs/releases/v0.0.2.md) · [0.0.1](docs/releases/v0.0.1.md)。
+详见 [0.0.6 Release 说明](docs/releases/v0.0.6.md)。工作区、SSH、Office 等既有能力见 [0.0.5](docs/releases/v0.0.5.md)；更早版本：[0.0.4](docs/releases/v0.0.4.md) · [0.0.3](docs/releases/v0.0.3.md) · [0.0.2](docs/releases/v0.0.2.md) · [0.0.1](docs/releases/v0.0.1.md)。
 
 ## 权限与数据
 
@@ -153,7 +167,7 @@ npm test
 npm run preview:desktop
 ```
 
-独立源码预览使用 `.local-preview/`，与正式版资料隔离。生成安装包：
+Windows 源码预览会在 `.local-preview/runtime/` 准备独立的品牌运行时，再启动 `SmaltCode Preview.exe`；资料保存在 `.local-preview/data/`，与正式版隔离。首次启动会复制运行时，后续启动校验并复用；校验失败会停止，不覆盖正在使用的缓存。预览快捷方式和窗口重启也使用相同资料位置。生成安装包：
 
 ```bash
 npm run package:desktop
@@ -161,7 +175,7 @@ npm run package:desktop
 
 打包流水线验证版本与全部图标、ASAR 文件一致性、文档解析、原生 PTY/SSH 工作线程、启动和托盘退出。设置 `SMALT_TEST_OFFICE_LIBRE` 与 `SMALT_TEST_OFFICE_PYTHON` 后，还会验证打包目录下真实 Office 保存链；组件需自行准备。
 
-**本仓库保持 GitHub Actions 关闭**，验证在本地完成。测试范围和实际结果见 [发布验收记录](docs/releases/v0.0.5-verification.json) 及各版本 Release。
+**本仓库保持 GitHub Actions 关闭**，验证在本地完成。测试范围和实际结果见 [本次发布说明](docs/releases/v0.0.6.md) 及各版本 Release。
 
 ```text
 packages/kernel/   智能体、模型、工具、权限和任务存储

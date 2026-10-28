@@ -1,27 +1,45 @@
 /** smalt desktop — Electron main process (hardened). */
 
 import { app, BrowserWindow, dialog, protocol } from 'electron';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { waitForToolProcesses } from '@smalt/kernel';
 import { DesktopBridge } from './bridge.js';
 import { DesktopTray } from './tray.js';
-import { desktopAppId, desktopTestSwitches } from './identity.js';
+import { desktopAppId, desktopTestSwitches, desktopWindowDetails } from './identity.js';
+import { ensurePreviewShortcut } from './preview-shortcut.js';
 import { configureDesktopStorage } from './desktop-storage.js';
 
 app.setName('SmaltCode');
 protocol.registerSchemesAsPrivileged([{ scheme: 'smalt-preview', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const testing = desktopTestSwitches.some(flag => app.commandLine.hasSwitch(flag));
-if (process.platform === 'win32') app.setAppUserModelId(desktopAppId(app.isPackaged, testing));
+const developmentPreview = app.commandLine.hasSwitch('development-preview');
+if (process.platform === 'win32') app.setAppUserModelId(desktopAppId(app.isPackaged, testing, developmentPreview));
 
 let tray: DesktopTray | undefined;
 let bridge: DesktopBridge | undefined;
 let exiting = false, cleaned = false;
 
-if (process.env.SMALT_HOME && (testing || app.commandLine.hasSwitch('development-preview'))) app.setPath('userData', join(process.env.SMALT_HOME, testing ? 'desktop-test-profile' : 'desktop-preview-profile'));
+let previewHomeError: string | undefined;
+if (developmentPreview && !process.env.SMALT_HOME) {
+  try {
+    const entry = app.getAppPath();
+    if (/([\\/])app\.asar(?:[\\/]|$)/i.test(entry)) throw new Error('打包应用的开发预览必须显式指定独立 SMALT_HOME，不能使用正式配置');
+    const source = realpathSync(entry);
+    const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'));
+    if (basename(source).toLowerCase() !== 'desktop' || basename(dirname(source)).toLowerCase() !== 'packages' || manifest.name !== '@smalt/desktop') throw new Error('无法确认源码预览入口，未使用正式配置');
+    process.env.SMALT_HOME = join(resolve(source, '../..'), '.local-preview', 'data');
+  } catch (error) {
+    previewHomeError = error instanceof Error ? error.message : String(error);
+  }
+}
+if (!previewHomeError && process.env.SMALT_HOME && (testing || developmentPreview)) app.setPath('userData', join(process.env.SMALT_HOME, testing ? 'desktop-test-profile' : 'desktop-preview-profile'));
 
 // single instance: a second launch focuses the existing window
-if (!app.requestSingleInstanceLock()) {
+if (previewHomeError) {
+  dialog.showErrorBox('开发预览数据位置未确认', previewHomeError); app.exit(1);
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   if (!process.env.SMALT_HOME) {
@@ -40,7 +58,12 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    try {
+      await ensurePreviewShortcut({ enabled: developmentPreview && !testing, executable: process.execPath, appPath: app.getAppPath(), appData: app.getPath('appData'), profile: app.getPath('userData'), appId: desktopAppId(false, false) });
+    } catch (error) {
+      console.warn('[preview-shortcut] shortcut identity refresh failed:', error);
+    }
     const win = new BrowserWindow({
       width: 1240,
       height: 820,
@@ -65,12 +88,7 @@ if (!app.requestSingleInstanceLock()) {
       },
     });
     if (process.platform === 'win32') {
-      win.setAppDetails({
-        appId: desktopAppId(app.isPackaged, testing),
-        appIconPath: join(__dirname, 'smalt.ico'), appIconIndex: 0,
-        relaunchDisplayName: app.commandLine.hasSwitch('development-preview') ? 'SmaltCode 开发预览' : 'SmaltCode',
-        relaunchCommand: app.isPackaged ? '"' + process.execPath + '"' : '"' + process.execPath + '" "' + app.getAppPath() + '"' + (app.commandLine.hasSwitch('development-preview') ? ' --development-preview' : ''),
-      });
+      win.setAppDetails(desktopWindowDetails({ packaged: app.isPackaged, testing, developmentPreview, executable: process.execPath, appPath: app.getAppPath(), sourceIcon: join(__dirname, 'smalt.ico') }));
     }
 
     // Windows: soft Mica backdrop when supported (best-effort)

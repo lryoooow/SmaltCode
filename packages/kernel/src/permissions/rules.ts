@@ -70,6 +70,8 @@ export function toolClass(toolName: string): 'shell' | 'edit' | 'read' | 'other'
     case 'resource_list':
     case 'resource_read':
     case 'resource_search':
+    case 'web_search':
+    case 'web_fetch':
     case 'read':
     case 'glob':
     case 'grep':
