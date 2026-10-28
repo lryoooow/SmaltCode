@@ -65,6 +65,7 @@ export async function resolveContext(cwd: string, references: ContextReference[]
   for (const ref of references) {
     if (!ref || typeof ref.path !== 'string') throw new Error('无效的文件引用');
     const file = await readContextFile(cwd, ref.path, reader);
+    if (ref.start === undefined && ref.end === undefined && ref.digest && ref.digest !== file.digest) throw new Error('引用来源已变化，请检查并更新引用：' + (ref.label ?? ref.path));
     if (file.format === 'image') {
       if (ref.start !== undefined || ref.end !== undefined) throw new Error('图片不支持文本选区');
       if (images.length >= 4) throw new Error('每条消息最多添加 4 张图片');

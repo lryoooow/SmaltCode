@@ -33,7 +33,7 @@ export default function SidebarContents({ tasks, projects, current, project, loa
     {projects.map(p => <div key={p.id} className="mb-1" data-testid="project-group">
       <div className={cx('group flex items-center gap-1 rounded-lg', project === p.id && 'bg-[var(--accent-soft)]')}>
         <button aria-label={(closed[p.id] ? '展开项目 ' : '收起项目 ') + p.name} onClick={() => setClosed(c => ({ ...c, [p.id]: !c[p.id] }))} className="p-1 text-[var(--muted)]"><Icon n="chevron" s={12} className={cx(!closed[p.id] && 'rotate-90')} /></button>
-        <button onClick={() => onProject(p.id)} className="min-w-0 flex-1 flex items-center gap-2 py-2 text-left"><Icon n="folder" s={16} className="shrink-0 text-accent" /><span className="truncate font-medium">{p.name}</span></button>
+        <button aria-label={'打开项目 '+p.name} aria-pressed={project===p.id} onClick={() => onProject(p.id)} className="min-w-0 flex-1 flex items-center gap-2 py-2 text-left"><Icon n="folder" s={16} className="shrink-0 text-accent" /><span className="truncate font-medium">{p.name}</span></button>
         <div className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"><Menu align="right" trigger={() => <IconBtn n="dots" label={'项目操作 ' + p.name} />} items={[
           { label: '编辑项目', icon: 'file', onClick: () => onEditProject(p.id) },
           { label: '删除项目', icon: 'trash', danger: true, onClick: () => onDeleteProject(p.id) },

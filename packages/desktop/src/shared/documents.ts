@@ -5,6 +5,7 @@ export type DocumentContent = {
   warnings: string[];
   truncated?: boolean;
   pages?: string[];
+  pageCount?:number;
   sheets?: Array<{ name: string; rows: string[][] }>;
   paragraphs?: Array<{ text: string; heading: boolean }>;
   mimeType?: 'image/png' | 'image/jpeg';

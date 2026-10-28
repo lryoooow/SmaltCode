@@ -15,7 +15,11 @@ files:
 
 # Node workers and the files they open must have real filesystem paths.
 asarUnpack:
+  - dist/main/native/**/*
   - dist/main/document-worker.cjs
+  - dist/main/ssh-key-worker.cjs
+  - dist/main/*.py
+  - dist/main/*.ps1
   - dist/main/pdf-assets/**/*
 
 win:

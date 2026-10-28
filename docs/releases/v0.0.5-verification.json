@@ -1,0 +1,92 @@
+{
+  "version": "0.0.5",
+  "status": "passed",
+  "prerelease": true,
+  "verifiedAt": "2026-10-28T03:15:15.638487+00:00",
+  "baseCommit": "9269e12eee7b2288d577e648464fe336f04d5f7f",
+  "installer": {
+    "passed": true,
+    "files": 319,
+    "exactMatch": true,
+    "installer": "SmaltCode-Setup-0.0.5-SFox.exe",
+    "bytes": 122128711,
+    "sha256": "fdda85ee18bae33ef6b9cf3b39e73d25b317523108353fc206bb286817b89378",
+    "validationMode": "Actual NSIS app-64.7z payload extracted into isolated QA directory; existing installation and registry unchanged"
+  },
+  "source": {
+    "files": 473,
+    "publishedSha256": "367c7ab7d6844303b269bc101646e14991a6cd5d71d79e3d1649852dcf21da82",
+    "testedSha256": "dbccb88f74c7b54bd73b90335c41b2c9b205ce151c10a7b80ec55455e5f20e12",
+    "postRegressionChange": "package-lock.json normalized CRLF to LF only; exact byte reconstruction matched the tested manifest hash",
+    "implementationChangedAfterRegression": false
+  },
+  "localRegression": {
+    "passed": 880,
+    "failed": 0,
+    "skipped": 3,
+    "skipReason": "CLI SEA security fixture was not built; this release distributes the Windows desktop installer",
+    "filesPassed": 79,
+    "filesSkipped": 1,
+    "separatelyPriorPassedRealEngineCases": 18,
+    "deduplicatedSourceCoverage": 898,
+    "targetedPassed": 124,
+    "previousDesktopGroupsPassed": 26,
+    "previousNativeGroupsPassed": 4,
+    "priorAcceptance": "Prior local Office and desktop acceptance archive retained on the maintainer machine"
+  },
+  "packagedChecks": {
+    "iconsAndVersion": true,
+    "buildFilesCompared": 307,
+    "unpackedResourcesChecked": 246,
+    "documentParser": [
+      "docx",
+      "xlsx",
+      "pdf"
+    ],
+    "invalidDocumentRejectedAndQueueRecovered": true,
+    "nativeRuntime": {
+      "passed": true,
+      "electron": "44.7.0",
+      "node": "24.21.0",
+      "checks": [
+        "shipped encrypted-key worker decodes a private fixture through a physical unpacked path",
+        "shipped Electron loads its real PTY ABI and Job Object supervisor, enforces input approval, accepts input and exits cleanly",
+        "shipped runtime opens, edits, saves, reopens and collects DOCX/XLSX/PPTX via the actual extracted LibreOffice scripts"
+      ],
+      "officeFormats": [
+        "docx",
+        "xlsx",
+        "pptx"
+      ],
+      "officeSkipped": false
+    },
+    "startup": true,
+    "trayCyclesPassed": 3,
+    "runtimeFilesUnchanged": 319
+  },
+  "installerPayloadChecks": {
+    "allBytesMatchVerifiedRuntime": true,
+    "files": 319,
+    "parser": true,
+    "startup": true,
+    "trayCyclesPassed": 3,
+    "scope": "Actual NSIS payload extracted and executed in an isolated QA directory; no replacement of the existing installed application or registry"
+  },
+  "prePublish": {
+    "versionAndWorkspaceLockConsistent": true,
+    "secretFindings": 0,
+    "reviewedNegativeTestFixtures": 1,
+    "readmeAndReleaseLinksValid": true,
+    "githubActionsEnabled": false
+  },
+  "changes": [
+    "workspace and file context separation",
+    "background/interactive processes and multi-session control",
+    "MCP/plugins, recurring tasks and collaboration",
+    "remote devices, SSH and containers",
+    "Office edit/save/recovery and multi-document review",
+    "SSH retry and cancellation reliability",
+    "Office final-close capture and cleanup reliability",
+    "physical ASAR paths for external interpreters/workers and bytecode suppression"
+  ]
+}

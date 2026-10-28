@@ -52,6 +52,14 @@ export class AttachmentStore {
     const content = await this.reader(metadata.name, bytes);
     return { ...content, name: metadata.name, binary: false, size: bytes.length, digest: metadata.digest, ...(['image', 'pdf'].includes(content.format) ? { dataUrl: 'data:' + (content.mimeType ?? 'application/pdf') + ';base64,' + bytes.toString('base64') } : {}) };
   }
+  async workingCopy(id:string){
+    await this.queue;
+    const metadata:Attachment=JSON.parse(await readFile(this.path(id,'.json'),'utf8'));
+    if(metadata.id!==id||typeof metadata.name!=='string'||basename(metadata.name)!==metadata.name)throw Error('附件来源记录无效');
+    const bytes=await readBounded(this.path(id,'.data'),15*1024*1024);
+    if(hash(bytes)!==metadata.digest)throw Error('附件内容已变化，请重新添加');
+    return{name:metadata.name,bytes};
+  }
   async resolve(refs: ContextReference[]) {
     const blocks: string[] = [], references: Array<{ path: string; label: string }> = [], images: ImagePart[] = [];
     for (const ref of refs) {

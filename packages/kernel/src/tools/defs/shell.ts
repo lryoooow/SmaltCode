@@ -1,6 +1,7 @@
 import { spawn, execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { basename, resolve, delimiter, extname, isAbsolute } from 'node:path';
+import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { ToolDefinition, ToolEvent } from '../types.js';
 import { budgetToolOutput } from '../../util.js';
@@ -15,6 +16,18 @@ let cachedOverride: string | undefined;
 
 /** live tool child processes, so hosts can reap them on quit */
 const liveChildren = new Set<number>();
+
+/** The desktop awaits reaping before allowing its final quit. Never reads PIDs from disk. */
+export async function waitForToolProcesses(): Promise<void> {
+  await Promise.all([...liveChildren].map(pid => new Promise<void>((resolve, reject) => {
+    if (!Number.isInteger(pid) || pid <= 0) { resolve(); return; }
+    if (process.platform !== 'win32') { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ } }; resolve(); return; }
+    const child = spawn(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/taskkill.exe'), ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    const timer = setTimeout(() => reject(new Error('工具进程清理超时')), 8000);
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('close', () => { clearTimeout(timer); try { process.kill(pid, 0); reject(new Error('工具进程仍未退出')); } catch { liveChildren.delete(pid); resolve(); } });
+  })));
+}
 
 /** Kill every running tool child (process tree). Call on app shutdown. */
 export function killAllToolProcesses(): void {
@@ -130,6 +143,7 @@ export const shellTool: ToolDefinition = {
       env: { ...env, SMALT: '1', PYTHONIOENCODING: 'utf-8' },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
       windowsVerbatimArguments: windowsCmd,
     });
 
@@ -164,7 +178,7 @@ export const shellTool: ToolDefinition = {
     let killedByTimeout = false;
     const killTree = () => {
       if (process.platform === 'win32' && child.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      else child.kill('SIGKILL');
+      else { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
     };
 
     const timeout = setTimeout(() => {

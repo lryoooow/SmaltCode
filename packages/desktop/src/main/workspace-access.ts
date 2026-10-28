@@ -17,6 +17,7 @@ export class WorkspaceAccess {
     const check = isValidWorkspace(dir); if (!check.ok) throw new Error(check.reason);
     const path = realpathSync(dir); return process.platform === 'win32' ? path.toLowerCase() : path;
   }
+  has(dir: string): boolean { try { return this.roots.has(this.canonical(dir)); } catch { return false; } }
   grant(dir: string): void {
     const root = this.canonical(dir), updated = new Set(this.roots); updated.add(root);
     if (updated.size > 500) updated.delete(updated.values().next().value!);

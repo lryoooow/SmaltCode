@@ -35,6 +35,7 @@ import type { ToolOrchestrator, ToolRunOutcome } from '../tools/orchestrator.js'
 import type { ToolRegistry } from '../tools/registry.js';
 import { errorMessage, newId, nowIso } from '../util.js';
 import { assessTurn, displayCommand, itemAssessment, missingProgram, operationAssessments, verifiesSameCheck } from '../protocol/assessment.js';
+import { RunLimit, unattendedTools, type RunPolicy, type RunMetrics, type ToolPolicy } from './run-policy.js';
 import type { SessionRunStateMachine } from './state-machine.js';
 
 export interface TurnRunnerDeps {
@@ -56,6 +57,8 @@ export interface TurnOutcome {
   error?: string;
   assistantText: string;
   usage: { inputTokens: number; outputTokens: number };
+  metrics?: RunMetrics;
+  stopReason?: string;
   summary?: Omit<import('../protocol/types.js').TurnSummary, 'turnId'>;
 }
 
@@ -82,12 +85,14 @@ export class TurnRunner {
   async runTurn(
     state: SessionRunStateMachine,
     runtime: {
+      policy?: RunPolicy;
       threadId: string;
       cwd: string;
       modelRef: ModelRef;
       history: ChatMessage[];
       items: Item[];
       steerQueue: import('../protocol/types.js').UserPrompt[];
+      onSteeringApplied?(prompt: import('../protocol/types.js').UserPrompt, turnId: string): void;
       signal: AbortSignal;
       onHistoryReplaced(history: ChatMessage[]): void;
       onContextNotice?(notice: ContextNotice): void;
@@ -99,6 +104,9 @@ export class TurnRunner {
   ): Promise<TurnOutcome> {
     const { text: input, displayText, references, images } = typeof prompt === 'string' ? { text: prompt, displayText: undefined, references: undefined, images: undefined } : prompt;
     const { threadId } = runtime;
+    const policy = runtime.policy, metrics: RunMetrics = { requests: 0, chargedTokens: 0, toolCalls: 0 };
+    const toolPolicy: ToolPolicy | undefined = policy ? { allowedTools: policy.unattended ? unattendedTools : undefined, workspaceOnly: !!policy.unattended, noBackground: true, ...policy.toolPolicy } : undefined;
+    const allowedSpecs = () => this.deps.tools.specs({ cwd: runtime.cwd, threadId: runtime.threadId }).filter(spec => !toolPolicy?.allowedTools || toolPolicy.allowedTools.includes(spec.name));
     const startedAt = Date.now();
     const firstItem = runtime.items.length;
     let toolCount = 0;
@@ -149,7 +157,7 @@ export class TurnRunner {
       const submitted = await this.deps.hooks.emit('UserPromptSubmit', { threadId, turnId, cwd: runtime.cwd, prompt: input });
       if (submitted?.decision === 'deny' || submitted?.anyFailed) throw new Error('提交请求被项目 Hook 阻止：' + (submitted?.reason ?? 'Hook 执行失败'));
       if (this.deps.gateway.prepare) this.deps.compactor.setContextWindow(await this.deps.gateway.prepare(runtime.modelRef, runtime.signal));
-      this.deps.gateway.validateRequest?.(runtime.modelRef, { messages: runtime.history, tools: this.deps.tools.specs() });
+      this.deps.gateway.validateRequest?.(runtime.modelRef, { messages: runtime.history, tools: allowedSpecs() });
       for (; step < maxSteps; step++) {
         if (runtime.signal.aborted) {
           outcome.interrupted = true;
@@ -172,12 +180,13 @@ export class TurnRunner {
             references,
           };
           runtime.items.push(steerItem);
-          this.deps.store.append(threadId, { t: 'user-msg', id: steerItem.id, text: msg, displayText, references, images, at: nowIso() });
+          this.deps.store.append(threadId, { t: 'user-msg', id: steerItem.id, text: msg, displayText, references, images, steeringId: typeof queued === 'string' ? undefined : queued.steeringId, at: nowIso() });
           this.deps.notify(Notifications.itemStarted, { item: steerItem });
           this.deps.notify(Notifications.itemCompleted, { item: steerItem });
+          runtime.onSteeringApplied?.(queued, turnId);
         }
 
-        const specs = this.deps.tools.specs();
+        const specs = allowedSpecs();
         const assemble = () => {
           const ctx: TurnContext = { threadId, turnId, cwd: runtime.cwd, modelRef: runtime.modelRef, history: runtime.history, prompt: [...runtime.history], input, toolNames: this.deps.tools.list().map(t => t.name), systemExtras: [] };
           return this.deps.pipeline.assemble(ctx);
@@ -190,6 +199,7 @@ export class TurnRunner {
         const window = runtime.contextWindow();
         this.emitUsage(runtime, reportedTokens, overhead);
         while (this.deps.compactor.needsCompaction(runtime.history, reportedTokens, window, overhead)) {
+          if (policy) throw new RunLimit('context', '托管任务上下文需要整理，已暂停；请减少引用或手动检查后继续');
           state.transition('COMPACT_STARTED');
           const inputTokens = Math.max(estimateHistoryTokens(messages) + estimateTokens(JSON.stringify(specs)), reportedTokens);
           const result = await this.deps.compactor.compact(runtime.history, runtime.modelRef, runtime.signal, window, inputTokens);
@@ -241,16 +251,24 @@ export class TurnRunner {
         let reasoningStarted = false;
         let streamError: unknown;
 
+        let reserved = 0, excessUsage = 0;
+        const request: Omit<ModelRequest, 'model'> = { messages, tools: specs, signal: runtime.signal };
+        const beforeRequest = () => {
+          if (!policy) return;
+          if (runtime.signal.aborted || Date.now() >= policy.deadlineAt) throw new RunLimit('deadline', '已达到设定的运行时间或任务已停止');
+          if (metrics.requests >= policy.maxRequests) throw new RunLimit('requests', '已达到设定的模型请求预算');
+          const inputCost = estimateHistoryTokens(messages) + estimateTokens(JSON.stringify(specs)), left = policy.maxTokens - metrics.chargedTokens;
+          if (left < inputCost + 64) throw new RunLimit('tokens', '剩余 Token 预算不足以发送下一次请求');
+          request.maxOutputTokens = Math.min(8192, left - inputCost); reserved = inputCost + request.maxOutputTokens; excessUsage = 0;
+          metrics.requests++; metrics.chargedTokens += reserved;
+        };
         try {
-          for await (const delta of this.streamWithRetry(runtime.modelRef, {
-            messages,
-            tools: specs,
-            signal: runtime.signal,
-          }, () => state.transition('RETRYING'), () => state.transition('MODEL_REQUEST_STARTED'))) {
+          for await (const delta of this.streamWithRetry(runtime.modelRef, request, () => state.transition('RETRYING'), () => state.transition('MODEL_REQUEST_STARTED'), beforeRequest)) {
             if (!sawFirstDelta) {
               sawFirstDelta = true;
               state.transition('MODEL_STREAM_STARTED');
             }
+            if (policy && (delta.type === 'text' || delta.type === 'reasoning' || delta.type === 'toolCallDelta') && estimateTokens(text + reasoningText + [...partialArgs.values()].join('') + (delta.type === 'toolCallDelta' ? delta.argsDelta : delta.text)) > (request.maxOutputTokens ?? 2048) + 128) throw new RunLimit('tokens', '模型输出超过本次预留 Token，已暂停');
             switch (delta.type) {
               case 'reasoning': {
                 if (!reasoningStarted) {
@@ -280,6 +298,7 @@ export class TurnRunner {
                 break;
               }
               case 'usage': {
+                if (policy) { const excess = Math.max(excessUsage, delta.inputTokens + delta.outputTokens - reserved); metrics.chargedTokens += excess - excessUsage; excessUsage = excess; }
                 reportedTokens = delta.inputTokens;
                 outcome.usage.inputTokens += delta.inputTokens;
                 outcome.usage.outputTokens += delta.outputTokens;
@@ -384,14 +403,18 @@ export class TurnRunner {
             outcome.interrupted = true;
             break;
           }
+          if (policy && Date.now() >= policy.deadlineAt) { outcome.stopReason = 'deadline'; outcome.interrupted = true; break; }
+          if (policy && (metrics.toolCalls >= policy.maxTools || metrics.chargedTokens > policy.maxTokens)) { outcome.stopReason = metrics.toolCalls >= policy.maxTools ? 'tools' : 'tokens'; outcome.interrupted = true; break; }
           state.transition('TOOL_STARTED');
-          toolCount++;
+          toolCount++; metrics.toolCalls++;
           const parsed = safeJsonParse(tc.arguments) as Record<string, unknown>;
-          this.deps.notify(Notifications.itemStarted, { item: {
+          const external = this.deps.tools.get(tc.name)?.external;
+          if (external) this.deps.notify(Notifications.itemStarted, { item: { kind: 'mcpToolCall', id: tc.id, threadId, turnId, createdAt: nowIso(), status: 'inProgress', server: external.server, tool: external.tool, origin: external.origin, arguments: parsed, output: '' } });
+          else this.deps.notify(Notifications.itemStarted, { item: {
             kind: 'commandExecution', id: tc.id, threadId, turnId, createdAt: nowIso(), status: 'inProgress',
             tool: tc.name, command: tc.name === 'shell' ? displayCommand(parsed) : `${tc.name} ${String(parsed.path ?? '')}`, output: '', exitCode: null,
           } });
-          const result = await this.executeToolCall(tc, { threadId, turnId, cwd: runtime.cwd, signal: runtime.signal, approvalBatch: { ...approvalBatch, operations: approvalBatch.operations.slice(toolCalls.indexOf(tc)) } });
+          const result = await this.executeToolCall(tc, { threadId, turnId, cwd: runtime.cwd, policy: toolPolicy, signal: runtime.signal, approvalBatch: { ...approvalBatch, operations: approvalBatch.operations.slice(toolCalls.indexOf(tc)) } });
           this.recordToolResult(runtime, outcome, tc, result);
           state.transition('TOOL_ENDED');
         } } finally { this.deps.orchestrator.endBatch(approvalBatch.id); }
@@ -409,6 +432,7 @@ export class TurnRunner {
     } catch (err) {
       outcome.failed = true;
       outcome.error = errorMessage(err);
+      if (err instanceof RunLimit) { outcome.stopReason = err.reason; outcome.interrupted = true; outcome.failed = false; }
       if (isAbort(err) || runtime.signal.aborted) {
         outcome.interrupted = true;
         outcome.failed = false;
@@ -417,6 +441,7 @@ export class TurnRunner {
       this.deps.log(`turn ${turnId} error: ${outcome.error ?? 'aborted'}`);
     }
 
+    if (policy) { outcome.metrics = metrics; if (runtime.signal.aborted && Date.now() >= policy.deadlineAt) outcome.stopReason = 'deadline'; }
     // finalize
     if (outcome.usage.inputTokens || outcome.usage.outputTokens) {
       this.deps.store.append(threadId, {
@@ -443,10 +468,11 @@ export class TurnRunner {
     return outcome;
   }
 
-  private async *streamWithRetry(ref: ModelRef, req: Omit<ModelRequest, 'model'>, retrying: () => void, requesting: () => void): AsyncIterable<ModelDelta> {
+  private async *streamWithRetry(ref: ModelRef, req: Omit<ModelRequest, 'model'>, retrying: () => void, requesting: () => void, beforeRequest?: () => void): AsyncIterable<ModelDelta> {
     for (let attempt = 0; ; attempt++) {
       let emitted = false;
       try {
+        beforeRequest?.();
         for await (const delta of this.deps.gateway.stream(ref, req)) {
           if (delta.type === 'text' || delta.type === 'reasoning' || delta.type === 'toolCallStart') emitted = true;
           yield delta;
@@ -464,9 +490,10 @@ export class TurnRunner {
 
   private async executeToolCall(
     tc: ToolCall,
-    ctx: { threadId: string; turnId: string; cwd: string; signal: AbortSignal; approvalBatch?: import('../tools/types.js').ToolRunContext['approvalBatch'] },
+    ctx: { threadId: string; turnId: string; cwd: string; policy?: ToolPolicy; signal: AbortSignal; approvalBatch?: import('../tools/types.js').ToolRunContext['approvalBatch'] },
   ): Promise<ToolRunOutcome> {
     return this.deps.orchestrator.execute(tc.id, tc.name, safeJsonParse(tc.arguments), {
+      policy: ctx.policy,
       cwd: ctx.cwd,
       threadId: ctx.threadId,
       turnId: ctx.turnId,
@@ -509,6 +536,10 @@ export class TurnRunner {
     let item: Item;
     if (emittedFiles.length) {
       item = emittedFiles[0]!;
+    } else if (this.deps.tools.get(tc.name)?.external || result.emittedItems.some(item => item.kind === 'mcpResult')) {
+      const external = this.deps.tools.get(tc.name)?.external;
+      const payload = result.emittedItems.findLast(item => item.kind === 'mcpResult')?.payload as { server: string; tool: string; origin: string; resultId: string } | undefined;
+      item = { ...base, kind: 'mcpToolCall', status: result.denied ? 'blocked' : result.isError ? 'failed' : 'completed', server: payload?.server ?? external?.server ?? '外部服务', tool: payload?.tool ?? external?.tool ?? tc.name, origin: payload?.origin ?? external?.origin, resultId: payload?.resultId, arguments: safeJsonParse(tc.arguments), output: result.output };
     } else if (tc.name === 'ask_user') {
       const input = safeJsonParse(tc.arguments) as { question?: string; options?: string[] };
       item = { ...base, kind: 'userInputRequest', status: result.isError ? 'failed' : 'completed', question: input.question ?? '询问用户', options: input.options, answer: result.output || '未回答' };
@@ -546,8 +577,9 @@ export class TurnRunner {
         status: result.denied ? 'blocked' : result.isError ? 'failed' : 'completed',
         command: `${tc.name}${brief ? ` ${brief}` : ''}`.slice(0, 300),
         tool: tc.name,
-        exitCode: result.isError ? 1 : 0,
+        exitCode: result.assessment?.exitCode ?? (result.isError ? 1 : 0),
         output: result.output,
+        assessment: result.assessment,
       } as CommandExecutionItem;
     }
     const items = emittedFiles.length ? emittedFiles : [item];

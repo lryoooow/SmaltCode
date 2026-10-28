@@ -5,6 +5,8 @@ export type ModelInfo = {
   tools?: boolean; vision?: boolean; createdAt?: number; lifecycle?: 'active' | 'deprecated' | 'retired';
   source: 'api' | 'official'; reference?: string; unavailableReason?: string;
   publicDocs?: boolean; verifiedAt?: number;
+  resolvedVersion?: string; canonicalId?: string; compatibilityNote?: string;
+  reasoningEfforts?: string[]; defaultReasoningEffort?: string;
 };
 export type ProviderKind = 'openai' | 'anthropic' | 'deepseek' | 'zhipu' | 'moonshot' | 'dashscope' | 'openrouter' | 'ollama' | 'custom';
 
@@ -27,7 +29,8 @@ export function providerKind(config: Pick<ProviderConfig, 'baseUrl' | 'wire'>): 
   return 'custom';
 }
 
-// Official documentation checked 2026-10-19. API discovery can supersede these
+// Baseline official documentation checked 2026-10-19; DeepSeek rechecked 2026-10-24.
+// API discovery can supersede these
 // snapshots; aliases are exact IDs, never extrapolated to unknown future models.
 const profiles: Partial<Record<ProviderKind, ModelInfo[]>> = {};
 function add(kind: ProviderKind, ids: string[], window: number, reference: string, extra: Partial<ModelInfo> = {}) {
@@ -46,7 +49,11 @@ add('openai', ['gpt-4o'], 128_000, oa + 'gpt-4o', { maxOutputTokens: 16_384, vis
 for (const id of ['o3', 'o4-mini']) add('openai', [id], 200_000, oa + id, { maxOutputTokens: 100_000, vision: true });
 add('openai', ['gpt-5.3-codex'], 400_000, oa + 'gpt-5.3-codex', { maxInputTokens: 272_000, maxOutputTokens: 128_000, unavailableReason: '该模型需要 Responses 协议；当前连接使用 Chat Completions' });
 add('anthropic', ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'], 1_000_000, 'https://platform.claude.com/docs/en/models/overview', { maxOutputTokens: 128_000, vision: true });
-add('deepseek', ['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'], 1_000_000, 'https://api-docs.deepseek.com/quick_start/pricing/');
+const deepseekReference='https://api-docs.deepseek.com/quick_start/pricing/';
+add('deepseek',['deepseek-flash'],1_048_576,deepseekReference,{name:'DeepSeek V4.1 Flash · 1017',resolvedVersion:'DeepSeek-V4.1-Flash-1017',maxOutputTokens:393_216,vision:true,reasoningEfforts:['low','high','max'],defaultReasoningEffort:'high',verifiedAt:Date.UTC(2026,9,24)});
+add('deepseek',['deepseek-v4-pro'],1_048_576,deepseekReference,{name:'DeepSeek V4 Pro · 0813',resolvedVersion:'DeepSeek-V4-Pro-0813',maxOutputTokens:393_216,vision:false,reasoningEfforts:['low','high','max'],defaultReasoningEffort:'high',verifiedAt:Date.UTC(2026,9,24)});
+add('deepseek',['deepseek-v4-flash','deepseek-v4-flash-vision-exp'],1_048_576,deepseekReference,{name:'DeepSeek V4.1 Flash · 1017（兼容入口）',resolvedVersion:'DeepSeek-V4.1-Flash-1017',canonicalId:'deepseek-flash',compatibilityNote:'官方将此旧入口映射到 V4.1-Flash-1017；新任务建议选择 deepseek-flash',maxOutputTokens:393_216,vision:true});
+for(const id of ['deepseek-chat','deepseek-reasoner'])(profiles.deepseek??=[]).push({id,name:id,source:'official',lifecycle:'retired',reference:deepseekReference,unavailableReason:'此旧模型入口已停用，请选择 deepseek-flash；不会自动替换现有对话模型'});
 add('zhipu', ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-4-long'], 1_000_000, 'https://docs.bigmodel.cn/cn/guide/start/model-overview');
 add('zhipu', ['glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7', 'glm-4.7-flash', 'glm-4.7-flashx', 'glm-4.6'], 200_000, 'https://docs.bigmodel.cn/cn/guide/start/model-overview');
 add('zhipu', ['glm-4.5-air', 'glm-4.5-airx', 'glm-4.5-flash'], 128_000, 'https://docs.bigmodel.cn/cn/guide/start/model-overview');

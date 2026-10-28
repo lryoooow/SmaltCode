@@ -1,0 +1,15 @@
+export type Scope = { cwd: string; canonical: string; projectId?: string };
+export type Budget = { turns: number; requests: number; tools: number; tokens: number; minutes: number };
+export type Evidence = { path: string; digest: string; label: string };
+export type GoalConfig = Scope & { title: string; instructions: string; model: string; mode: 'plan' | 'default' | 'acceptEdits'; completion: { kind: 'review' } | { kind: 'file'; path: string; contains: string }; budget: Budget; stopOnIssue: boolean };
+export type Goal = GoalConfig & { id: string; revision: number; status: 'draft' | 'running' | 'paused' | 'review' | 'completed' | 'stopped' | 'budget' | 'blocked'; reason?: string; threadId?: string; createdAt: string; updatedAt: string; spent: { turns: number; requests: number; tools: number; tokens: number; milliseconds: number }; lastFingerprint?: string; repeats: number };
+export type ScheduleTiming = { kind: 'once'; at: string } | { kind: 'interval'; minutes: number } | { kind: 'daily'; time: string; timezone: string };
+export type ScheduleConfig = Scope & { title: string; instructions: string; model: string; timing: ScheduleTiming; budget: Omit<Budget, 'turns'>; maxRuns: number; endsAt?: string; references: Evidence[]; memoryIds: string[] };
+export type Schedule = ScheduleConfig & { id: string; revision: number; enabled: boolean; executions: number; nextAt?: string; lastSlot?: string; reason?: string; createdAt: string; updatedAt: string };
+export type MemoryConfig = Scope & { title: string; body: string; source: { kind: 'manual' | 'conversation'; note: string; threadId?: string; itemId?: string }; auto: boolean };
+export type Memory = MemoryConfig & { id: string; digest: string; revision: number; createdAt: string; updatedAt: string };
+export type MemoryUse = { id: string; memoryId: string; digest: string; title: string; threadId: string; at: string; kind: 'message' | 'queued' | 'managed'; runId?: string };
+export type TaskTemplate = Scope & { id: string; title: string; instructions: string; output: string; model: string; mode: GoalConfig['mode']; references: Evidence[]; variables: string[]; revision: number; createdAt: string; updatedAt: string };
+export type ManagedRun = { id: string; ownerId: string; kind: 'goal' | 'schedule'; slot: string; status: 'running' | 'completed' | 'interrupted' | 'failed' | 'skipped' | 'review' | 'budget'; startedAt: string; endedAt?: string; threadId?: string; turnId?: string; reason?: string; summary?: string; evidence: Evidence[]; metrics?: { requests: number; chargedTokens: number; toolCalls: number }; usage?: { inputTokens: number; outputTokens: number } };
+export type AutonomyData = { version: 1; goals: Goal[]; schedules: Schedule[]; memories: Memory[]; templates: TaskTemplate[]; uses: MemoryUse[]; runs: ManagedRun[] };
+export type AutonomyState = AutonomyData & { revision: number; notice?: string; suspended: boolean; secretStorage: 'encrypted' | 'session'; authorized: Record<string, boolean> };

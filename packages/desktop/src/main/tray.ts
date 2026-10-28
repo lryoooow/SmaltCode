@@ -24,5 +24,6 @@ export class DesktopTray {
   }
   show(): void { if (this.window.isMinimized()) this.window.restore(); this.window.show(); this.window.focus(); }
   quit(): void { this.quitting = true; app.quit(); }
+  cancelQuit(): void { this.quitting = false; }
   alive(): boolean { return !this.tray.isDestroyed(); }
 }

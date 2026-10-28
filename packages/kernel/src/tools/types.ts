@@ -9,6 +9,9 @@ export type ToolEvent =
   | { type: 'result'; text: string; isError?: boolean; assessment?: import('../protocol/assessment.js').ExecutionAssessment };
 
 export interface ToolRunContext {
+  /** Search tools must check every file, not only the initial directory. Host-owned. */
+  canReadPath?: (path: string) => boolean;
+  policy?: import('../core/run-policy.js').ToolPolicy;
   cwd: string;
   threadId: string;
   turnId: string;
@@ -23,6 +26,10 @@ export interface ToolRunContext {
 }
 
 export interface ToolDefinition {
+  /** Host-managed external capabilities are scoped and can be revoked mid-turn. */
+  available?(context: { cwd: string; threadId: string }): boolean;
+  validate?(input: unknown): string | undefined;
+  external?: { server: string; tool: string; origin: string };
   readonly name: string;
   readonly description: string;
   /** JSON Schema (draft-07 style object) for the input */

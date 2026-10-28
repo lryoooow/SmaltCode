@@ -1,0 +1,15 @@
+export type RemotePermissions={reply:boolean;run:boolean;files:boolean;mode:'plan'|'default'};
+export type RemoteScope={id:string;threadId:string;title:string;cwd:string;canonical:string;projectId?:string;model:string};
+export type RemoteGrant=RemotePermissions&{scopeIds:string[];hours:number};
+export type RemoteDevice={id:string;name:string;kind:'phone'|'desktop';createdAt:string;lastSeenAt:string;revokedAt?:string;grant:RemoteGrant};
+export type RemoteSession={id:string;deviceId:string;createdAt:string;expiresAt:string;lastSeenAt:string;revokedAt?:string};
+export type RemotePending={id:string;name:string;kind:'phone'|'desktop';createdAt:string;expiresAt:string};
+export type RemoteAudit={id:string;at:string;event:string;deviceId?:string;sessionId?:string;operationId?:string;threadId?:string;detail:string};
+export type RemoteOperation={id:string;deviceId:string;sessionId:string;scopeId:string;threadId?:string;kind:'start'|'reply'|'answer'|'stop';digest:string;status:'claimed'|'running'|'completed'|'failed'|'interrupted';createdAt:string;endedAt?:string;reason?:string};
+export type RemoteItem={id:string;kind:'user'|'assistant'|'activity'|'question';status:string;text:string};
+export type RemoteThread={id:string;scopeId:string;title:string;cwd:string;model:string;status:string;activity?:string;updatedAt:string;origin:'shared'|'remote'};
+export type RemoteSnapshot={host:{id:string;name:string;fingerprint:string};device:{id:string;name:string;grant:RemoteGrant;expiresAt:string};scopes:RemoteScope[];threads:RemoteThread[];operations:RemoteOperation[]};
+export type RemoteThreadPage={thread:RemoteThread;items:RemoteItem[];before?:string;questions:{id:string;question:string;options:string[]}[]};
+export type RemoteProfile={id:string;name:string;url:string;fingerprint:string;certificate:string;hostId:string;createdAt:string;aliases:Record<string,string>};
+export type RemoteConnection={profile:RemoteProfile;status:'disconnected'|'pairing'|'connected'|'reconnecting'|'revoked';reason?:string;nextRetryAt?:string;lastConnectedAt?:string;snapshot?:RemoteSnapshot;pendingOperations:{id:string;status:'sending'|'unknown'|'acknowledged';threadId?:string;reason?:string}[]};
+export type RemoteState={version:1;revision:number;enabled:boolean;addresses:{host:string;label:string}[];host?:{id:string;name:string;urls:string[];fingerprint:string;expiresAt:string};notice?:string;secretStorage:'encrypted'|'session';scopes:RemoteScope[];devices:RemoteDevice[];sessions:RemoteSession[];pending:RemotePending[];audits:RemoteAudit[];operations:RemoteOperation[];connections:RemoteConnection[]};

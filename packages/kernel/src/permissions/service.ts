@@ -155,6 +155,15 @@ export class PermissionService {
     this.changed();
   }
 
+  /** A child grant can never override the owner's live deny/ask rules or readonly mode. */
+  restriction(input: PermissionCheckInput): string | undefined {
+    const subjects = input.subjects?.length ? input.subjects : [input.subject];
+    if (this.modeValue === 'plan' && toolClass(input.tool) !== 'read' && input.tool !== 'plan' && input.tool !== 'ask_user') return '父对话已切换到只读权限';
+    if (this.modeValue === 'dontAsk' && toolClass(input.tool) !== 'read' && input.tool !== 'plan') return '父对话禁止无人值守写入';
+    for (const rule of [...this.denyRules, ...this.askRules]) if (ruleMatchesTool(rule, input.tool) && subjects.some(subject => ruleMatchesSubject(rule, input, subject, false))) return '父对话的拒绝或单次审批规则不允许子任务自动执行';
+    return undefined;
+  }
+
   /**
    * Union coverage: every segment of the command must match at least one
    * allow rule. A single rule never vouches for a whole compound command

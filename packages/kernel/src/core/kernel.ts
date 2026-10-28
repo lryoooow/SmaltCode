@@ -50,6 +50,7 @@ export interface ClientPort {
   requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
   askUser(req: UserInputRequest): Promise<string>;
   cancelApproval?(id: string): void;
+  cancelInput?(id: string): void;
 }
 
 export interface KernelOptions {
@@ -80,6 +81,12 @@ export class Kernel {
   private client: ClientPort;
   private settingsRevision = 0;
   private readonly explicitSettings: boolean;
+  private executionContext?: (threadId:string)=>string|undefined;
+  /** Trusted host target metadata; never populated from RPC/model arguments. */
+  setExecutionContext(value:(threadId:string)=>string|undefined):void { this.executionContext=value; }
+  markLocalSpace(threadId: string): void { const rt = this.threads.get(threadId) ?? this.threads.resume(threadId); const previous = rt.meta.localSpace; rt.meta.localSpace = true; try { this.store.append(threadId, { t: 'meta', meta: { ...rt.meta } }); } catch (error) { rt.meta.localSpace = previous; throw error; } this.client.notify('thread/updated', { threadId, meta: { ...rt.meta } }); }
+  markSshTarget(threadId:string,target:ThreadMeta['sshTarget']):void {const rt=this.threads.get(threadId)??this.threads.resume(threadId),previous=rt.meta.sshTarget;rt.meta.sshTarget=target;try{this.store.append(threadId,{t:'meta',meta:{...rt.meta}});}catch(error){rt.meta.sshTarget=previous;throw error;}this.client.notify('thread/updated',{threadId,meta:{...rt.meta}});}
+  markContainerTarget(threadId:string,target:ThreadMeta['containerTarget']):void {const rt=this.threads.get(threadId)??this.threads.resume(threadId),previous=rt.meta.containerTarget;rt.meta.containerTarget=target;try{this.store.append(threadId,{t:'meta',meta:{...rt.meta}});}catch(error){rt.meta.containerTarget=previous;throw error;}this.client.notify('thread/updated',{threadId,meta:{...rt.meta}});}
 
   constructor(opts: KernelOptions) {
     this.cwd = resolve(opts.cwd ?? process.cwd());
@@ -113,6 +120,7 @@ export class Kernel {
       hooks: this.hooks,
       requestApproval: (req) => this.client.requestApproval(req),
       askUser: (req) => this.client.askUser(req),
+      cancelInput: (id) => this.client.cancelInput?.(id),
       onRememberAlways: (rule) => this.persistAllowRule(rule),
       log: this.logFn,
     });
@@ -146,6 +154,12 @@ export class Kernel {
 
   getSettings(): Settings {
     return this.settings;
+  }
+
+  permissionsForThread(threadId: string): PermissionService {
+    const runtime = this.threads.require(threadId);
+    if (!runtime.permissions) this.updatePermissions(runtime);
+    return runtime.permissions!;
   }
 
   getPermissions(): PermissionService {
@@ -183,19 +197,21 @@ export class Kernel {
   private runnerFor(rt: ThreadRuntime): TurnRunner {
     const requestedMode = rt.meta.permissionMode ?? this.permissions.mode;
     const settings = loadSettings(rt.meta.cwd, { permissionMode: requestedMode }, this.settings);
-    const fingerprint = JSON.stringify({ settings, requestedMode });
+    const hostTarget=this.executionContext?.(rt.meta.id);
+    const fingerprint = JSON.stringify({ settings, requestedMode, managed: !!rt.executionPolicy,hostTarget });
     if (rt.runner && rt.settingsRevision === this.settingsRevision && rt.settingsFingerprint === fingerprint) return rt.runner;
     this.updatePermissions(rt);
     const permissions = rt.permissions!;
-    const hooks = this.hooks.fork(settings.hooks ?? {}, { cwd: rt.meta.cwd, threadId: rt.meta.id });
+    const hooks = rt.executionPolicy||hostTarget ? new HookBus(this.logFn) : this.hooks.fork(settings.hooks ?? {}, { cwd: rt.meta.cwd, threadId: rt.meta.id });
     const gateway = this.gateway.fork(settings);
     const orchestrator = new ToolOrchestrator({
       checkpoints: this.checkpoints,
       tools: this.tools, permissions, hooks,
-      requestApproval: (req) => this.client.requestApproval(req),
+      requestApproval: (req) => rt.executionPolicy?.unattended ? Promise.resolve({ decision: 'deny', reason: '定时任务不进行交互审批，请手动运行后处理' }) : this.client.requestApproval(req),
       cancelApproval: (id) => this.client.cancelApproval?.(id),
+      cancelInput: (id) => this.client.cancelInput?.(id),
       onRememberCategory: (tool) => this.threads.rememberCategory(rt.meta.id, tool),
-      askUser: (req) => this.client.askUser(req),
+      askUser: (req) => rt.executionPolicy?.unattended ? Promise.resolve('定时任务无法交互，请停止并说明缺少的信息。') : this.client.askUser(req),
       onRememberAlways: (rule) => { this.persistAllowRule(rule); permissions.addSessionRule(rule); },
       onState: (_id, event) => rt.stateMachine.transition(event),
       onOutput: (threadId, itemId, delta) => this.client.notify('item/commandExecution/outputDelta', { threadId, itemId, delta }),
@@ -204,7 +220,7 @@ export class Kernel {
     rt.runner = new TurnRunner({
       gateway, hooks, orchestrator, tools: this.tools, store: this.store,
       compactor: new Compactor(gateway, hooks, { ...settings.compact, contextWindow: gateway.contextWindowFor(rt.modelRef) }),
-      pipeline: new ContextPipeline([envInterceptor(), systemInterceptor(), {
+      pipeline: new ContextPipeline([envInterceptor(), systemInterceptor(), {name:'execution-target',priority:2100,intercept:async ctx=>{const target=this.executionContext?.(ctx.threadId);if(target)ctx.systemExtras.push(target);}}, {
         name: 'project', priority: 1600,
         intercept: async ctx => {
           if (!rt.meta.projectId) return;
@@ -319,6 +335,12 @@ export class Kernel {
       case Methods.turnSteer:
         this.checkpoints.assertAvailable(this.threads.require(String(p.threadId)).meta.cwd);
         return this.threads.steer(p.threadId as unknown as string, { text: String(p.message ?? ''), displayText: typeof p.displayText === 'string' ? p.displayText : undefined, references: this.userReferences(p.references), images: this.userImages(p.images) });
+
+      case Methods.turnSteerUpdate:
+      case Methods.turnSteerCancel: {
+        if (typeof p.id !== 'string' || !Number.isInteger(p.revision) || (method === Methods.turnSteerUpdate && typeof p.text !== 'string')) throw new Error('无效的说明版本或内容');
+        return { entry: this.threads.changeSteering(String(p.threadId), p.id, p.revision, method === Methods.turnSteerUpdate ? p.text : undefined) };
+      }
 
       case 'checkpoint/list': {
         const { meta } = this.threads.read(String(p.threadId));

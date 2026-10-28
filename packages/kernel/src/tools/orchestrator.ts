@@ -30,6 +30,7 @@ export interface OrchestratorDeps {
   hooks: HookBus;
   requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
   cancelApproval?: (id: string) => void;
+  cancelInput?: (id: string) => void;
   askUser(req: UserInputRequest): Promise<string>;
   /** persist an "always allow" rule chosen during approval */
   onRememberAlways?: (rule: string) => void;
@@ -128,16 +129,37 @@ export class ToolOrchestrator {
     };
 
     const tool = this.deps.tools.get(toolName);
+    const policyError = (input: unknown) => {
+      try { const host=this.deps.tools.checkInput(toolName,input,baseCtx);if(host)return host; } catch { return '宿主执行目标校验失败，操作已停止'; }
+      const policy = baseCtx.policy, raw = input as Record<string, unknown> | undefined;
+      if (policy?.allowedTools && !policy.allowedTools.includes(toolName)) return '托管子任务只允许本次授权的工具；此工具未获授权';
+      if (policy?.noBackground && toolName === 'shell' && raw?.background) return '持续任务不启动超出本轮生命周期的后台进程';
+      if (policy?.workspaceOnly && ['read', 'glob', 'grep'].includes(toolName)) {
+        const path = typeof raw?.path === 'string' ? raw.path : '.';
+        if (!isInsideWorkspace(baseCtx.cwd, path)) return '托管任务不能读取工作区之外的资料';
+        if (toolName === 'glob' && typeof raw?.pattern === 'string' && raw.pattern.split(/[\\/]/).includes('..')) return '托管任务不接受向上跳转的搜索模式';
+      }
+      if (policy?.check) {
+        try { return policy.check(toolName, input, tool ? tool.subjects?.(input) ?? [tool.subject(input)] : []); }
+        catch { return '子任务权限校验失败，操作已拒绝'; }
+      }
+      return undefined;
+    };
+    const initialPolicyError = policyError(rawInput); if (initialPolicyError) return this.finish(outcome, initialPolicyError, true, true);
+
     if (!tool) {
       return this.finish(outcome, `Error: unknown tool "${toolName}"`, true);
     }
+    if (tool.available && !tool.available(baseCtx)) return this.finish(outcome, '外部工具已停用、断开或不属于当前工作区，请检查连接器。', true, true);
 
-    const inputSchema = { ...tool.inputSchema, properties: { ...(tool.inputSchema.properties as object), recoveryOf: { type: 'string', maxLength: 256 } } };
+    const inputSchema = tool.external ? tool.inputSchema : { ...tool.inputSchema, properties: { ...(tool.inputSchema.properties as object), recoveryOf: { type: 'string', maxLength: 256 } } };
     const validated = validateInput(inputSchema, rawInput);
     if (!validated.ok) {
       return this.finish(outcome, `Error: invalid input for ${toolName}: ${validated.error}`, true);
     }
     let input: unknown = validated.value;
+    const externalInputError = tool.validate?.(input);
+    if (externalInputError) return this.finish(outcome, '外部工具参数无效：' + externalInputError, true);
 
     // 0. HARD BOUNDARIES (before rules or hooks get a say) — re-checked
     //    after a PreToolUse hook rewrites the input, so hooks cannot smuggle
@@ -162,6 +184,9 @@ export class ToolOrchestrator {
       if (!revalidated.ok) return this.finish(outcome, `Error: invalid hook input for ${toolName}: ${revalidated.error}`, true);
       if (revalidated.ok) {
         input = revalidated.value;
+        const policyFailure = policyError(input); if (policyFailure) return this.finish(outcome, policyFailure, true, true);
+        const changedError = tool.validate?.(input);
+        if (changedError) return this.finish(outcome, '外部工具改写参数无效：' + changedError, true);
         // N3: the rewritten input goes through the SAME hard boundaries
         readOutsideWorkspace = this.readsOutsideWorkspace(toolName, input, baseCtx.cwd);
         const rechecked = this.boundaryViolation(toolName, input, baseCtx.cwd);
@@ -256,7 +281,8 @@ export class ToolOrchestrator {
           threadId: baseCtx.threadId,
           tool: toolName,
           title: tool.summarize(input),
-          detail: permissionReason || undefined,
+          external: tool.external,
+          detail: [permissionReason, tool.external ? `外部服务：${tool.external.server}\n来源：${tool.external.origin}\n工具：${tool.external.tool}\n参数会发送给该服务；服务自报只读不代表已获授权。` : ''].filter(Boolean).join('\n') || undefined,
           input,
           riskLevel: /danger|outside|destructive/i.test(permissionReason) ? 'high' : 'normal',
           suggestedRule: ruleStringFor(toolName, input, tool),
@@ -302,26 +328,36 @@ export class ToolOrchestrator {
     // 4. execute with streaming
     const runCtx: ToolRunContext = {
       ...baseCtx,
+      canReadPath: (path) => {
+        try {
+          if (baseCtx.signal.aborted || baseCtx.policy?.check?.(toolName, { ...(input as object), path }, [path])) return false;
+          return this.deps.permissions.check({ tool: toolName, input: { ...(input as object), path }, subject: path, subjects: [path], cwd: baseCtx.cwd }).action === 'allow';
+        } catch { return false; }
+      },
       emitItem: async (item) => {
         outcome.emittedItems.push(item);
       },
       askUser: async (question, options) => {
+        const itemId = newId('ui');
         this.deps.onState?.(baseCtx.threadId, 'WAITING_FOR_USER');
           try { return await abortable(this.deps.askUser({
-          itemId: newId('ui'),
+          itemId,
           threadId: baseCtx.threadId,
           question,
           options,
         }), baseCtx.signal).catch(error => { if (baseCtx.signal.aborted) throw error; return ''; }); } finally {
           this.deps.onState?.(baseCtx.threadId, 'USER_INPUT_RESOLVED');
+          if (baseCtx.signal.aborted) this.deps.cancelInput?.(itemId);
         }
       },
       log: this.deps.log,
     };
 
     const execute = async () => {
+      const denied = policyError(input); if (denied) return this.finish(outcome, denied, true, true);
       try {
         if (baseCtx.signal.aborted) return this.finish(outcome, '操作已停止', true);
+        if (tool.available && !tool.available(baseCtx)) return this.finish(outcome, '外部工具授权已变化，未执行操作。', true, true);
         const checkpoints = this.deps.checkpoints;
         const tracked = checkpoints && (toolName === 'write' || toolName === 'apply_patch')
           ? await checkpoints.capture(baseCtx.threadId, baseCtx.turnId, baseCtx.cwd, tool.summarize(input), tool.subjects?.(input) ?? [tool.subject(input)], toolCallId) : undefined;

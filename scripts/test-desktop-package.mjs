@@ -23,6 +23,8 @@ assert.equal(packaged.main, 'dist/main/index.js');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function files(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    // Python may have cached imports during real engine tests; ASAR correctly excludes them.
+    if (entry.name === '__pycache__' || entry.name.endsWith('.pyc')) return [];
     const path = join(directory, entry.name);
     return entry.isDirectory() ? files(path) : [path];
   });
@@ -33,7 +35,7 @@ for (const file of files(join(app, 'dist'))) {
   const archiveName = relative(app, file);
   const name = archiveName.replaceAll('\\', '/');
   assert.equal(hash(extractFile(archive, archiveName)), hash(readFileSync(file)), 'Stale packaged file: ' + name);
-  if (name === 'dist/main/document-worker.cjs' || name.startsWith('dist/main/pdf-assets/')) {
+  if (name === 'dist/main/document-worker.cjs' || name === 'dist/main/ssh-key-worker.cjs' || /^dist\/main\/[^/]+\.(py|ps1)$/.test(name) || name.startsWith('dist/main/pdf-assets/') || name.startsWith('dist/main/native/')) {
     assert.equal(statFile(archive, archiveName).unpacked, true, 'Worker resource must be unpacked: ' + name);
     assert.equal(hash(readFileSync(join(archive + '.unpacked', name))), hash(readFileSync(file)));
     unpacked++;

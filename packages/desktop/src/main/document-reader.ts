@@ -13,12 +13,15 @@ export class DocumentReader {
   private waiting: Array<() => void> = [];
   constructor(private readonly workerPath: string) {}
   async read(name: string, bytes: Uint8Array): Promise<DocumentContent> {
+    return this.job<DocumentContent>('read',name,bytes);
+  }
+  async job<T>(operation:'read'|'inspect'|'build',name:string,bytes:Uint8Array,changes?:import('../shared/artifacts.js').ArtifactChanges):Promise<T> {
     if (this.waiting.length >= 10) throw new Error('文档解析队列已满，请稍后再试');
     if (this.active >= 2) await new Promise<void>(resolve => this.waiting.push(resolve));
     this.active++;
     try {
-      return await new Promise<DocumentContent>((resolve, reject) => {
-        const worker = new Worker(this.workerPath, { workerData: { name, bytes }, resourceLimits: { maxOldGenerationSizeMb: 192, maxYoungGenerationSizeMb: 32 } });
+      return await new Promise<T>((resolve, reject) => {
+        const worker = new Worker(this.workerPath, { workerData: { operation, name, bytes, changes }, resourceLimits: { maxOldGenerationSizeMb: 192, maxYoungGenerationSizeMb: 32 } });
         const timer = setTimeout(() => { void worker.terminate(); reject(new Error('文档解析超过 20 秒，已停止；请尝试较小的文件')); }, 20_000);
         timer.unref();
         const finish = () => { clearTimeout(timer); void worker.terminate(); };

@@ -89,9 +89,10 @@ export {
 export { HookBus, HOOK_EVENTS, type HookEvent, type HookDecision, type HookResult, type CommandHookConfig, type HookContext } from './hooks/bus.js';
 
 export { ToolRegistry, defaultTools } from './tools/registry.js';
-export { killAllToolProcesses } from './tools/defs/shell.js';
+export { killAllToolProcesses, waitForToolProcesses } from './tools/defs/shell.js';
 export { ToolOrchestrator, type OrchestratorDeps, type ToolRunOutcome } from './tools/orchestrator.js';
 export type { ToolDefinition, ToolEvent, ToolRunContext } from './tools/types.js';
+export { validateInput } from './tools/types.js';
 export { parsePatch, PatchParseError, type PatchFile, type PatchHunk, type PatchLine } from './tools/defs/apply-patch/parser.js';
 export { applyPatch, ApplyError, type AppliedChange, type ApplyReport } from './tools/defs/apply-patch/apply.js';
 
@@ -102,3 +103,5 @@ export { Compactor, type CompactOptions, type CompactResult } from './compact/co
 export { JsonlThreadStore } from './storage/jsonl.js';
 export { replayEvents, type StoreEvent, type ThreadStore, type ReplayedThread } from './storage/thread-store.js';
 export { newId, nowIso, truncate, unifiedDiff, errorMessage } from './util.js';
+
+export type { RunPolicy, RunMetrics } from './core/run-policy.js';

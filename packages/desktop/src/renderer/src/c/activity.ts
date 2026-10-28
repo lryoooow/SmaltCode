@@ -33,8 +33,10 @@ export function activityTimeline(items: Item[], dockedTurnId?: string): Timeline
 type ProgressOptions = { running?: boolean; lifecycle?: ThreadStatus['lifecycle']; interrupted?: boolean; cwd?: string }
 const STAGES: Record<string, string> = {
   read: '正在读取资料', grep: '正在搜索内容', glob: '正在查找文件',
+  ssh_exec:'正在执行远程命令',ssh_read:'正在读取远程项目',ssh_write:'正在保存远程文件',ssh_process_read:'正在核对远程运行',ssh_process_stop:'正在清理远程运行',
   write: '正在生成文件', apply_patch: '正在更新文件', shell: '正在执行命令',
   plan: '正在安排步骤', ask_user: '等待你的回答',
+  task_checkpoint: '正在记录任务节点',
 }
 
 function briefPath(value: string, cwd?: string): string {
@@ -46,6 +48,7 @@ function operationDetail(item: Item, cwd?: string): string | undefined {
   if (item.kind === 'fileChange') return briefPath(item.path, cwd)
   if (item.kind === 'mcpToolCall') return `${item.server} · ${item.tool}`
   if (item.kind !== 'commandExecution') return undefined
+  if (item.tool === 'task_checkpoint') { try { const value=JSON.parse(item.output);if(value.managedCheckpoint===true&&typeof value.summary==='string')return value.summary.slice(0,180) } catch { /* An unfinished/old checkpoint has no structured summary. */ } return undefined }
   if (item.tool === 'read' || item.tool === 'write') return briefPath(item.command.replace(/^\S+\s*/, ''), cwd)
   if (item.tool === 'glob' || item.tool === 'grep') return item.tool === 'glob' ? '查找工作文件夹中的匹配文件' : '检索工作文件夹中的相关内容'
   if (item.tool === 'shell' || !item.tool) {
@@ -90,7 +93,7 @@ export function activityProgress(items: Item[], options: ProgressOptions = {}, a
       if (item.tool === 'read') reads++
       else if (item.tool === 'grep' || item.tool === 'glob') searches++
       else if (item.tool === 'shell' || !item.tool) commands++
-      else if (item.tool !== 'ask_user' && item.tool !== 'plan') others++
+      else if (item.tool !== 'ask_user' && item.tool !== 'plan' && item.tool !== 'task_checkpoint') others++
     }
   }
   const milestones = [
@@ -104,7 +107,7 @@ export function activityProgress(items: Item[], options: ProgressOptions = {}, a
   let detail: string | undefined
   const previous = items.findLast(item => item.status === 'completed' && (item.kind === 'fileChange' || item.kind === 'mcpToolCall' || item.kind === 'commandExecution' && item.tool !== 'plan' && item.tool !== 'ask_user') && (assessments.get(item.id)?.kind === 'success' || !assessments.has(item.id) && !unsuccessful(item)))
   const recentDetail = previous ? operationDetail(previous, options.cwd) : undefined
-  const recent = previous?.kind === 'fileChange' ? `已更新 ${recentDetail}` : previous?.kind === 'commandExecution' && previous.tool === 'read' ? `已读取 ${recentDetail}` : previous?.kind === 'commandExecution' && (previous.tool === 'grep' || previous.tool === 'glob') ? '已完成一次资料查找' : previous ? `已完成${recentDetail ? ' · ' + recentDetail : '一项操作'}` : undefined
+  const recent = previous?.kind === 'commandExecution' && previous.tool === 'task_checkpoint' ? `任务节点（模型说明）${recentDetail ? ' · ' + recentDetail : ''}` : previous?.kind === 'fileChange' ? `已更新 ${recentDetail}` : previous?.kind === 'commandExecution' && previous.tool === 'read' ? `已读取 ${recentDetail}` : previous?.kind === 'commandExecution' && (previous.tool === 'grep' || previous.tool === 'glob') ? '已完成一次资料查找' : previous ? `已完成${recentDetail ? ' · ' + recentDetail : '一项操作'}` : undefined
   if (options.running) {
     const lifecycle = options.lifecycle
     if (lifecycle === 'waitingForPermission') label = '等待你确认操作'

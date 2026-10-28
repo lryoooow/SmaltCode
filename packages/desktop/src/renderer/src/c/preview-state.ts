@@ -1,8 +1,14 @@
 import type { FileItem } from './Task'
 import type { FilePreview } from '../bridge'
-export type PreviewState = { tabs: FileItem[]; active: string | null; section: string; previews: Record<string, FilePreview>; diff: Record<string, boolean>; scroll: Record<string, number>; versions: Record<string, string>; documentPositions?: Record<string, { page?: number; sheet?: number }> }
+export type PreviewSectionRequest = 'processes' | 'browser' | 'issues' | 'plan'
+export type PreviewState = { tabs: FileItem[]; active: string | null; section: string; browserActive?: string; requests?: Partial<Record<PreviewSectionRequest, number>>; previews: Record<string, FilePreview>; diff: Record<string, boolean>; scroll: Record<string, number>; versions: Record<string, string>; documentPositions?: Record<string, { page?: number; sheet?: number; zoom?: number }> }
 export type PreviewMemory = Map<string, PreviewState>
 export const emptyPreview = (): PreviewState => ({ tabs: [], active: null, section: 'out', previews: {}, diff: {}, scroll: {}, versions: {} })
+/** Opening a panel is a one-shot intent, retained with this chat across remounts. */
+export function applyPreviewRequest(state: PreviewState, section: PreviewSectionRequest, sequence: number): PreviewState {
+  if (!Number.isSafeInteger(sequence) || sequence <= 0 || sequence <= (state.requests?.[section] ?? 0)) return state
+  return { ...state, active: null, section, requests: { ...state.requests, [section]: sequence } }
+}
 export function trimPreviewMemory(memory: PreviewMemory, currentId: string, currentPath: string | null, limit = 48 * 1024 * 1024) {
   const entries: Array<{ id: string; path: string; bytes: number }> = []
   for (const [id, state] of memory) for (const [path, preview] of Object.entries(state.previews)) entries.push({ id, path, bytes: (preview.dataUrl?.length ?? 0) * 2 + preview.text.length * 2 + JSON.stringify(preview.sheets ?? preview.paragraphs ?? []).length * 2 })

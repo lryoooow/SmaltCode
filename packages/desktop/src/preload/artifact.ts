@@ -1,0 +1,2 @@
+import { contextBridge,ipcRenderer } from 'electron';
+let documentId:string|undefined;contextBridge.exposeInMainWorld('smaltArtifact',{dark:process.argv.includes('--smalt-review-dark'),invoke:async(action:string,value:unknown={})=>{const bound=documentId;const result=await ipcRenderer.invoke('smalt:artifact-window',action,{...(value&&typeof value==='object'?value:{}),_documentId:bound});if(action==='view'&&!documentId&&typeof result?.id==='string')documentId=result.id;return result;}});

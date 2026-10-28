@@ -98,7 +98,7 @@ export const globTool: ToolDefinition = {
     const { dir, rest } = baseDirOfPattern(pattern);
     if (!rest && dir) {
       const target = join(searchRoot, dir);
-      if (isInsideWorkspace(ctx.cwd, target) && !isSensitivePath(ctx.cwd, target)) {
+      if (isInsideWorkspace(ctx.cwd, target) && !isSensitivePath(ctx.cwd, target) && (ctx.canReadPath?.(target) ?? true)) {
         try { if (statSync(target).isFile()) { yield { type: 'result', text: relative(searchRoot, target).replace(/\\/g, '/') + '\n(1 matches)' }; return; } } catch { /* absent literal */ }
       }
     }
@@ -119,6 +119,7 @@ export const globTool: ToolDefinition = {
     walk(root, { respectIgnores: true, budget: { count: MAX_FILES_SCANNED } }, files);
     const re = globToRegExp(effective);
     const matches = files
+      .filter((f) => ctx.canReadPath?.(f) ?? true)
       .filter((f) => re.test(relative(root, f).replace(/\\/g, '/')))
       .map((f) => relative(searchRoot, f).replace(/\\/g, '/'))
       .sort()
@@ -190,7 +191,7 @@ export const grepTool: ToolDefinition = {
     const root0 = files.length && statSync(searchRoot).isFile() ? join(searchRoot, '..') : searchRoot;
 
     outer: for (const file of files) {
-      if (isSensitivePath(ctx.cwd, file) || !isInsideWorkspace(ctx.cwd, file)) continue;
+      if (isSensitivePath(ctx.cwd, file) || !isInsideWorkspace(ctx.cwd, file) || !(ctx.canReadPath?.(file) ?? true)) continue;
       if (includeRe && !includeRe.test(file.replace(/\\/g, '/').split('/').pop() ?? '')) continue;
       let content: string;
       try {

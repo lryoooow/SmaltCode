@@ -21,7 +21,12 @@ export interface ItemBase {
 }
 
 export type UserReference = { path: string; label?: string };
-export type UserPrompt = string | { text: string; displayText?: string; references?: UserReference[]; images?: import('../models/types.js').ImagePart[] };
+export type UserPrompt = string | { text: string; displayText?: string; references?: UserReference[]; images?: import('../models/types.js').ImagePart[]; steeringId?: string };
+export type SteeringEntry = {
+  id: string; revision: number; text: string; references?: UserReference[]; imageCount: number;
+  state: 'pending' | 'applied' | 'cancelled' | 'unused'; createdAt: string; updatedAt: string;
+  turnId?: string; editable: boolean;
+};
 
 export interface UserMessageItem extends ItemBase {
   kind: 'userMessage';
@@ -75,6 +80,8 @@ export interface McpToolCallItem extends ItemBase {
   tool: string;
   arguments: unknown;
   output: string;
+  origin?: string;
+  resultId?: string;
 }
 
 export interface UserInputRequestItem extends ItemBase {
@@ -110,7 +117,15 @@ export interface ContextNotice {
 }
 
 export interface ThreadMeta {
+  /** Desktop-owned automatic files scope; set by the host, never a project association. */
+  localSpace?: boolean;
+  /** Trusted desktop marker prevents a lost/corrupt remote registry from falling back to local execution. */
+  containerTarget?: {profileId:string;context:string;endpoint:string;engineId:string;contextFingerprint:string;containerId:string;name:string;imageId:string;root:string;user:string;startedAt:string;readOnly:boolean;ssh?:{profileId:string;name:string;host:string;port:number;username:string;root:string;fingerprint:string;socket:string}};
+  sshTarget?: {profileId:string;name:string;host:string;port:number;username:string;root:string;fingerprint:string};
   id: string;
+  /** Set only by the desktop host, preserved after cleanup. */
+  collaboration?: { groupId: string; taskId: string; parentThreadId: string };
+  remoteOrigin?: { scopeId: string; deviceId: string; hostId: string };
   title: string;
   model: string;
   provider?: string;
@@ -193,6 +208,7 @@ export interface TurnSummary {
  * ------------------------------------------------------------------ */
 
 export interface ApprovalRequest {
+  external?: { server: string; tool: string; origin: string };
   itemId: string;
   threadId: string;
   tool: string;
@@ -243,6 +259,8 @@ export const Methods = {
   threadPermissionsReset: 'thread/permissions/reset',
   turnStart: 'turn/start',
   turnSteer: 'turn/steer',
+  turnSteerUpdate: 'turn/steer/update',
+  turnSteerCancel: 'turn/steer/cancel',
   turnInterrupt: 'turn/interrupt',
   threadCompact: 'thread/compact/start',
   /* reverse requests (kernel → client) */

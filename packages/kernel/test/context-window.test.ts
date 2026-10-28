@@ -12,8 +12,8 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'smalt-window-')); previous 
 afterEach(() => { vi.restoreAllMocks(); if (previous === undefined) delete process.env.SMALT_HOME; else process.env.SMALT_HOME = previous; rmSync(dir, { recursive: true, force: true }); });
 it('resolves official models by endpoint and exact model, including the Anthropic route', () => {
   const cfg = loadSettings(dir).providers.deepseek!;
-  for (const model of ['deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']) expect(resolveContextWindow(cfg, model)).toEqual({ tokens: 1_000_000, source: 'official' });
-  expect(resolveContextWindow({ ...cfg, baseUrl: 'https://api.deepseek.com/anthropic', wire: 'anthropic' }, 'deepseek-v4-pro').tokens).toBe(1_000_000);
+  for (const model of ['deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']) expect(resolveContextWindow(cfg, model)).toEqual({ tokens: 1_048_576, source: 'official' });
+  expect(resolveContextWindow({ ...cfg, baseUrl: 'https://api.deepseek.com/anthropic', wire: 'anthropic' }, 'deepseek-v4-pro').tokens).toBe(1_048_576);
   for (const baseUrl of ['https://proxy.example/v1', 'https://api.deepseek.com.attacker.example/v1', 'http://api.deepseek.com/v1', 'https://api.deepseek.com/custom', 'https://api.deepseek.com/v1?route=x']) expect(resolveContextWindow({ ...cfg, baseUrl }, 'deepseek-v4-pro').source).toBe('fallback');
   expect(resolveContextWindow(cfg, 'deepseek-unknown').tokens).toBe(128_000);
 });
@@ -24,9 +24,9 @@ it('honors explicit provider and model limits, restores automatic resolution, an
   expect(gateway.contextWindowFor({ provider: 'deepseek', model: 'deepseek-flash' })).toBe(64_000);
   settings = updateUserSettingsFile(dir, { providers: { deepseek: { contextWindow: null, modelContextWindows: { 'deepseek-v4-pro': null, other: -5 } } } });
   gateway = new ModelGateway(settings);
-  expect(gateway.contextWindowFor({ provider: 'deepseek', model: 'deepseek-v4-pro' })).toBe(1_000_000);
+  expect(gateway.contextWindowFor({ provider: 'deepseek', model: 'deepseek-v4-pro' })).toBe(1_048_576);
   expect(settings.providers.deepseek?.modelContextWindows?.other).toBeUndefined();
-  expect(resolveContextWindow({ ...settings.providers.deepseek!, contextWindow: Infinity }, 'deepseek-v4-pro').tokens).toBe(1_000_000);
+  expect(resolveContextWindow({ ...settings.providers.deepseek!, contextWindow: Infinity }, 'deepseek-v4-pro').tokens).toBe(1_048_576);
 });
 it('runs a 100K-token conversation on V4 without compaction, and reports the same window after reopening', async () => {
   writeFileSync(join(process.env.SMALT_HOME!, 'settings.json'), JSON.stringify({ defaultProvider: 'deepseek', defaultModel: 'deepseek-v4-pro' }));
@@ -41,10 +41,10 @@ it('runs a 100K-token conversation on V4 without compaction, and reports the sam
   expect(await k.handle('turn/start', { threadId, input: '只检查，不修改文件。' })).toMatchObject({ failed: false });
   expect(requests).toHaveLength(1);
   expect(events.some(e => e.method === 'thread/compacted' || e.method === 'thread/context/notice')).toBe(false);
-  expect(events.find(e => e.method === 'thread/tokenUsage/updated')?.params.usage ?? events.find(e => e.params?.usage?.contextWindow)?.params.usage).toMatchObject({ contextWindow: 1_000_000, thresholdTokens: 800_000 });
-  expect(await k.handle('thread/read', { threadId })).toMatchObject({ usage: { contextWindow: 1_000_000, thresholdTokens: 800_000 } });
+  expect(events.find(e => e.method === 'thread/tokenUsage/updated')?.params.usage ?? events.find(e => e.params?.usage?.contextWindow)?.params.usage).toMatchObject({ contextWindow: 1_048_576, thresholdTokens: 838_860 });
+  expect(await k.handle('thread/read', { threadId })).toMatchObject({ usage: { contextWindow: 1_048_576, thresholdTokens: 838_860 } });
   await k.handle('thread/archive', { threadId }); await k.handle('thread/restore', { threadId });
-  expect(await k.handle('thread/read', { threadId })).toMatchObject({ usage: { contextWindow: 1_000_000, thresholdTokens: 800_000 } });
+  expect(await k.handle('thread/read', { threadId })).toMatchObject({ usage: { contextWindow: 1_048_576, thresholdTokens: 838_860 } });
 });
 it('keeps the running request budget stable when settings change and adopts the new model budget next turn', async () => {
   writeFileSync(join(process.env.SMALT_HOME!, 'settings.json'), JSON.stringify({ defaultProvider: 'deepseek', defaultModel: 'deepseek-v4-pro' }));
@@ -57,7 +57,7 @@ it('keeps the running request budget stable when settings change and adopts the 
   const running = k.handle('turn/start', { threadId, input: '只检查。' });
   await ready;
   const settings = structuredClone(k.getSettings()); settings.providers.deepseek!.modelContextWindows = { 'deepseek-v4-pro': 256000 }; k.applySettings(settings);
-  expect(await k.handle('thread/read', { threadId })).toMatchObject({ usage: { contextWindow: 1000000, thresholdTokens: 800000 } });
+  expect(await k.handle('thread/read', { threadId })).toMatchObject({ usage: { contextWindow: 1048576, thresholdTokens: 838860 } });
   release(); await running;
   await k.handle('turn/start', { threadId, input: '继续检查。' });
   expect(await k.handle('thread/read', { threadId })).toMatchObject({ usage: { contextWindow: 256000, thresholdTokens: 204800 } });

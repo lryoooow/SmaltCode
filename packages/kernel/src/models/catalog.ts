@@ -13,6 +13,20 @@ const string = (v: unknown, max = 256): string | undefined => typeof v === 'stri
 const limit = (v: unknown): number | undefined => validContextWindow(v) && v <= 100_000_000 ? v : undefined;
 function smallest(...values: unknown[]): number | undefined { const all = values.map(limit).filter((v): v is number => !!v); return all.length ? Math.min(...all) : undefined; }
 
+function cachedModel(value:unknown):ModelInfo|undefined{
+ const raw=record(value),id=string(raw.id),name=string(raw.name);
+ if(!id||!name||!['api','official'].includes(raw.source))return;
+ const model:ModelInfo={id,name,source:raw.source};
+ for(const key of ['contextWindow','maxInputTokens','maxOutputTokens']as const){const v=limit(raw[key]);if(v)model[key]=v;}
+ for(const key of ['tools','vision','publicDocs']as const)if(typeof raw[key]==='boolean')model[key]=raw[key];
+ for(const key of ['createdAt','verifiedAt']as const)if(Number.isFinite(raw[key])&&raw[key]>0)model[key]=raw[key];
+ for(const key of ['resolvedVersion','canonicalId','compatibilityNote','unavailableReason']as const){const v=string(raw[key]);if(v)model[key]=v;}
+ if(string(raw.reference,2048))try{const u=new URL(raw.reference);if(u.protocol==='https:'&&!u.username&&!u.password)model.reference=u.href;}catch{}
+ if(['active','deprecated','retired'].includes(raw.lifecycle))model.lifecycle=raw.lifecycle;
+ if(Array.isArray(raw.reasoningEfforts)){const values=raw.reasoningEfforts.filter((v:unknown)=>typeof v==='string'&&/^[a-z][a-z0-9_-]{0,30}$/.test(v)).slice(0,12);if(values.length){model.reasoningEfforts=values;if(values.includes(raw.defaultReasoningEffort))model.defaultReasoningEffort=raw.defaultReasoningEffort;}}
+ return model;
+}
+
 export function parseModel(value: unknown, config: ProviderConfig): ModelInfo | undefined {
   const raw = record(value), id = string(raw.id) ?? string(raw.model) ?? string(raw.name);
   if (!id) return;
@@ -21,6 +35,7 @@ export function parseModel(value: unknown, config: ProviderConfig): ModelInfo | 
   const input = Array.isArray(raw.input_modalities) ? raw.input_modalities : architecture.input_modalities;
   const output = Array.isArray(raw.output_modalities) ? raw.output_modalities : architecture.output_modalities;
   const parameters = raw.supported_parameters;
+  const effort=record(raw.effort),reasoningEfforts=Array.isArray(effort.supported_levels)?effort.supported_levels.filter((v:unknown)=>typeof v==='string'&&/^[a-z][a-z0-9_-]{0,30}$/.test(v)).slice(0,12):undefined;
   let tools = typeof raw.supports_tools === 'boolean' ? raw.supports_tools : Array.isArray(parameters) ? parameters.includes('tools') : undefined;
   if (Array.isArray(output) && !output.includes('text')) tools = false;
   if (tools === undefined && /^(?:text-embedding|embedding-|whisper|tts-|dall-e|gpt-image|omni-moderation)|(?:^|\/)(?:rerank|cogview|cogvideo)/i.test(id)) tools = false;
@@ -30,6 +45,8 @@ export function parseModel(value: unknown, config: ProviderConfig): ModelInfo | 
   const created = typeof raw.created === 'number' ? raw.created * 1000 : Date.parse(raw.created_at ?? '');
   return {
     ...profile, id, name: string(raw.display_name) ?? string(raw.name) ?? profile?.name ?? id,
+    ...(string(raw.model_version)??string(raw.version)?{resolvedVersion:string(raw.model_version)??string(raw.version)}:{}),
+    ...(reasoningEfforts?.length?{reasoningEfforts,defaultReasoningEffort:reasoningEfforts.includes(effort.default_level)?effort.default_level:undefined}:{}),
     ...(contextWindow ? { contextWindow } : {}), ...(maxInputTokens ? { maxInputTokens } : {}),
     ...(limit(raw.max_output_tokens ?? raw.max_tokens ?? top.max_completion_tokens) ? { maxOutputTokens: limit(raw.max_output_tokens ?? raw.max_tokens ?? top.max_completion_tokens) } : {}),
     ...(tools !== undefined ? { tools } : {}),
@@ -56,13 +73,13 @@ export class ModelCatalog {
       if (data.version !== 1 || !Array.isArray(data.entries)) return;
       for (const [key, entry] of data.entries.slice(-32)) {
         if (!/^[a-f0-9]{64}$/.test(key) || !entry || !Number.isFinite(entry.checkedAt) || !Array.isArray(entry.models) || entry.models.length > 2000) continue;
-        const models = entry.models.filter((m: ModelInfo) => string(m?.id) && string(m?.name) && ['api', 'official'].includes(m.source) && (!m.contextWindow || limit(m.contextWindow)) && (!m.maxInputTokens || limit(m.maxInputTokens)));
+        const models = entry.models.map(cachedModel).filter((m:ModelInfo|undefined):m is ModelInfo=>!!m);
         this.entries.set(key, { checkedAt: Math.min(entry.checkedAt, this.now()), models, truncated: entry.truncated === true, source: entry.source === 'official' ? 'official' : 'api' });
       }
     } catch { /* A corrupt metadata cache cannot prevent startup. */ }
   }
   private now() { return this.options.now?.() ?? Date.now(); }
-  private key(config: ProviderConfig) { return createHash('sha256').update(JSON.stringify([normalizeEndpoint(config.baseUrl), config.wire, apiKeyFor(config) ?? ''])).digest('hex'); }
+  private key(config: ProviderConfig) { return createHash('sha256').update(JSON.stringify(['metadata-2026-10-24',normalizeEndpoint(config.baseUrl), config.wire, apiKeyFor(config) ?? ''])).digest('hex'); }
   snapshot(config: ProviderConfig): CatalogResult {
     const key = this.key(config), entry = this.entries.get(key), age = entry ? this.now() - entry.checkedAt : Infinity;
     const cached = entry && age <= MAX_AGE ? entry : undefined;

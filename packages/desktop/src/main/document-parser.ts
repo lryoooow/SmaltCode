@@ -44,7 +44,7 @@ function xml(bytes: Uint8Array | undefined): any {
   if (!bytes || bytes.length > 8 * 1024 * 1024) throw new Error('文档结构缺失或过大');
   const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   if (/<!DOCTYPE|<!ENTITY/i.test(text) || XMLValidator.validate(text) !== true) throw new Error('文档包含不支持或无效的 XML 结构');
-  return new XMLParser({ ignoreAttributes: false, removeNSPrefix: true, parseTagValue: false, parseAttributeValue: false, trimValues: false, processEntities: true }).parse(text);
+  return new XMLParser({ ignoreAttributes: false, removeNSPrefix: true, parseTagValue: false, parseAttributeValue: false, trimValues: false, processEntities: true,htmlEntities:true }).parse(text);
 }
 function richText(node: any): string {
   if (!node) return '';
@@ -165,7 +165,7 @@ export async function parseDocument(name: string, bytes: Uint8Array, assetsDir?:
       const warnings: string[] = [];
       if (!pages.some(text => text.trim())) warnings.push('未提取到文字，可能是扫描件。本版不包含 OCR，可查看原页或添加截图。');
       if (pages.length < pdf.numPages) warnings.push('文字提取已达到 100 页或字符上限。');
-      return bounded({ format: 'pdf', text: pages.some(page => page.trim()) ? pages.map((page, i) => '第 ' + (i + 1) + ' 页\n' + page).join('\n\n') : '', pages, truncated: pages.length < pdf.numPages || remaining <= 0, warnings });
+      return bounded({ format: 'pdf', pageCount:pdf.numPages,text: pages.some(page => page.trim()) ? pages.map((page, i) => '第 ' + (i + 1) + ' 页\n' + page).join('\n\n') : '', pages, truncated: pages.length < pdf.numPages || remaining <= 0, warnings });
     } catch (error) { throw new Error((error as Error).name === 'PasswordException' ? 'PDF 已加密，请先解密后添加' : 'PDF 解析失败：' + (error as Error).message); }
     finally { await loading.destroy(); }
   }

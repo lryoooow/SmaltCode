@@ -42,3 +42,6 @@ docs/RELEASE-0.0.6.md
 
 # Persistent, isolated development preview data (may contain private settings).
 .local-preview/
+
+# Local Python validation bytecode.
+__pycache__/

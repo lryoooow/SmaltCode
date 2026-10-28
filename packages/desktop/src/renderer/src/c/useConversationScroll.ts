@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type UIEvent, type WheelEvent, type PointerEvent, type KeyboardEvent } from 'react'
 import type { Session } from '../bridge'
 
-export type ConversationScrollMemory = Map<string, { top: number; following: boolean; historyLimit?: number; detailLimits?: Record<string, number>; activities?: Set<string>; commands?: Set<string> }>
+export type ConversationScrollMemory = Map<string, { top: number; following: boolean; historyLimit?: number; searchWindow?: { start: number; end: number }; detailLimits?: Record<string, number>; detailWindows?: Record<string, { start: number; end: number }>; activities?: Set<string>; commands?: Set<string> }>
 
 export function rememberExpansion(memory: ConversationScrollMemory, threadId: string, kind: 'activities' | 'commands', itemId: string, open: boolean) {
   const previous = memory.get(threadId) ?? { top: 0, following: true }
@@ -23,7 +23,7 @@ export function useConversationScroll(session: Session, memory: ConversationScro
   const [hasUpdates, setHasUpdates] = useState(false)
   const previous = useRef({ items: session.items, approvals: session.approvals, questions: session.questions })
 
-  const remember = () => memory.set(id, { ...memory.get(id), top: viewport.current?.scrollTop ?? previousTop.current, following: following.current })
+  const remember = () => memory.set(id, { ...memory.get(id), top: viewport.current?.clientHeight ? viewport.current.scrollTop : previousTop.current, following: following.current })
   const follow = (value: boolean) => {
     following.current = value
     setStick(value)
@@ -32,7 +32,7 @@ export function useConversationScroll(session: Session, memory: ConversationScro
   }
   const bottom = () => {
     const el = viewport.current
-    if (el) { el.scrollTop = el.scrollHeight; previousTop.current = el.scrollTop; remember() }
+    if (el?.clientHeight) { el.scrollTop = el.scrollHeight; previousTop.current = el.scrollTop; remember() }
   }
   const pause = (reason: typeof intent.current) => { intent.current = reason; follow(false) }
   const latest = () => { intent.current = undefined; follow(true); bottom() }
@@ -41,12 +41,18 @@ export function useConversationScroll(session: Session, memory: ConversationScro
     const el = viewport.current!
     el.scrollTop = following.current ? el.scrollHeight : previousTop.current
     previousTop.current = el.scrollTop
-    const observer = new ResizeObserver(() => { if (following.current) bottom() })
+    let hidden = !el.clientHeight
+    const observer = new ResizeObserver(() => {
+      if (!el.clientHeight) { hidden = true; return }
+      if (following.current) bottom()
+      else if (hidden) el.scrollTop = previousTop.current
+      hidden = false
+    })
     observer.observe(el)
     if (content.current) observer.observe(content.current)
     return () => {
       observer.disconnect()
-      memory.set(id, { ...memory.get(id), top: el.scrollTop, following: following.current })
+      memory.set(id, { ...memory.get(id), top: el.clientHeight ? el.scrollTop : previousTop.current, following: following.current })
     }
   }, [id, memory])
 
@@ -59,6 +65,7 @@ export function useConversationScroll(session: Session, memory: ConversationScro
 
   const onScroll = (event: UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
+    if (!el.clientHeight) return
     const movement = el.scrollTop - previousTop.current
     previousTop.current = el.scrollTop
     if (movement < -1) follow(false)

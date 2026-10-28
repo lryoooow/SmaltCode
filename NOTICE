@@ -31,3 +31,16 @@ under Apache-2.0, and fflate, fast-xml-parser and @thednp/dommatrix,
 licensed under MIT. Their license texts are copied into dist/licenses
 during desktop source builds. PDF CMap and Foxit/Liberation standard
 font notices are retained alongside dist/main/pdf-assets.
+
+The desktop stages node-pty 1.1.0 (MIT) with a Windows natural-exit cleanup fix for its input socket and output worker. Original copyright and license accompany the staged copy.
+
+The desktop MCP client uses @modelcontextprotocol/client and core 2.3.1
+(Apache-2.0), AJV 8.20.0 and the SDK authentication/transport dependencies.
+Original license texts are retained in dist/licenses, including MIT and
+BSD-3-Clause dependency notices. No plugin publisher is endorsed by this inclusion.
+
+Dev Container review and archive dependencies:
+js-yaml (MIT), argparse (Python-2.0), minimatch (BlueOak-1.0.0), brace-expansion (MIT),
+balanced-match (MIT), tar-stream, bl, readable-stream, inherits, end-of-stream,
+once, wrappy, fs-constants, buffer, base64-js, ieee754, string_decoder and
+util-deprecate (MIT/ISC/BSD-3-Clause as stated in the bundled individual LICENSE files).

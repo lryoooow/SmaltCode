@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Icon from './icons'
-import { createPortal } from 'react-dom'
+import Popover from './Popover'
 
 export type Status = 'running' | 'approval' | 'question' | 'unread' | 'failed' | 'stopped' | 'done' | 'findings' | 'unverified' | 'attention'
 export type Task = { id: string; title: string; ws: string; status: Status; time: string; group: string; pinned?: boolean; projectId?: string }
@@ -9,29 +9,29 @@ export const cx = (...a: (string | false | undefined | null)[]) => a.filter(Bool
 
 export function Btn({ children, v = 'ghost', className = '', ...p }: { v?: 'primary' | 'ghost' | 'outline' | 'danger' | 'soft' } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const vs = {
-    primary: 'bg-accent text-white hover:brightness-110 shadow-[0_1px_0_rgba(255,255,255,.25)_inset,0_2px_8px_-2px_rgba(47,79,208,.5)]',
+    primary: 'bg-accent text-white hover:brightness-110',
     ghost: 'hover:bg-[var(--hover)] text-[var(--text)]',
     outline: 'border border-[var(--line)] bg-[var(--surface-solid)] hover:bg-[var(--sunken)]',
     danger: 'bg-rose-600 text-white hover:bg-rose-500',
     soft: 'bg-[var(--accent-soft)] text-accent dark:text-indigo-200 hover:brightness-95',
   }
   return (
-    <button {...p} className={cx('inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium transition-all duration-150 active:scale-[.97] disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-accent', vs[v], className)}>
+    <button {...p} className={cx('inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium transition-all duration-150 disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-accent', vs[v], className)}>
       {children}
     </button>
   )
 }
 
-export function IconBtn({ n, label, onClick, active, className = '' }: { n: string; label: string; onClick?: () => void; active?: boolean; className?: string }) {
+export function IconBtn({ n, label, onClick, active, disabled, className = '' }: { n: string; label: string; onClick?: () => void; active?: boolean; disabled?: boolean; className?: string }) {
   return (
-    <button aria-label={label} title={label} onClick={onClick} className={cx('group relative grid place-items-center size-7 rounded-md text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition active:scale-90', active && 'text-[var(--text)] bg-[var(--hover)]', className)}>
+    <button type="button" disabled={disabled} aria-label={label} title={label} onClick={onClick} className={cx('group relative grid place-items-center size-8 rounded-md text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition disabled:opacity-35 disabled:pointer-events-none', active && 'text-[var(--text)] bg-[var(--hover)]', className)}>
       <Icon n={n} s={16} />
     </button>
   )
 }
 
 export function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="px-1.5 h-5 inline-grid place-items-center rounded border border-[var(--line)] bg-[var(--sunken)] text-[10.5px] font-mono text-[var(--muted)]">{children}</kbd>
+  return <kbd className="px-1.5 h-5 inline-grid place-items-center rounded border border-[var(--line)] bg-[var(--sunken)] text-[11px] font-mono text-[var(--muted)]">{children}</kbd>
 }
 
 export function StatusDot({ s }: { s: Status }) {
@@ -48,38 +48,32 @@ export function Menu({ trigger, items, align = 'left', up }: { trigger: (o: bool
   const [o, setO] = useState(false)
   const r = useRef<HTMLDivElement>(null)
   const menu = useRef<HTMLDivElement>(null)
-  const [position, setPosition] = useState({ left: 0, top: 0, bottom: undefined as number | undefined })
   useEffect(() => {
-    const h = (e: MouseEvent) => !r.current?.contains(e.target as Node) && !menu.current?.contains(e.target as Node) && setO(false)
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setO(false) }
-    document.addEventListener('mousedown', h); document.addEventListener('keydown', key)
-    return () => { document.removeEventListener('mousedown', h); document.removeEventListener('keydown', key) }
-  }, [])
-  useEffect(() => {
-    if (!o || !r.current) return
-    const rect = r.current.getBoundingClientRect()
-    const estimatedHeight = Math.min(420, items.length * 42 + 12)
-    const above = up || (rect.bottom + estimatedHeight > innerHeight - 12 && rect.top > innerHeight / 2)
-    setPosition({ left: Math.max(8, Math.min(innerWidth - 248, align === 'right' ? rect.right - 240 : rect.left)), top: above ? 0 : rect.bottom + 6, bottom: above ? innerHeight - rect.top + 6 : undefined })
-    const close = () => setO(false)
-    addEventListener('resize', close)
-    return () => removeEventListener('resize', close)
-  }, [o, align, up])
+    if (!o) return
+    const frame = requestAnimationFrame(() => menu.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true }))
+    return () => cancelAnimationFrame(frame)
+  }, [o])
   return (
     <div ref={r} className="relative inline-flex">
       <span onClick={e => { if (!(e.target as Element).closest('button:disabled')) setO(!o) }}>{trigger(o)}</span>
-      {o && createPortal(
-        <div ref={menu} role="menu" style={{ left: position.left, top: position.bottom === undefined ? position.top : undefined, bottom: position.bottom, maxHeight: position.bottom === undefined ? Math.max(120, innerHeight - position.top - 12) : Math.max(120, innerHeight - position.bottom - 12) }} className="fixed z-[100] w-60 overflow-y-auto p-1 rounded-xl border border-[var(--line)] bg-[var(--surface-solid)] shadow-[0_12px_40px_-8px_rgba(0,0,0,.25)] anim-pop">
+      {o && <Popover anchor={r} label="操作菜单" menu above={!!up} width={240} alignEnd={align === 'right'} onClose={() => setO(false)}>
+        <div ref={menu} className="p-1" onKeyDown={event => {
+          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+          event.preventDefault()
+          const buttons = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
+          const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
+          buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length]?.focus()
+        }}>
           {items.map((it, i) => it.label === '-' ? <div key={i} className="h-px my-1 bg-[var(--line)]" /> : (
-            <button key={i} disabled={it.disabled} onClick={() => { it.onClick?.(); setO(false) }} className={cx('w-full flex items-start gap-2.5 px-2.5 py-1.5 rounded-lg text-left hover:bg-[var(--hover)] transition disabled:opacity-40', it.danger && 'text-rose-500')}>
+            <button key={i} disabled={it.disabled} onClick={() => { it.onClick?.(); setO(false); requestAnimationFrame(() => { if (!document.querySelector('[aria-modal=\"true\"]')) r.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true }) }) }} className={cx('w-full flex items-start gap-2.5 px-2.5 py-1.5 rounded-lg text-left hover:bg-[var(--hover)] transition disabled:opacity-40', it.danger && 'text-rose-500')}>
               {it.icon && <Icon n={it.icon} s={15} className="mt-0.5 text-[var(--muted)]" />}
               <span className="flex-1"><span className="block">{it.label}</span>{it.desc && <span className="block text-[11.5px] text-[var(--muted)]">{it.desc}</span>}</span>
               {it.sel && <Icon n="check" s={14} className="mt-0.5 text-accent" />}
               {it.hint && <span className="text-[11px] text-[var(--muted)] mt-0.5">{it.hint}</span>}
             </button>
           ))}
-        </div>, document.body
-      )}
+        </div>
+      </Popover>}
     </div>
   )
 }

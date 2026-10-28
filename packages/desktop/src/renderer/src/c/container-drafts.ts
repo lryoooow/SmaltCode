@@ -1,0 +1,6 @@
+type Draft={profileId:string;path:string;expected:string;text:string};
+const key='smalt.containerDrafts.v1';
+export function containerDrafts():Draft[]{const value=localStorage.getItem(key);if(!value)return[];const data=JSON.parse(value);if(!Array.isArray(data)||data.length>40||data.some(v=>!v||typeof v.profileId!=='string'||typeof v.path!=='string'||typeof v.text!=='string'||v.text.length>512*1024||!/^[a-f0-9]{64}$/.test(v.expected)))throw Error('暂时无法读取已保存草稿，请先保留当前编辑内容');return data;}
+export function containerDraft(profileId:string,path:string){return containerDrafts().find(d=>d.profileId===profileId&&d.path===path);}
+export function saveContainerDraft(value:Draft){const drafts=containerDrafts().filter(d=>d.profileId!==value.profileId||d.path!==value.path);drafts.push(value);const text=JSON.stringify(drafts);if(drafts.length>40||text.length>4*1024*1024)throw Error('草稿空间已满，请先保存或舍弃不需要的草稿');localStorage.setItem(key,text);dispatchEvent(new Event('smalt:container-drafts'));}
+export function removeContainerDraft(profileId:string,path:string){localStorage.setItem(key,JSON.stringify(containerDrafts().filter(d=>d.profileId!==profileId||d.path!==path)));dispatchEvent(new Event('smalt:container-drafts'));}

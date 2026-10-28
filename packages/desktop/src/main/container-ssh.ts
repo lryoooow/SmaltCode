@@ -1,0 +1,18 @@
+import{Duplex}from'node:stream';
+import type{ClientChannel}from'ssh2';
+import type{SshManager}from'./ssh-manager.js';
+import type{ContainerSshSource}from'../shared/containers.js';
+export type ContainerSshTransport={source:ContainerSshSource;open:()=>Promise<Duplex>};
+const same=(a:ContainerSshSource,b:ContainerSshSource)=>JSON.stringify(a)===JSON.stringify(b);
+export function dockerSshSocket(value:unknown){if(typeof value!=='string'||!/^\/(?:var\/run\/docker\.sock|run\/user\/[0-9]{1,10}\/docker\.sock)$/.test(value))throw Error('SSH 容器仅连接 /var/run/docker.sock 或 /run/user/UID/docker.sock');return value;}
+/** Docker socket authority is a fresh native grant, separate from SFTP/SSH authentication. */
+export class ContainerSshAccess{
+ private grants=new Map<string,{source:ContainerSshSource;validate:()=>void;client:ReturnType<SshManager['transport']>['client']}>();private off:()=>void;private closing=false;
+ constructor(private ssh:SshManager,private consent:(title:string,detail:string)=>Promise<boolean>,private changed:()=>void){this.off=ssh.subscribe(()=>{for(const[id,g]of this.grants)try{g.validate();}catch{this.grants.delete(id);}this.changed();});}
+ async authorize(id:string,value:unknown){if(this.closing)throw Error('远程容器正在退出');const t=this.ssh.transport(id),socket=dockerSshSocket(value),p=t.profile,source:ContainerSshSource={profileId:p.id,name:p.name,host:p.host,port:p.port,username:p.username,root:p.root,fingerprint:t.fingerprint,socket};if(!await this.consent('访问 SSH 主机的容器引擎',`${p.username}@${p.host}:${p.port}\nSSH 指纹：${t.fingerprint}\nDocker socket：${socket}\n允许挂载的远程项目：${p.root}\n\nDocker socket 具有管理该引擎的高权限，独立于只读 SFTP 授权。先读取容器与镜像清单，创建、下载、构建和执行还会分别核对。\n所有路径位于此 SSH 主机，不会使用本机 Docker 或转发本机模型密钥。断线后需重新授权。`))throw Error('已取消远程容器授权');t.validate();if(this.closing)throw Error('远程容器正在退出');this.grants.set(id,{source,validate:t.validate,client:t.client});return source;}
+ available(source:ContainerSshSource){try{this.transport(source);return true;}catch{return false;}}
+ transport(source:ContainerSshSource):ContainerSshTransport{const g=this.grants.get(source.profileId);if(this.closing||!g||!same(g.source,source))throw Error('SSH 容器授权已失效，请连接原主机并重新核验引擎');g.validate();return{source,open:()=>new Promise((accept,reject)=>{try{g.validate();g.client.openssh_forwardOutStreamLocal(source.socket,(error,channel)=>{if(error)return reject(Error('SSH 服务器未开放所选 Docker socket；未尝试其他地址'));try{g.validate();if(!this.grants.has(source.profileId)||this.closing)throw Error('SSH 容器授权已撤销');accept(socketStream(channel));}catch(e){channel.close();reject(e);}});}catch(e){reject(e);}})};}
+ shutdown(){this.closing=true;this.off();this.grants.clear();}
+}
+/** An HTTP-compatible Duplex over a single verified SSH channel, never a local TCP listener. */
+function socketStream(channel:ClientChannel){let timer:ReturnType<typeof setTimeout>|undefined,timeout=0;const reset=()=>{clearTimeout(timer);if(timeout){timer=setTimeout(()=>stream.emit('timeout'),timeout);timer.unref();}};const stream=new Duplex({read(){channel.resume();},write(chunk,_encoding,done){reset();channel.write(chunk,done);},final(done){channel.end();done();},destroy(error,done){clearTimeout(timer);channel.close();done(error);}})as Duplex&{setTimeout:(ms:number,callback?:()=>void)=>Duplex;setNoDelay:()=>Duplex;setKeepAlive:()=>Duplex};stream.setTimeout=(ms,callback)=>{timeout=ms;if(callback)stream.once('timeout',callback);reset();return stream;};stream.setNoDelay=stream.setKeepAlive=()=>stream;channel.on('data',(bytes:Buffer)=>{reset();if(!stream.push(bytes))channel.pause();});channel.on('end',()=>stream.push(null));channel.on('close',()=>stream.destroy());channel.on('error',(e:Error)=>stream.destroy(e));return stream;}

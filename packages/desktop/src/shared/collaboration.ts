@@ -1,0 +1,7 @@
+export type ChildConfig = { key: string; title: string; instructions: string; model: string; role: 'read' | 'edit'; paths: string[]; dependsOn: string[] };
+export type CollaborationConfig = { parentThreadId: string; title: string; context: string; concurrency: number; tasks: ChildConfig[]; budget: { requests: number; tools: number; tokens: number; minutes: number } };
+export type ChildTask = ChildConfig & { status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'interrupted'; threadId?: string; reason?: string; summary?: string; metrics?: { requests: number; chargedTokens: number; toolCalls: number }; changed?: string[] };
+export type ReviewFile = { path: string; base: string | null; current: string | null; proposed: string | null; binary: boolean; conflict: boolean; resolved: boolean; sources: string[] };
+export type CollaborationReview = { id: string; selected: string[]; digest: string; files: ReviewFile[]; createdAt: string; validation?: { digest: string; note: string; at: string }; appliedAt?: string };
+export type Collaboration = Omit<CollaborationConfig, 'tasks'> & { id: string; revision: number; cwd: string; canonical: string; projectId?: string; head?: string; snapshot?: string; excluded: string[]; tasks: ChildTask[]; status: 'draft' | 'preparing' | 'running' | 'review' | 'cancelled' | 'failed' | 'applied' | 'cleaned'; createdAt: string; updatedAt: string; reason?: string; review?: CollaborationReview };
+export type CollaborationState = { version: 1; groups: Collaboration[]; notice?: string; occupied: number };

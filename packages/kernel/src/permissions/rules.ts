@@ -48,10 +48,28 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
 export function toolClass(toolName: string): 'shell' | 'edit' | 'read' | 'other' {
   switch (toolName) {
     case 'shell':
+    case 'container_exec':
+    case 'container_process_stop':
+    case 'ssh_exec':
+    case 'ssh_process_stop':
+    case 'process_stop':
       return 'shell';
+    case 'resource_write':
     case 'write':
+    case 'container_write':
+    case 'ssh_write':
     case 'apply_patch':
       return 'edit';
+    case 'task_checkpoint':
+    case 'process_read':
+    case 'container_read':
+    case 'container_process_read':
+    case 'ssh_read':
+    case 'ssh_process_read':
+    case 'ssh_connections':
+    case 'resource_list':
+    case 'resource_read':
+    case 'resource_search':
     case 'read':
     case 'glob':
     case 'grep':

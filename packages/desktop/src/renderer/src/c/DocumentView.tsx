@@ -3,8 +3,10 @@ import { Btn } from './ui'
 import { errorText, type FilePreview } from '../bridge'
 import workerSource from 'smalt-pdf-worker'
 import { LocalBinaryDataFactory } from './pdf-assets'
+import ObjectView from './ObjectView'
+import type { ObjectSelection } from '../../../shared/browser'
 
-export type DocumentPosition = { page?: number; sheet?: number }
+export type DocumentPosition = { page?: number; sheet?: number; zoom?: number }
 function PdfView({ dataUrl, position, onPosition }: { dataUrl: string; position: DocumentPosition; onPosition: (value: DocumentPosition) => void }) {
   const [document, setDocument] = useState<import('pdfjs-dist').PDFDocumentProxy>(), [error, setError] = useState<string>(), [busy, setBusy] = useState(true)
   const [renderedPage, setRenderedPage] = useState(0)
@@ -53,20 +55,14 @@ function PdfView({ dataUrl, position, onPosition }: { dataUrl: string; position:
   </div>
 }
 
-export default function DocumentView({ preview, name, position: externalPosition, onPosition: externalChange }: { preview: FilePreview; name: string; position?: DocumentPosition; onPosition?: (value: DocumentPosition) => void }) {
+export default function DocumentView({ preview, name, position: externalPosition, onPosition: externalChange, onFeedback, onFocus }: { onFeedback?: (selection: ObjectSelection, note: string) => Promise<void>; onFocus?: () => void; preview: FilePreview; name: string; position?: DocumentPosition; onPosition?: (value: DocumentPosition) => void }) {
   const [localPosition, setLocalPosition] = useState<DocumentPosition>({})
   const position = externalPosition ?? localPosition, onPosition = externalChange ?? setLocalPosition
-  const [visibleRows, setVisibleRows] = useState(100), [imageError, setImageError] = useState(false)
-  const sheets = preview.sheets ?? [], sheet = sheets[Math.min(position.sheet ?? 0, sheets.length - 1)]
-  const columns = Math.max(1, ...(sheet?.rows ?? []).map(row => row.length))
-  useEffect(() => { setVisibleRows(100); setImageError(false) }, [name, position.sheet, preview.digest])
-  const letter = (index: number) => { let result = ''; for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result }
   return <div data-testid="document-preview">
     {!!preview.warnings?.length && <div className="px-3 py-2 text-[11px] leading-relaxed text-[var(--muted)] border-b border-[var(--line)]">{preview.warnings.map(warning => <p key={warning}>{warning}</p>)}</div>}
     {preview.format === 'pdf' && preview.dataUrl ? <PdfView dataUrl={preview.dataUrl} position={position} onPosition={onPosition} />
-      : preview.format === 'image' ? <div className="p-4 flex flex-col items-center gap-3">{imageError ? <div role="alert" className="text-rose-500">图片解码失败，请换一个有效的 PNG 或 JPEG 文件。</div> : <img src={preview.dataUrl} alt={name} onError={() => setImageError(true)} className="max-w-full max-h-[70vh] object-contain rounded-lg" />}<span className="text-[11px] text-[var(--muted)]">{(preview.size / 1024).toFixed(1)} KB</span></div>
+      : ['image', 'xlsx'].includes(preview.format ?? '') ? <ObjectView key={name + ':' + preview.digest} preview={preview} name={name} position={position} onPosition={onPosition} onFeedback={onFeedback} onFocus={onFocus} />
       : preview.format === 'docx' ? <article data-testid="word-preview" className="p-5 space-y-3 leading-relaxed">{preview.paragraphs?.map((paragraph, index) => paragraph.heading ? <h3 key={index} className="font-semibold text-[16px] pt-2 whitespace-pre-wrap">{paragraph.text}</h3> : <p key={index} className="whitespace-pre-wrap break-words">{paragraph.text}</p>)}</article>
-      : preview.format === 'xlsx' && sheet ? <div data-testid="spreadsheet-preview"><div role="tablist" aria-label="工作表" className="sticky top-0 z-10 flex overflow-auto gap-1 p-2 bg-[var(--surface-solid)] border-b border-[var(--line)]">{sheets.map((entry, index) => <button key={index} role="tab" aria-selected={entry === sheet} onClick={() => onPosition({ ...position, sheet: index })} className={'shrink-0 rounded-lg px-3 py-1.5 text-[12px] ' + (entry === sheet ? 'bg-[var(--accent-soft)] text-accent' : 'hover:bg-[var(--hover)] text-[var(--muted)]')}>{entry.name}</button>)}</div><div className="overflow-x-auto"><table className="border-collapse text-[11px] min-w-full"><thead><tr><th className="border-b border-r border-[var(--line)] p-2 bg-[var(--sunken)]" />{Array.from({ length: columns }, (_, index) => <th key={index} className="border-b border-r border-[var(--line)] px-3 py-2 min-w-24 bg-[var(--sunken)] font-medium">{letter(index)}</th>)}</tr></thead><tbody>{sheet.rows.slice(0, visibleRows).map((row, index) => <tr key={index}><th className="border-b border-r border-[var(--line)] px-2 py-1.5 text-[var(--muted)] bg-[var(--sunken)] font-normal tabular-nums">{index + 1}</th>{Array.from({ length: columns }, (_, column) => <td key={column} className="border-b border-r border-[var(--line)] px-3 py-1.5 max-w-64 truncate" title={row[column]}>{row[column] ?? ''}</td>)}</tr>)}</tbody></table></div>{visibleRows < sheet.rows.length && <div className="p-3 text-center"><Btn v="outline" onClick={() => setVisibleRows(value => value + 100)}>再显示 100 行</Btn></div>}<div className="p-3 text-[11px] text-[var(--muted)]">{sheet.rows.length} 行 · {sheet.name}</div></div>
       : <pre className="p-4 text-[12px] whitespace-pre-wrap break-words">{preview.text || '空文件'}</pre>}
   </div>
 }

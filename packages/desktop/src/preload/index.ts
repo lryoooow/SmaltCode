@@ -8,12 +8,17 @@ import { contextBridge, ipcRenderer } from 'electron';
 const versionArg = process.argv.find((a) => a.startsWith('--smalt-version='));
 
 contextBridge.exposeInMainWorld('smalt', {
+  fileContext: (action:string,value:unknown={})=>ipcRenderer.invoke('smalt:file-context',action,value),
+  artifacts:(action:string,value:unknown={})=>ipcRenderer.invoke('smalt:artifacts',action,value),
+  onArtifactSelection:(cb:(v:{threadId:string;text:string})=>void)=>{const h=(_e:unknown,v:{threadId:string;text:string})=>cb(v);ipcRenderer.on('smalt:artifact-selection',h);return()=>ipcRenderer.removeListener('smalt:artifact-selection',h);},
+  onArtifactUpdated:(cb:(value:{threadId:string;path:string})=>void)=>{const handler=(_e:unknown,value:{threadId:string;path:string})=>cb(value);ipcRenderer.on('smalt:artifact-updated',handler);return()=>ipcRenderer.removeListener('smalt:artifact-updated',handler);},
   version: versionArg ? versionArg.split('=')[1]! : '0.0.0',
   platform: process.platform,
   developmentPreview: process.argv.includes('--smalt-development-preview'),
 
   /** invoke a kernel JSON-RPC method */
   call: (method: string, params?: unknown) => ipcRenderer.invoke('smalt:call', method, params),
+  localSpace: (action: 'create' | 'info') => ipcRenderer.invoke('smalt:local-space', action),
 
   /** subscribe to kernel notifications; returns an unsubscribe fn */
   onNotify: (cb: (method: string, params: unknown) => void) => {
@@ -43,16 +48,34 @@ contextBridge.exposeInMainWorld('smalt', {
   saveSettings: (patch: Record<string, unknown>) => ipcRenderer.invoke('smalt:settings:save', patch) as Promise<{ ok: boolean }>,
   testProvider: (provider: string, model: string) => ipcRenderer.invoke('smalt:settings:test', provider, model),
   listModels: (provider: string, force = false, model?: string) => ipcRenderer.invoke('smalt:models:list', provider, force, model),
-  pickFiles: () => ipcRenderer.invoke('smalt:pick-files'),
   skills: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:skills', action, value),
   pickAttachments: () => ipcRenderer.invoke('smalt:attachments:pick'),
   pasteImage: (base64: string, mime: string) => ipcRenderer.invoke('smalt:attachments:image', base64, mime),
   attachment: (id: string) => ipcRenderer.invoke('smalt:attachments:preview', id),
+  processes: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:processes', action, value),
+  browser: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:browser', action, value),
+  containers:(action:string,value?:unknown)=>ipcRenderer.invoke('smalt:containers',action,value),
+  onContainers:(cb:()=>void)=>{const listener=()=>cb();ipcRenderer.on('smalt:containers',listener);return()=>ipcRenderer.removeListener('smalt:containers',listener);},
+  ssh:(action:string,value?:unknown)=>ipcRenderer.invoke('smalt:ssh',action,value),
+  onSsh:(cb:()=>void)=>{const listener=()=>cb();ipcRenderer.on('smalt:ssh',listener);return()=>ipcRenderer.removeListener('smalt:ssh',listener);},
+  remote: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:remote', action, value),
+  onRemote: (cb: () => void) => { const listener = () => cb(); ipcRenderer.on('smalt:remote', listener); return () => ipcRenderer.removeListener('smalt:remote', listener); },
+  collaborations: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:collaborations', action, value),
+  onCollaborations: (cb: () => void) => { const listener = () => cb(); ipcRenderer.on('smalt:collaborations', listener); return () => ipcRenderer.removeListener('smalt:collaborations', listener); },
+  autonomy: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:autonomy', action, value),
+  onAutonomy: (cb: () => void) => { const listener = () => cb(); ipcRenderer.on('smalt:autonomy', listener); return () => ipcRenderer.removeListener('smalt:autonomy', listener); },
+  integrations: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:integrations', action, value),
+  onIntegrations: (cb: () => void) => { const listener = () => cb(); ipcRenderer.on('smalt:integrations', listener); return () => ipcRenderer.removeListener('smalt:integrations', listener); },
+  feedback: (action: string, value?: unknown) => ipcRenderer.invoke('smalt:feedback', action, value),
+  onBrowser: (cb: () => void) => { const listener = () => cb(); ipcRenderer.on('smalt:browser', listener); return () => ipcRenderer.removeListener('smalt:browser', listener); },
+  onBrowserShortcut: (cb: (value: { key: string; control: boolean; shift?: boolean }) => void) => { const listener = (_event: unknown, value: { key: string; control: boolean; shift?: boolean }) => cb(value); ipcRenderer.on('smalt:browser-shortcut', listener); return () => ipcRenderer.removeListener('smalt:browser-shortcut', listener); },
+  onProcess: (cb: (event: unknown) => void) => { const listener = (_event: unknown, value: unknown) => cb(value); ipcRenderer.on('smalt:process', listener); return () => ipcRenderer.removeListener('smalt:process', listener); },
   overview: () => ipcRenderer.invoke('smalt:overview'),
   exportDiagnostics: () => ipcRenderer.invoke('smalt:diagnostics:export'),
   searchFiles: (cwd: string, query: string) => ipcRenderer.invoke('smalt:context', cwd, 'search', query),
-  previewFile: (cwd: string, path: string) => ipcRenderer.invoke('smalt:context', cwd, 'preview', path),
-  resolveContext: (cwd: string, refs: unknown[]) => ipcRenderer.invoke('smalt:context', cwd, 'resolve', refs),
+  previewFile: (cwd: string, path: string,fileScope?:string) => ipcRenderer.invoke('smalt:context', cwd, 'preview', path,undefined,fileScope),
+  inspectContext: (cwd: string, refs: unknown[],fileScope?:string) => ipcRenderer.invoke('smalt:context', cwd, 'inspect', refs,undefined,fileScope),
+  resolveContext: (cwd: string, refs: unknown[],threadId?:string,fileScope?:string) => ipcRenderer.invoke('smalt:context', cwd, 'resolve', refs,threadId,fileScope),
   activity: (threadId: string | null, enabled: boolean) => ipcRenderer.invoke('smalt:activity', threadId, enabled),
   onNavigate: (cb: (threadId: string) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, payload: { threadId: string }) => cb(payload.threadId);

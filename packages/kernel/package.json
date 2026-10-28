@@ -1,6 +1,6 @@
 {
   "name": "@smalt/kernel",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "The smalt agent kernel: threads, turns, items, tools, permissions, and a JSON-RPC app-server protocol.",
   "license": "Apache-2.0",
   "type": "module",

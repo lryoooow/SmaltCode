@@ -1,0 +1,13 @@
+export type ContainerSshSource={profileId:string;name:string;host:string;port:number;username:string;root:string;fingerprint:string;socket:string};
+export type ContainerContext={name:string;endpoint:string;fingerprint:string;engineId:string;version:string;os:string;rootless:boolean;ssh?:ContainerSshSource};
+export type ContainerSummary={id:string;name:string;image:string;imageId:string;state:string;owned:boolean};
+export type ContainerImage={id:string;tags:string[];digests:string[];size:number};
+export type ContainerTarget={profileId:string;context:string;endpoint:string;contextFingerprint:string;engineId:string;containerId:string;name:string;imageId:string;root:string;user:string;startedAt:string;readOnly:boolean;ssh?:ContainerSshSource};
+export type ContainerProfile={id:string;name:string;context:ContainerContext;containerId?:string;imageId:string;root:string;user:string;readOnly:boolean;owned:boolean;claim?:string;workspace?:string;network:'none'|'bridge';status:'creating'|'unknown'|'stopped'|'running'|'missing'|'disconnected';notice?:string;environmentNames?:string[]};
+export type ContainerBinding={threadId:string;cwd:string;projectId?:string;target:ContainerTarget;active:boolean};
+export type ContainerRun={id:string;requestId:string;threadId:string;target:ContainerTarget;kind:'command'|'terminal'|'write';command:string;cwd:string;digest:string;startedAt:string;endedAt?:string;status:'claimed'|'running'|'stopping'|'exited'|'failed'|'stopped'|'unknown';cleanup:'confirmed'|'unconfirmed';exitCode?:number|null;signal?:number|null;reason?:string;inputAllowed:boolean;revision:number;truncated:boolean;fileDigest?:string};
+export type ContainerForward={id:string;threadId:string;target:ContainerTarget;localPort:number;containerPort:number;status:'open'|'closed';reason?:string;url?:string};
+export type ContainerFile={path:string;text:string;size:number;digest:string;target:ContainerTarget};
+export type ContainerListing={path:string;entries:{name:string;path:string;kind:'directory'|'file';size:number}[];truncated:boolean};
+export type ContainerState={drafts?:{profileId:string;path:string}[];contexts:{name:string;endpoint?:string;current:boolean;reason?:string}[];selected?:ContainerContext;containers:ContainerSummary[];images:ContainerImage[];profiles:ContainerProfile[];bindings:ContainerBinding[];runs:ContainerRun[];forwards:ContainerForward[];notice?:string;operation?:{kind:'pull';image:string;message:string}};
+export type ContainerExecutionState=Pick<ContainerState,'bindings'|'runs'|'forwards'|'notice'>;

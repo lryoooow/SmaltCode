@@ -11,13 +11,14 @@ import type { PlanStep, ThreadMeta } from '../protocol/types.js';
 export type { ThreadMeta } from '../protocol/types.js';
 
 export type StoreEvent =
+  | { t: 'steering'; entry: import('../protocol/types.js').SteeringEntry }
   | { t: 'meta'; meta: ThreadMeta }
   | { t: 'turn-started'; turnId: string; at: string }
   | { t: 'turn-ended'; turnId: string; at: string; interrupted?: boolean; error?: string; summary?: Omit<import('../protocol/types.js').TurnSummary, 'turnId'> }
   | { t: 'context-notice'; notice: import('../protocol/types.js').ContextNotice; at: string }
   | { t: 'verification-reminder'; text: string; at: string }
   | { t: 'tool-recovered'; id: string; recoveredBy: string; recovery?: 'retry' | 'alternative'; at: string }
-  | { t: 'user-msg'; id: string; text: string; displayText?: string; references?: import('../protocol/types.js').UserReference[]; images?: import('../models/types.js').ImagePart[]; at: string }
+  | { t: 'user-msg'; id: string; text: string; displayText?: string; references?: import('../protocol/types.js').UserReference[]; images?: import('../models/types.js').ImagePart[]; steeringId?: string; at: string }
   | { t: 'agent-msg'; id: string; text: string; at: string; status?: import('../protocol/types.js').ItemStatus }
   | { t: 'reasoning'; id: string; text: string; at: string; status?: import('../protocol/types.js').ItemStatus }
   | { t: 'tool-call'; id: string; tool: string; input: unknown; at: string }

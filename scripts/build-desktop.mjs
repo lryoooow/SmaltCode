@@ -102,7 +102,7 @@ cpSync(stagedInstaller, join(candidate, installerName));
 renameSync(join(stage, 'release', 'win-unpacked'), join(candidate, 'win-unpacked'));
 const checksum = createHash('sha256').update(readFileSync(join(candidate, installerName))).digest('hex');
 writeFileSync(join(candidate, 'SHA256SUMS.txt'), checksum + '  ' + installerName + '\n');
-for (const [script, args] of [['test-desktop-icons.mjs', []], ['test-desktop-package.mjs', []], ['test-desktop-smoke.mjs', ['--packaged']], ['test-desktop-tray.mjs', ['--packaged']]]) {
+for (const [script, args] of [['test-desktop-icons.mjs', []], ['test-desktop-package.mjs', []], ['test-desktop-runtime.mjs', []], ['test-desktop-smoke.mjs', ['--packaged']], ['test-desktop-tray.mjs', ['--packaged']]]) {
   execFileSync(process.execPath, [join(root, 'scripts', script), ...args, '--release-dir', candidate], { cwd: root, stdio: 'inherit', windowsHide: true });
 }
 assertBuildDirectory(releaseDir);

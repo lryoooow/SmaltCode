@@ -1,0 +1,6 @@
+export type CalcCell={row:number;column:number;kind:'empty'|'text'|'number'|'formula';text:string;formula:string;value:number|null;error:number;truncated:boolean};
+export type CalcSnapshot={token:string;digest:string;sheet:number;sheets:{index:number;name:string}[];row:number;column:number;rows:number;columns:number;usedRows:number;usedColumns:number;cells:CalcCell[];calculatedAt:string;version:string;notice?:string};
+export type CalcRange={row:number;column:number;rows:number;columns:number};
+export type CalcValue={kind:'text'|'number'|'boolean'|'formula';value:string|number|boolean};
+export type CalcEdit={token:string;sheet:number;operation:string;range?:CalcRange;cell?:CalcValue;values?:CalcValue[][];index?:number;count?:number;name?:string;destination?:{sheet:number;row:number;column:number};style?:{bold?:boolean;italic?:boolean;wrap?:boolean;align?:'left'|'center'|'right';numberFormat?:'general'|'integer'|'decimal'|'percent'|'date'|'thousands';color?:number;background?:number};field?:number;ascending?:boolean;header?:boolean;filter?:{operator:'equals'|'greater'|'less';value:string|number};merge?:boolean};
+export function calcColumn(index:number){let text='';for(let n=index+1;n>0;n=Math.floor((n-1)/26))text=String.fromCharCode(65+(n-1)%26)+text;return text;}

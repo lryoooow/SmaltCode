@@ -1,18 +1,22 @@
 /** smalt desktop — Electron main process (hardened). */
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog, protocol } from 'electron';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { killAllToolProcesses } from '@smalt/kernel';
+import { waitForToolProcesses } from '@smalt/kernel';
 import { DesktopBridge } from './bridge.js';
 import { DesktopTray } from './tray.js';
 import { desktopAppId, desktopTestSwitches } from './identity.js';
+import { configureDesktopStorage } from './desktop-storage.js';
 
 app.setName('SmaltCode');
+protocol.registerSchemesAsPrivileged([{ scheme: 'smalt-preview', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const testing = desktopTestSwitches.some(flag => app.commandLine.hasSwitch(flag));
 if (process.platform === 'win32') app.setAppUserModelId(desktopAppId(app.isPackaged, testing));
 
 let tray: DesktopTray | undefined;
+let bridge: DesktopBridge | undefined;
+let exiting = false, cleaned = false;
 
 if (process.env.SMALT_HOME && (testing || app.commandLine.hasSwitch('development-preview'))) app.setPath('userData', join(process.env.SMALT_HOME, testing ? 'desktop-test-profile' : 'desktop-preview-profile'));
 
@@ -20,6 +24,14 @@ if (process.env.SMALT_HOME && (testing || app.commandLine.hasSwitch('development
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  if (!process.env.SMALT_HOME) {
+    try {
+      process.env.SMALT_HOME = configureDesktopStorage({ appData: app.getPath('appData'), userHome: app.getPath('home') });
+      app.setPath('userData', join(process.env.SMALT_HOME, 'desktop-profile'));
+    } catch (error) {
+      dialog.showErrorBox('本地存储暂不可用', String(error instanceof Error ? error.message : error)); app.exit(1);
+    }
+  }
   app.on('second-instance', () => {
     const win = BrowserWindow.getAllWindows()[0];
     if (win) {
@@ -87,7 +99,7 @@ if (!app.requestSingleInstanceLock()) {
     win.once('ready-to-show', () => { if (!app.commandLine.hasSwitch('ui-test') && !app.commandLine.hasSwitch('smoke-test') && !app.commandLine.hasSwitch('tray-smoke-test')) win.show(); });
     win.loadFile(rendererPath);
 
-    new DesktopBridge(win.webContents, rendererURL);
+    bridge = new DesktopBridge(win.webContents, rendererURL);
     if (!app.commandLine.hasSwitch('smoke-test')) tray = new DesktopTray(win, join(__dirname, 'smalt.png'));
     if (app.commandLine.hasSwitch('tray-smoke-test')) {
       win.webContents.once('did-finish-load', () => setTimeout(() => {
@@ -133,7 +145,18 @@ app.on('window-all-closed', () => {
   if (!tray) app.quit();
 });
 
-// reap tool child processes (trees) so nothing outlives the app
-app.on('will-quit', () => {
-  killAllToolProcesses();
+// Keep the app alive until process-tree cleanup is confirmed, including tray quit.
+app.on('before-quit', event => {
+  if (cleaned) return;
+  event.preventDefault();
+  if (exiting) return;
+  exiting = true;
+  for (const meta of bridge?.kernel.threads.listMetas() ?? []) if (bridge?.kernel.threads.get(meta.id)?.stateMachine.isRunning()) bridge.kernel.threads.interrupt(meta.id);
+  Promise.all([bridge?.shutdown(), waitForToolProcesses()]).then(() => {
+    cleaned = true; app.quit();
+  }).catch(error => {
+    exiting = false; tray?.cancelQuit(); bridge?.cancelArtifactQuit();
+    console.error('[shutdown]', error);
+    void dialog.showMessageBox({ type: 'error', title: '进程清理未完成', message: '仍有进程未确认停止，应用保持驻留。', detail: String(error) + '\n请检查终端与后台进程，停止后再次从托盘退出。', buttons: ['返回检查'] });
+  });
 });

@@ -1,0 +1,13 @@
+export type SshAuth = 'password' | 'key' | 'agent';
+export type SshProfile = { id:string; name:string; host:string; port:number; username:string; root:string; auth:SshAuth; createdAt:string };
+export type SshConnection = { profile:SshProfile; status:'disconnected'|'connecting'|'connected'|'reconnecting'|'blocked'; reason?:string; fingerprint?:string; actualRoot?:string; retryAt?:string; attempt:number; hasCredential:boolean; granted:boolean };
+export type SshAudit = { at:string; id:string; event:string; detail:string };
+export type SshState = { connections:SshConnection[]; audits:SshAudit[]; storage:'encrypted'|'session'; notice?:string };
+export type SshListing = { target:{kind:'ssh';id:string;root:string;fingerprint:string}; path:string; entries:{name:string;path:string;kind:'directory'|'file';size:number}[]; truncated:boolean };
+export type SshFile = { target:SshListing['target']; path:string; text:string; size:number; digest:string };
+export type SshConfigPreview = { profiles:{name:string;host:string;port:number;username:string;keyHint?:string}[]; warnings:string[] };
+export type SshTarget={profileId:string;name:string;host:string;port:number;username:string;root:string;fingerprint:string};
+export type SshBinding={threadId:string;cwd:string;projectId?:string;target:SshTarget;active:boolean};
+export type SshRun={id:string;requestId:string;threadId:string;target:SshTarget;kind:'command'|'terminal'|'write';command:string;cwd:string;digest:string;startedAt:string;endedAt?:string;status:'claimed'|'running'|'stopping'|'exited'|'failed'|'stopped'|'unknown';cleanup:'confirmed'|'unconfirmed';exitCode?:number|null;signal?:number|null;reason?:string;inputAllowed:boolean;revision:number;truncated:boolean;fileDigest?:string};
+export type SshForward={id:string;threadId:string;target:SshTarget;localPort:number;remotePort:number;status:'open'|'closed';reason?:string;url?:string};
+export type SshExecutionState={bindings:SshBinding[];runs:SshRun[];forwards:SshForward[];notice?:string};

@@ -22,7 +22,32 @@ export type Attachment = import('../../shared/documents').Attachment
 export type DesktopOverview = import('../../shared/overview').DesktopOverview
 export type ContextReference = { path: string; start?: number; end?: number; digest?: string; label?: string }
 export type Checkpoint = import('../../../../kernel/src/storage/checkpoints').CheckpointSummary
+export type { ManagedProcess, ProcessOutput, ProcessEvent } from '../../shared/processes'
+import type { ManagedProcess, ProcessOutput, ProcessEvent } from '../../shared/processes'
 export interface DesktopAPI {
+  fileContext?<T=any>(action:string,value?:unknown):Promise<T>
+  localSpace?(action: 'create'): Promise<{ cwd: string; kind: 'managed' }>;
+  containers<T=unknown>(action:string,value?:unknown):Promise<T>
+  onContainers(cb:()=>void):()=>void
+  ssh<T=unknown>(action:string,value?:unknown):Promise<T>
+  onSsh(cb:()=>void):()=>void
+  artifacts<T=unknown>(action:string,value?:unknown):Promise<T>
+  onArtifactSelection?(cb:(value:{threadId:string;text:string})=>void):()=>void
+  onArtifactUpdated(cb:(value:{threadId:string;path:string})=>void):()=>void
+  remote<T = unknown>(action: string, value?: unknown): Promise<T>
+  onRemote(cb: () => void): () => void
+  collaborations<T = unknown>(action: string, value?: unknown): Promise<T>
+  onCollaborations(cb: () => void): () => void
+  autonomy<T = unknown>(action: string, value?: unknown): Promise<T>
+  onAutonomy(cb: () => void): () => void
+  integrations<T = unknown>(action: string, value?: unknown): Promise<T>
+  onIntegrations(cb: () => void): () => void
+  browser<T = unknown>(action: string, value?: unknown): Promise<T>
+  feedback<T = unknown>(action: string, value?: unknown): Promise<T>
+  onBrowser(cb: () => void): () => void
+  onBrowserShortcut(cb: (value: { key: string; control: boolean; shift?: boolean }) => void): () => void
+  processes<T = unknown>(action: string, value?: unknown): Promise<T>
+  onProcess(cb: (event: ProcessEvent) => void): () => void
   version: string
   platform: string
   developmentPreview?: boolean
@@ -34,7 +59,6 @@ export interface DesktopAPI {
   respondApproval(id: string, decision: ApprovalDecision): Promise<void>
   respondInput(id: string, text: string): Promise<void>
   pickFolder(defaultPath?: string): Promise<{ canceled: true; reason?: string } | { canceled: false; dir: string }>
-  pickFiles(): Promise<string[]>
   skills<T = unknown>(action: string, value?: unknown): Promise<T>
   pickAttachments(): Promise<{ attachments: Attachment[]; errors: string[] }>
   pasteImage(base64: string, mime: string): Promise<Attachment>
@@ -42,8 +66,9 @@ export interface DesktopAPI {
   overview(): Promise<DesktopOverview>
   exportDiagnostics(): Promise<{ canceled: boolean }>
   searchFiles(cwd: string, query: string): Promise<{ files: string[]; truncated: boolean }>
-  previewFile(cwd: string, path: string): Promise<FilePreview>
-  resolveContext(cwd: string, refs: ContextReference[]): Promise<{ text: string; references: Array<{ path: string; label: string }>; images?: import('../../../../kernel/src/models/types').ImagePart[] }>
+  previewFile(cwd: string, path: string,fileScope?:string): Promise<FilePreview>
+  inspectContext(cwd: string, refs: ContextReference[],fileScope?:string): Promise<import('../../shared/context').ContextCheck>
+  resolveContext(cwd: string, refs: ContextReference[],threadId?:string,fileScope?:string): Promise<{ text: string; references: Array<{ path: string; label: string }>; images?: import('../../../../kernel/src/models/types').ImagePart[] }>
   activity(threadId: string | null, enabled: boolean): Promise<void>
   onNavigate(cb: (threadId: string) => void): () => void
   loadSettings(): Promise<SettingsData>
@@ -58,19 +83,21 @@ declare global { interface Window { smalt?: DesktopAPI } }
 export const errorText = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : String(error)
 export const folderName = (dir: string) => dir.replace(/\\/g, '/').replace(/\/$/, '').split('/').pop() || dir
 
+export type SteeringEntry = import('../../../../kernel/src/protocol/types').SteeringEntry
 export type TurnSummary = import('../../../../kernel/src/protocol/types').TurnSummary
 export type Session = {
   meta: ThreadMeta; items: Item[]; status?: ThreadStatus; usage?: ThreadTokenUsage; error?: string
   contextNotice?: ContextNotice
+  steering?: SteeringEntry[]
   summaries: TurnSummary[]; runningSince?: number; interrupted?: boolean; unread?: boolean; sending?: boolean
   approvals: Record<string, ApprovalRequest>; questions: Record<string, UserInputRequest>
 }
-export type Snapshot = { connected: boolean; loading: boolean; error?: string; projectNotice?: string; sessions: Record<string, Session>; projects: ProjectMeta[]; settings?: SettingsData }
+export type Snapshot = { artifactRevisions?:Record<string,number>; processes: Record<string, ManagedProcess>; processOutput: Record<string, ProcessOutput>; processNotice?: string; connected: boolean; loading: boolean; error?: string; projectNotice?: string; sessions: Record<string, Session>; projects: ProjectMeta[]; settings?: SettingsData }
 function readSeen(): Record<string, number> { try { const data = JSON.parse(localStorage.getItem('smalt.ui.seen') ?? '{}'); return data && typeof data === 'object' && !Array.isArray(data) ? Object.fromEntries(Object.entries(data).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))) : {} } catch { return {} } }
 
 /** One subscription owns all sessions. Changing the visible task never interrupts it. */
 export class DesktopStore {
-  private state: Snapshot = { connected: false, loading: true, sessions: {}, projects: [] }
+  private state: Snapshot = { processes: {}, processOutput: {}, connected: false, loading: true, sessions: {}, projects: [] }
   private listeners = new Set<() => void>()
   private boot?: Promise<void>
   private unsubscribe: Array<() => void> = []
@@ -89,6 +116,8 @@ export class DesktopStore {
     try { localStorage.setItem('smalt.ui.seen', JSON.stringify(Object.fromEntries(Object.entries(this.seen).sort((a, b) => b[1] - a[1]).slice(0, 1000)))) } catch { /* unavailable storage */ }
   }
   constructor(readonly api: DesktopAPI | undefined) {}
+  artifactRevision(cwd:string,path:string){let p=path.replace(/\\/g,'/'),root=cwd.replace(/\\/g,'/').replace(/\/$/,'');if(p.toLowerCase().startsWith(root.toLowerCase()+'/'))p=p.slice(root.length+1);return this.state.artifactRevisions?.[root.toLowerCase()+':'+p.toLowerCase()]??0}
+  private artifactUpdated(value:{threadId:string;path:string}){const meta=this.state.sessions[value.threadId]?.meta;if(!meta)return;const root=meta.cwd.replace(/\\/g,'/').replace(/\/$/,'').toLowerCase(),key=root+':'+value.path.replace(/\\/g,'/').toLowerCase(),old=this.state.artifactRevisions??{},rows=Object.entries(old).filter(([k])=>k!==key).slice(-499);this.commit({artifactRevisions:{...Object.fromEntries(rows),[key]:(old[key]??0)+1}})}
   getSnapshot = () => this.state
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private commit(patch: Partial<Snapshot>) { this.state = { ...this.state, ...patch }; this.listeners.forEach(l => l()) }
@@ -143,22 +172,55 @@ export class DesktopStore {
         const sessions = { ...this.state.sessions }
         for (const meta of result.threads) sessions[meta.id] = this.sessionFromMeta(meta, sessions[meta.id])
         this.commit({ sessions, connected: true, loading: false, settings, projects: projects.projects ?? [], projectNotice: projects.notice, error: undefined })
+        const offArtifacts=this.api!.onArtifactUpdated?.(value=>this.artifactUpdated(value));if(offArtifacts)this.unsubscribe.push(offArtifacts);
+        const offProcess = this.api!.onProcess?.(event => this.processEvent(event)); if (offProcess) this.unsubscribe.push(offProcess)
+        await this.refreshProcesses()
         this.refreshConfiguredModels()
       } catch (err) { if (epoch === this.epoch) { this.unsubscribe.splice(0).forEach(off => off()); this.commit({ connected: false, loading: false, error: errorText(err) }); this.boot = undefined } }
     })()
     return this.boot
   }
+  private processEvent(event: ProcessEvent) {
+    const before = this.state.processes[event.process.id]
+    const processes = before && before.revision > event.process.revision ? this.state.processes : { ...this.state.processes, [event.process.id]: event.process }
+    let processOutput = this.state.processOutput
+    if (event.output) {
+      const old = processOutput[event.process.id], output = event.output
+      if (!old || output.end > old.end) {
+        const data = (old && old.end === output.from ? old.data + output.data : output.data).slice(-65536)
+        processOutput = { ...processOutput, [event.process.id]: { data, end: output.end, from: output.end - data.length } }
+      }
+    }
+    const ids = Object.keys(processes)
+    if (ids.length > 80) {
+      const old = ids.filter(id => !['starting', 'running', 'stopping'].includes(processes[id].state)).sort((a, b) => processes[a].startedAt.localeCompare(processes[b].startedAt)).slice(0, ids.length - 80)
+      const bounded = { ...processes }; processOutput = { ...processOutput }
+      for (const id of old) { delete bounded[id]; delete processOutput[id] }
+      this.commit({ processes: bounded, processOutput }); return
+    }
+    this.commit({ processes, processOutput })
+  }
+  async refreshProcesses() {
+    if (!this.api?.processes) return
+    const result = await this.api.processes<{ processes: ManagedProcess[]; notice?: string }>('list')
+    for (const process of result.processes) this.processEvent({ process })
+    this.commit({ processNotice: result.notice })
+  }
+  async readProcess(threadId: string, id: string) {
+    const result = await this.api!.processes<ProcessEvent>('read', { threadId, id }); this.processEvent(result)
+  }
   private notify(method: string, value: unknown) {
     const delta = method.endsWith('/delta') || method.endsWith('/textDelta') || method.endsWith('/outputDelta')
     if (!delta) this.flushDeltas()
-    const p = value as { threadId?: string; meta?: ThreadMeta; item?: Item; itemId?: string; turnId?: string; delta?: string; error?: string; usage?: ThreadTokenUsage; summary?: Omit<TurnSummary, 'turnId'>; interrupted?: boolean; notice?: ContextNotice } & Partial<ThreadStatus>
+    const p = value as { threadId?: string; meta?: ThreadMeta; item?: Item; itemId?: string; turnId?: string; delta?: string; error?: string; usage?: ThreadTokenUsage; summary?: Omit<TurnSummary, 'turnId'>; interrupted?: boolean; notice?: ContextNotice } & { entry?: SteeringEntry } & Partial<ThreadStatus>
     if (p.meta) this.upsert(p.meta)
     if ((method === 'item/started' || method === 'item/completed') && p.item) this.item(p.item)
     if (!p.threadId) return
     const id = p.threadId
     if ((method === 'turn/completed' || method === 'turn/failed') && id === this.current) this.rememberRead(id)
-    if (method === 'thread/deleted') { const sessions = { ...this.state.sessions }; delete sessions[id]; this.commit({ sessions }); return }
+    if (method === 'thread/deleted') { const sessions = { ...this.state.sessions }, processes = { ...this.state.processes }, processOutput = { ...this.state.processOutput }; delete sessions[id]; for (const [key, value] of Object.entries(processes)) if (value.threadId === id) { delete processes[key]; delete processOutput[key] }; this.commit({ sessions, processes, processOutput }); return }
     if (method === 'thread/archived') this.update(id, s => ({ ...s, meta: { ...s.meta, archived: true } }))
+    if (method === 'thread/steering/changed' && p.entry) this.updateSteering(id, p.entry)
     if (method === 'thread/status/changed') this.update(id, s => ({ ...s, status: p as ThreadStatus }))
     if (delta && p.itemId) {
       const pending = this.deltas.get(id) ?? new Map<string, string>()
@@ -197,7 +259,7 @@ export class DesktopStore {
     this.current = id
     this.flushDeltas()
     const before = this.state.sessions[id]
-    const result = await this.api!.call<{ meta: ThreadMeta; items: Item[]; status: ThreadStatus; usage?: ThreadTokenUsage; summaries?: TurnSummary[]; contextNotice?: ContextNotice }>('thread/read', { threadId: id })
+    const result = await this.api!.call<{ meta: ThreadMeta; items: Item[]; status: ThreadStatus; usage?: ThreadTokenUsage; summaries?: TurnSummary[]; contextNotice?: ContextNotice; steering?: SteeringEntry[] }>('thread/read', { threadId: id })
     this.flushDeltas()
     this.upsert(result.meta)
     this.update(id, s => {
@@ -207,7 +269,7 @@ export class DesktopStore {
       if (this.current === id) this.rememberRead(id)
       const liveTurnChanged = s.runningSince !== before?.runningSince || s.status !== before?.status
       const keepLiveError = liveTurnChanged || result.status.lifecycle !== 'idle' || s.error !== before?.error
-      return { ...s, items: [...items.values()], status: s.status !== before?.status ? s.status : result.status, usage: s.usage !== before?.usage ? s.usage : result.usage ?? s.usage, summaries: s.summaries !== before?.summaries ? s.summaries : result.summaries ?? s.summaries, contextNotice: liveTurnChanged || s.contextNotice !== before?.contextNotice ? s.contextNotice : result.contextNotice, error: keepLiveError ? s.error : result.meta.lastOutcome === 'failed' ? result.meta.lastError ?? s.error : undefined, unread: this.current === id ? false : s.unread }
+      return { ...s, items: [...items.values()], steering: this.mergeSteering(result.steering ?? [], s.steering ?? []), status: s.status !== before?.status ? s.status : result.status, usage: s.usage !== before?.usage ? s.usage : result.usage ?? s.usage, summaries: s.summaries !== before?.summaries ? s.summaries : result.summaries ?? s.summaries, contextNotice: liveTurnChanged || s.contextNotice !== before?.contextNotice ? s.contextNotice : result.contextNotice, error: keepLiveError ? s.error : result.meta.lastOutcome === 'failed' ? result.meta.lastError ?? s.error : undefined, unread: this.current === id ? false : s.unread }
     })
   }
   select(id: string | null) { this.current = id }
@@ -216,23 +278,40 @@ export class DesktopStore {
     this.commit({ sessions: Object.fromEntries(Object.entries(this.state.sessions).map(([id, s]) => [id, { ...s, unread: false }])) })
   }
   busy(id: string) { const s = this.state.sessions[id]; return !!s && (!!s.sending || (!!s.status && s.status.lifecycle !== 'idle')) }
-  async send(id: string | null, text: string, cwd: string, model: string, permissionMode: string, projectId?: string, context?: { text: string; references: Array<{ path: string; label: string }>; images?: import('../../../../kernel/src/models/types').ImagePart[] }): Promise<string> {
+  async send(id: string | null, text: string, cwd: string, model: string, permissionMode: string, projectId?: string, context?: { text: string; references: Array<{ path: string; label: string }>; images?: import('../../../../kernel/src/models/types').ImagePart[]; fileScope?: string }): Promise<string> {
     if (!this.api || !this.state.connected) throw new Error('内核未连接')
     let threadId = id
     if (!threadId) {
-      if (!cwd) throw new Error('请先选择工作文件夹')
-      const result = await this.api.call<{ meta: ThreadMeta; threadId: string }>('thread/start', { cwd, model, permissionMode, projectId, title: text.slice(0, 60) })
+      const result = await this.api.call<{ meta: ThreadMeta; threadId: string }>('thread/start', { cwd, model, permissionMode, projectId, title: text.slice(0, 60), ...(context?.fileScope?{fileScope:context.fileScope}:{}) })
       this.upsert(result.meta); threadId = result.threadId
     }
     const input = text + (context?.text ?? ''), displayText = text, references = context?.references
     if (this.busy(threadId)) {
-      await this.api.call('turn/steer', { threadId, message: input, displayText, references, images: context?.images })
-      this.update(threadId, s => ({ ...s, status: s.status ? { ...s.status, queuedMessages: s.status.queuedMessages + 1 } : s.status }))
+      const result = await this.api.call<{ entry?: SteeringEntry }>('turn/steer', { threadId, message: input, displayText, references, images: context?.images })
+      if (result.entry) this.updateSteering(threadId, result.entry)
     } else {
       this.update(threadId, s => ({ ...s, sending: true, error: undefined }))
       void this.api.call('turn/start', { threadId, input, displayText, references, images: context?.images }).catch(err => this.update(threadId!, s => ({ ...s, sending: false, error: errorText(err) })))
     }
     return threadId
+  }
+  private mergeSteering(first: SteeringEntry[], second: SteeringEntry[]): SteeringEntry[] {
+    const entries = new Map(first.map(entry => [entry.id, entry]));
+    for (const entry of second) if ((entries.get(entry.id)?.revision ?? 0) <= entry.revision) entries.set(entry.id, entry);
+    return [...entries.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-100)
+  }
+  private updateSteering(id: string, entry: SteeringEntry) {
+    this.update(id, s => ({ ...s, steering: this.mergeSteering(s.steering ?? [], [entry]) }))
+  }
+  async changeSteering(id: string, entry: SteeringEntry, text?: string) {
+    try {
+      const result = await this.api!.call<{ entry: SteeringEntry }>(text === undefined ? 'turn/steer/cancel' : 'turn/steer/update', { threadId: id, id: entry.id, revision: entry.revision, text })
+      this.updateSteering(id, result.entry)
+    } catch (error) {
+      const result = await this.api!.call<{ steering?: SteeringEntry[] }>('thread/read', { threadId: id }).catch(() => undefined)
+      if (result?.steering) this.update(id, s => ({ ...s, steering: this.mergeSteering(result.steering!, s.steering ?? []) }))
+      throw error
+    }
   }
   async updateSettings(patch: Record<string, unknown>) {
     ++this.settingsEpoch

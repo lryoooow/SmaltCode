@@ -1,4 +1,6 @@
 const P: Record<string, string> = {
+  branch: 'M6 3v12a4 4 0 0 0 4 4h2M18 3v4a6 6 0 0 1-6 6H6M3 3h6M15 3h6M12 16l3 3-3 3',
+  expand: 'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5',
   plus: 'M12 5v14M5 12h14',
   search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-3.5-3.5',
   chat: 'M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4z',

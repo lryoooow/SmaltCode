@@ -16,6 +16,46 @@ function fixture() {
 }
 const item = { id: 'stream', kind: 'agentMessage', threadId: 'a', turnId: 'turn', createdAt: '', status: 'inProgress', text: '' };
 describe('renderer session store', () => {
+  it('keeps artifact invalidations across conversation switches and normalizes absolute Windows paths',async()=>{const{store,api,metas}=fixture();metas.forEach(m=>m.cwd='D:\\Project');let update!:(v:{threadId:string;path:string})=>void;api.onArtifactUpdated=fn=>{update=fn;return()=>{}};await store.initialize();await store.open('b');update({threadId:'a',path:'docs/notes.md'});expect(store.artifactRevision('D:\\Project','D:\\Project\\docs\\notes.md')).toBe(1);await store.open('a');expect(store.artifactRevision('d:/project','docs/notes.md')).toBe(1);expect(store.artifactRevision('d:/other','docs/notes.md')).toBe(0);store.dispose();});
+  it('orders process metadata and output monotonically across delayed reads without changing the viewed chat', async () => {
+    const {store,api}=fixture();let notify!: (event:any)=>void;
+    api.onProcess=callback=>{notify=callback;return ()=>{}};api.processes=async()=>({processes:[]}) as any;await store.initialize();await store.open('b');
+    const process={id:'p',revision:3,threadId:'a',workspace:'/workspace',cwd:'/workspace',title:'service',command:'node',kind:'background',source:'model',state:'exited',startedAt:'2026-10-22',endedAt:'2026-10-22',inputAllowed:false,columns:80,rows:24,truncated:false};
+    notify({process,output:{data:'new output',from:10,end:20}});notify({process:{...process,revision:1,state:'running'},output:{data:'old',from:0,end:3}});
+    expect(store.getSnapshot().processes.p.state).toBe('exited');expect(store.getSnapshot().processOutput.p.data).toBe('new output');
+    notify({process,output:{data:' tail',from:20,end:25}});expect(store.getSnapshot().processOutput.p.data).toBe('new output tail');
+    store.dispose();
+  });
+  it('bounds inactive process/output history while preserving live sessions', async () => {
+    const {store,api}=fixture();let notify!: (event:any)=>void;api.onProcess=callback=>{notify=callback;return ()=>{}};api.processes=async()=>({processes:[]}) as any;await store.initialize();
+    const base={revision:1,threadId:'a',workspace:'/workspace',cwd:'/workspace',title:'job',command:'node',kind:'background',source:'model',startedAt:'2026-10-22',inputAllowed:false,columns:80,rows:24,truncated:false};
+    notify({process:{...base,id:'live',state:'running'}});
+    for(let i=0;i<120;i++)notify({process:{...base,id:'done-'+i,state:'exited'},output:{data:'x',from:0,end:1}});
+    expect(Object.keys(store.getSnapshot().processes)).toHaveLength(80);expect(store.getSnapshot().processes.live.state).toBe('running');expect(Object.keys(store.getSnapshot().processOutput).length).toBeLessThanOrEqual(79);store.dispose();
+  });
+
+  it('never lets an old steering acknowledgement overwrite an already applied receipt', async () => {
+    const { store, api, emit } = fixture(); await store.initialize();
+    emit('thread/status/changed', { threadId: 'a', lifecycle: 'running', state: 'sampling', queuedMessages: 0 });
+    const original = api.call; let acknowledge!: (value: any) => void;
+    api.call = ((method: string, params: any) => method === 'turn/steer' ? new Promise(resolve => acknowledge = resolve) : original(method, params)) as any;
+    const pending = { id: 'q1', revision: 1, text: 'queued', state: 'pending', imageCount: 0, editable: true, createdAt: '2026-10-22', updatedAt: '2026-10-22' };
+    const send = store.send('a', 'queued', '/workspace', 'test', 'default');
+    emit('thread/steering/changed', { threadId: 'a', entry: { ...pending, state: 'applied', revision: 2 } });
+    emit('thread/status/changed', { threadId: 'a', lifecycle: 'running', state: 'sampling', queuedMessages: 0 });
+    acknowledge({ queued: true, entry: pending }); await send;
+    expect(store.getSnapshot().sessions.a.steering).toMatchObject([{ state: 'applied', revision: 2 }]);
+    expect(store.getSnapshot().sessions.a.status?.queuedMessages).toBe(0); store.dispose();
+  });
+  it('refreshes a failed queue mutation without taking selection away from another conversation', async () => {
+    const { store, api, emit } = fixture(); await store.initialize(); await store.open('b');
+    const original = api.call;
+    api.call = ((method: string, params: any) => method === 'turn/steer/cancel' ? Promise.reject(new Error('already used')) : original(method, params)) as any;
+    await expect(store.changeSteering('a', { id: 'q', revision: 1, text: 'q', state: 'pending', imageCount: 0, editable: true, createdAt: '', updatedAt: '' })).rejects.toThrow('already used');
+    emit('turn/completed', { threadId: 'a', turnId: 't' });
+    expect(store.getSnapshot().sessions.a.unread).toBe(true); expect(store.getSnapshot().sessions.b.unread).toBe(false); store.dispose();
+  });
+
   it('keeps the desktop connected when project storage reports recovery, and initializes thousands of metadata rows in one update', async () => {
     const { store, api, metas } = fixture();
     const original = api.call;

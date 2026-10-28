@@ -32,7 +32,7 @@ export class ThreadManager {
 
   constructor(private readonly deps: ThreadManagerDeps) {}
 
-  start(opts: { cwd: string; model?: string; title?: string; permissionMode?: ThreadMeta['permissionMode']; projectId?: string }): ThreadRuntime {
+  start(opts: { cwd: string; model?: string; title?: string; permissionMode?: ThreadMeta['permissionMode']; projectId?: string; collaboration?: ThreadMeta['collaboration']; remoteOrigin?: ThreadMeta['remoteOrigin'] }): ThreadRuntime {
     const settings = this.deps.settings();
     const modelRef = resolveModelRef(opts.model, settings);
     const meta: ThreadMeta = {
@@ -46,6 +46,8 @@ export class ThreadManager {
       turnCount: 0,
       permissionMode: opts.permissionMode,
       projectId: opts.projectId,
+      collaboration: opts.collaboration,
+      remoteOrigin: opts.remoteOrigin,
     };
     this.deps.store.append(meta.id, { t: 'meta', meta });
     const runtime = new ThreadRuntime(meta, modelRef, []);
@@ -82,6 +84,12 @@ export class ThreadManager {
     if (meta.lastOutcome === 'failed' && ended?.t === 'turn-ended') meta.lastError ??= ended.error;
     this.runtimes.set(threadId, runtime);
     this.watchStatus(runtime);
+    const applied = new Map<string, string>(); let turn = '';
+    for (const event of events) {
+      if (event.t === 'turn-started') turn = event.turnId;
+      if (event.t === 'user-msg' && event.steeringId) applied.set(event.steeringId, turn);
+    }
+    runtime.steering.restore(events.flatMap(event => event.t === 'steering' ? [event.entry] : []), applied);
     return runtime;
   }
 
@@ -118,9 +126,9 @@ export class ThreadManager {
     }
   }
 
-  read(threadId: string): { meta: ThreadMeta; items: Item[]; summaries: import('../protocol/types.js').TurnSummary[]; contextNotice?: import('../protocol/types.js').ContextNotice } {
+  read(threadId: string): { meta: ThreadMeta; items: Item[]; summaries: import('../protocol/types.js').TurnSummary[]; contextNotice?: import('../protocol/types.js').ContextNotice; steering: import('../protocol/types.js').SteeringEntry[] } {
     const rt = this.get(threadId) ?? this.resume(threadId);
-    return { meta: rt.meta, items: rt.items, summaries: rt.summaries, contextNotice: rt.contextNotice };
+    return { meta: rt.meta, items: rt.items, summaries: rt.summaries, contextNotice: rt.contextNotice, steering: rt.steering.snapshot() };
   }
 
   status(threadId: string): ThreadStatus {
@@ -185,6 +193,11 @@ export class ThreadManager {
   }
 
   private watchStatus(rt: ThreadRuntime): void {
+    rt.steering.onChange = entry => {
+      this.deps.store.append(rt.meta.id, { t: 'steering', entry });
+      this.deps.notify('thread/steering/changed', { threadId: rt.meta.id, entry });
+      this.deps.notify(Notifications.threadStatusChanged, this.status(rt.meta.id));
+    };
     rt.stateMachine.onChange = () => this.deps.notify(Notifications.threadStatusChanged, this.status(rt.meta.id));
   }
 
@@ -205,9 +218,18 @@ export class ThreadManager {
     return rt.meta;
   }
 
+  runManaged(threadId: string, input: import('../protocol/types.js').UserPrompt, policy: import('./run-policy.js').RunPolicy): Promise<import('./turn-runner.js').TurnOutcome> {
+    const rt = this.require(threadId);
+    if (rt.meta.archived || rt.executionPolicy || rt.stateMachine.isRunning() || this.chains.has(threadId)) throw new Error('对话已归档或仍有任务在运行');
+    for (const key of ['maxRequests', 'maxTokens', 'maxTools', 'deadlineAt'] as const) if (!Number.isSafeInteger(policy[key]) || policy[key] <= 0) throw new Error('无效的托管执行预算');
+    rt.executionPolicy = policy;
+    return this.enqueueTurn(rt, input).finally(() => { rt.executionPolicy = undefined; rt.runner = undefined; });
+  }
+
   /** Start a turn. If one is running, the input is queued and drained later. */
   runTurn(threadId: string, input: import('../protocol/types.js').UserPrompt): Promise<import('./turn-runner.js').TurnOutcome> {
     const rt = this.require(threadId);
+    if (rt.executionPolicy) throw new Error('此对话正在执行托管任务，请先在持续任务中暂停后再手动继续');
     if (rt.meta.archived) throw new Error('Restore the archived conversation before continuing it');
     if (rt.stateMachine.isRunning() || this.chains.has(threadId)) {
       rt.turnQueue.push(input);
@@ -225,15 +247,20 @@ export class ThreadManager {
   }
 
   /** Steer a running turn; when idle it behaves like starting a new turn. */
-  steer(threadId: string, message: import('../protocol/types.js').UserPrompt): { queued: boolean } {
+  steer(threadId: string, message: import('../protocol/types.js').UserPrompt): { queued: boolean; entry?: import('../protocol/types.js').SteeringEntry } {
     const rt = this.require(threadId);
+    if (rt.executionPolicy) throw new Error('此对话正在执行托管任务，请先在持续任务中暂停后再手动继续');
     if (rt.meta.archived) throw new Error('Restore the archived conversation before continuing it');
     if (rt.stateMachine.isRunning()) {
-      rt.steerQueue.push(message);
-      return { queued: true };
+      const entry = rt.steering.accept(message);
+      return { queued: true, entry };
     }
     void this.enqueueTurn(rt, message);
     return { queued: false };
+  }
+
+  changeSteering(threadId: string, id: string, revision: number, text?: string) {
+    return this.require(threadId).steering.change(id, revision, text);
   }
 
   interrupt(threadId: string): boolean {
@@ -242,7 +269,7 @@ export class ThreadManager {
     rt.stateMachine.transition('CANCEL_REQUESTED');
     rt.abort?.abort();
     rt.turnQueue.length = 0;
-    rt.steerQueue.length = 0;
+    rt.steering.finish();
     return true;
   }
 
@@ -250,11 +277,14 @@ export class ThreadManager {
     const run = () => {
       const controller = new AbortController();
       rt.abort = controller;
+      const policy = rt.executionPolicy, cancel = () => controller.abort();
+      policy?.signal.addEventListener('abort', cancel, { once: true }); if (policy?.signal.aborted) cancel();
+      const deadline = policy ? setTimeout(cancel, Math.max(0, Math.min(2147483647, policy.deadlineAt - Date.now()))) : undefined;
       rt.contextNotice = undefined;
       rt.stateMachine.transition('RUN_PREPARING');
       if (rt.meta.recovery) { delete rt.meta.recovery; this.deps.store.append(rt.meta.id, { t: 'meta', meta: { ...rt.meta } }); }
-      return (this.deps.runnerFor?.(rt) ?? this.deps.runner)
-        .runTurn(rt.stateMachine, this.runtimeAdapter(rt), input)
+      return Promise.resolve().then(() => (this.deps.runnerFor?.(rt) ?? this.deps.runner)
+        .runTurn(rt.stateMachine, this.runtimeAdapter(rt), input))
         .then((outcome) => {
           if (outcome.summary) rt.summaries.push({ ...outcome.summary, turnId: outcome.turnId });
           rt.meta.turnCount++;
@@ -269,6 +299,8 @@ export class ThreadManager {
           return outcome;
         })
         .finally(() => {
+          if (deadline) clearTimeout(deadline); policy?.signal.removeEventListener('abort', cancel);
+          rt.steering.finish();
           if (rt.abort === controller) rt.abort = null;
           if (this.chains.get(rt.meta.id) === next) this.chains.delete(rt.meta.id);
           this.drainIfIdle(rt);
@@ -279,6 +311,12 @@ export class ThreadManager {
     const next = prev.then(run, run);
     this.chains.set(rt.meta.id, next);
     return next;
+  }
+
+  async waitForIdle(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([Promise.allSettled([...this.chains.values()]), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('任务中止记录尚未保存，请稍后重试退出')), 6000); })]); }
+    finally { clearTimeout(timer); }
   }
 
   async compact(threadId: string): Promise<{ compacted: boolean; reason?: string }> {
@@ -302,12 +340,14 @@ export class ThreadManager {
 
   private runtimeAdapter(rt: ThreadRuntime) {
     return {
+      policy: rt.executionPolicy,
       threadId: rt.meta.id,
       cwd: rt.meta.cwd,
       modelRef: rt.modelRef,
       history: rt.history,
       items: rt.items,
       steerQueue: rt.steerQueue,
+      onSteeringApplied: (prompt: import('../protocol/types.js').UserPrompt, turnId: string) => rt.steering.applied(prompt, turnId),
       signal: rt.abort!.signal,
       onHistoryReplaced: (history: import('../models/types.js').ChatMessage[]) => {
         rt.history = history;

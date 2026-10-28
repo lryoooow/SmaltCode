@@ -1,0 +1,8 @@
+import type{ContainerContext,ContainerProfile}from'./containers.js';
+export type DevSource={workspace:string;sshProfileId?:string};
+export type DevHook={stage:string;commands:{name:string;argv?:string[];shell?:string}[];parallel:boolean;location:'host'|'container'};
+export type DevFeature={source:string;digest?:string;name?:string;status:'local'|'unresolved'|'resolved'|'blocked';notice?:string};
+export type DevPlan={id:string;source:DevSource;configPath:string;digest:string;name:string;kind:'image'|'dockerfile'|'compose';image?:string;dockerfile?:string;dockerfilePreview?:string;service?:string;root:string;mountTarget:string;user:string;environmentNames:string[];mounts:{source:string;target:string;readOnly:boolean}[];ports:number[];features:DevFeature[];hooks:DevHook[];files:{path:string;size:number;digest:string}[];warnings:string[];blocked:string[];supportedFields:string[];checkedAt:string;dirty?:{tracked:number;untracked:number;unknown?:boolean};context?:ContainerContext;baseImages?:{reference:string;id:string}[]};
+export type DevJob={id:string;requestId:string;requestDigest:string;source:DevSource;configPath:string;name:string;planId:string;digest:string;tag:string;context:ContainerContext;status:'claimed'|'building'|'built'|'creating'|'ready'|'failed'|'unknown'|'cancelled';profileId?:string;previousProfileId?:string;imageId?:string;log:string;reason?:string;createdAt:string;endedAt?:string;hooks?:{stage:string;threadId:string;runIds:string[];status:'running'|'complete'|'failed'|'unknown'}[]};
+export type DevState={plans:DevPlan[];jobs:DevJob[];notice?:string};
+export type DevDeployment={job:DevJob;profile?:ContainerProfile};

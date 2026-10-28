@@ -15,6 +15,17 @@ const cfg: ProviderConfig = { baseUrl: 'https://proxy.example/v1', wire: 'chat',
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 
 describe('endpoint-specific model discovery', () => {
+  it('uses the official DeepSeek 1017 serving version without rewriting existing compatibility IDs',async()=>{
+    const config:ProviderConfig={baseUrl:'https://api.deepseek.com/v1',wire:'chat',apiKey:'test-secret'};
+    const fallback=new ModelCatalog().snapshot(config).models,latest=fallback.find(m=>m.id==='deepseek-flash')!;
+    expect(latest).toMatchObject({resolvedVersion:'DeepSeek-V4.1-Flash-1017',contextWindow:1048576,maxOutputTokens:393216,vision:true});
+    expect(fallback.find(m=>m.id==='deepseek-v4-flash')).toMatchObject({id:'deepseek-v4-flash',canonicalId:'deepseek-flash',resolvedVersion:'DeepSeek-V4.1-Flash-1017'});
+    const catalog=new ModelCatalog({fetchImpl:(async()=>response({data:[{id:'deepseek-flash',name:'DeepSeek-V4.1-Flash',context_window:1048576,max_output_tokens:393216,input_modalities:['text','image'],effort:{supported_levels:['low','high','max'],default_level:'high'}}]}))as typeof fetch});
+    expect((await catalog.refresh(config)).models[0]).toMatchObject({name:'DeepSeek-V4.1-Flash',resolvedVersion:'DeepSeek-V4.1-Flash-1017',reasoningEfforts:['low','high','max'],defaultReasoningEffort:'high'});
+  });
+  it('discovers an unknown international or domestic model from its account API without a built-in name',async()=>{
+    for(const baseUrl of ['https://international.example/v1','https://domestic.example/v1']){const catalog=new ModelCatalog({fetchImpl:(async(_url,options)=>{expect(options?.body).toBeUndefined();return response({data:[{id:'new-family-2030-0101',display_name:'New official release',version:'2030-0101',context_window:524288,supports_tools:true,input_modalities:['text','image'],effort:{supported_levels:['low',{},'bad\nlevel','max'],default_level:'max'}}]});})as typeof fetch});expect((await catalog.refresh({baseUrl,wire:'chat',apiKey:'fixture'})).models[0]).toMatchObject({id:'new-family-2030-0101',name:'New official release',resolvedVersion:'2030-0101',contextWindow:524288,vision:true,reasoningEfforts:['low','max']});}
+  });
   it('syncs exact names from official catalogs when a vendor has no models endpoint, without forwarding credentials', async () => {
     const config: ProviderConfig = { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', wire: 'chat', apiKey: 'fixture-secret' };
     const calls: string[] = [];
@@ -52,6 +63,11 @@ describe('endpoint-specific model discovery', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect((await catalog.refresh(cfg)).error).not.toContain('test-secret');
     expect(fetchImpl).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ redirect: 'error' }));
+  });
+  it('sanitizes damaged optional metadata when loading a disk cache',async()=>{
+    const file=join(dir,'cache.json'),catalog=new ModelCatalog({file,fetchImpl:(async()=>response({data:[{id:'future-model',version:'1017',context_window:1048576}]}))as typeof fetch});
+    await catalog.refresh(cfg);const raw=JSON.parse(readFileSync(file,'utf8'));Object.assign(raw.entries[0][1].models[0],{resolvedVersion:{bad:true},canonicalId:42,reasoningEfforts:['high',{}],defaultReasoningEffort:'bad',maxOutputTokens:-1,reference:'javascript:alert(1)',surprise:{}});writeFileSync(file,JSON.stringify(raw));
+    const info=new ModelCatalog({file}).snapshot(cfg).models[0]!;expect(info.id).toBe('future-model');expect(info.contextWindow).toBe(1048576);expect(info.resolvedVersion).toBeUndefined();expect(info.canonicalId).toBeUndefined();expect(info.reference).toBeUndefined();expect(info.defaultReasoningEffort).toBeUndefined();expect(info.reasoningEfforts).toEqual(['high']);expect(info).not.toHaveProperty('surprise');
   });
   it('coalesces simultaneous refreshes and refreshes stale values while retaining cache on outage', async () => {
     let now = 0, offline = false;
@@ -105,7 +121,7 @@ describe('endpoint-specific model discovery', () => {
   });
   it('checks each official provider per model rather than applying a provider-wide constant', () => {
     const settings = loadSettings(dir);
-    for (const [provider, id, tokens] of [['openai', 'gpt-4.1', 1047576], ['openai', 'gpt-6.1-sol', 922000], ['anthropic', 'claude-sonnet-5-5', 1000000], ['deepseek', 'deepseek-v4-pro', 1000000], ['zhipu', 'glm-4.6', 200000], ['zhipu', 'glm-5.3', 1000000], ['moonshot', 'kimi-k3', 1000000], ['moonshot', 'kimi-k2.6', 256000], ['dashscope', 'qwen3-coder-plus', 1000000]] as const) expect(resolveContextWindow(settings.providers[provider]!, id).tokens).toBe(tokens);
+    for (const [provider, id, tokens] of [['openai', 'gpt-4.1', 1047576], ['openai', 'gpt-6.1-sol', 922000], ['anthropic', 'claude-sonnet-5-5', 1000000], ['deepseek', 'deepseek-v4-pro', 1048576], ['zhipu', 'glm-4.6', 200000], ['zhipu', 'glm-5.3', 1000000], ['moonshot', 'kimi-k3', 1000000], ['moonshot', 'kimi-k2.6', 256000], ['dashscope', 'qwen3-coder-plus', 1000000]] as const) expect(resolveContextWindow(settings.providers[provider]!, id).tokens).toBe(tokens);
     expect(officialModels(settings.providers.moonshot!).find(m => m.id === 'kimi-k2-0905-preview')?.lifecycle).toBe('retired');
     expect(officialModels({ ...settings.providers.zhipu!, baseUrl: 'https://proxy.example/v1' })).toEqual([]);
   });
