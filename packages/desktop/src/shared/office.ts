@@ -1,4 +1,5 @@
 export type OfficeFormat='docx'|'xlsx'|'pptx';
+export type MacOfficeDiagnostic = { application: string; ready: false; checks: Array<{ id: string; label: string; passed: boolean; detail: string }> };
 export type OfficeEngine={id:'word'|'excel'|'powerpoint'|'libreoffice';name:string;format:OfficeFormat|'all';available:boolean;version?:string;reason?:string};
 export type OfficeSession={id:string;documentId:string;lease:string;engine:'word'|'excel'|'powerpoint'|'libreoffice';format:OfficeFormat;mode?:'native'|'workbench';status:'opening'|'editing'|'checkpoint'|'recoverable'|'closed';baseDigest:string;candidateDigest?:string;sequence:number;updatedAt:string;lastCheckpoint?:string;reason?:string;dirty?:boolean;closing?:boolean;cleanupProtected?:boolean};
 export type EditingSession={id:string;engine:'builtin'|'word'|'excel'|'powerpoint'|'libreoffice';status:'ready'|'editing'|'recoverable'|'conflict'|'saved';leaseExpiresAt:string;sourceDigest:string;receipt?:{id:string;digest:string;at:string};office?:OfficeSession};

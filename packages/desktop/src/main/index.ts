@@ -10,6 +10,8 @@ import { DesktopTray } from './tray.js';
 import { desktopAppId, desktopTestSwitches, desktopWindowDetails } from './identity.js';
 import { ensurePreviewShortcut } from './preview-shortcut.js';
 import { configureDesktopStorage } from './desktop-storage.js';
+import { windowChrome } from '../shared/platform.js';
+import { installDockActivation, installPlatformMenu } from './platform-menu.js';
 
 app.setName('SmaltCode');
 protocol.registerSchemesAsPrivileged([{ scheme: 'smalt-preview', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
@@ -70,7 +72,7 @@ if (previewHomeError) {
       minWidth: 940,
       minHeight: 600,
       backgroundColor: '#131313',
-      frame: false,
+      ...windowChrome(process.platform),
       opacity: app.commandLine.hasSwitch('tray-smoke-test') ? 0 : 1,
       focusable: !app.commandLine.hasSwitch('tray-smoke-test'),
       show: false,
@@ -92,7 +94,7 @@ if (previewHomeError) {
     }
 
     // Windows: soft Mica backdrop when supported (best-effort)
-    try {
+    if (process.platform === 'win32') try {
       win.setBackgroundMaterial?.('mica');
     } catch {
       /* older Windows / Electron */
@@ -118,7 +120,14 @@ if (previewHomeError) {
     win.loadFile(rendererPath);
 
     bridge = new DesktopBridge(win.webContents, rendererURL);
-    if (!app.commandLine.hasSwitch('smoke-test')) tray = new DesktopTray(win, join(__dirname, 'smalt.png'));
+    if (!app.commandLine.hasSwitch('smoke-test')) tray = new DesktopTray(win, join(__dirname, process.platform === 'darwin' ? 'smalt-trayTemplate.png' : 'smalt.png'));
+    const showMainWindow = () => {
+      if (win.isDestroyed()) return;
+      if (win.isMinimized()) win.restore();
+      win.show(); win.focus();
+    };
+    installPlatformMenu(win, showMainWindow);
+    installDockActivation(showMainWindow);
     if (app.commandLine.hasSwitch('tray-smoke-test')) {
       win.webContents.once('did-finish-load', () => setTimeout(() => {
         win.close();

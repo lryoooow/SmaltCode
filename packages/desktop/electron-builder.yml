@@ -18,6 +18,7 @@ asarUnpack:
   - dist/main/native/**/*
   - dist/main/document-worker.cjs
   - dist/main/ssh-key-worker.cjs
+  - dist/main/remote-certificate-worker.cjs
   - dist/main/*.py
   - dist/main/*.ps1
   - dist/main/pdf-assets/**/*

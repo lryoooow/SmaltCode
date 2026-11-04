@@ -5,7 +5,7 @@
  *   src/renderer/src/main.tsx → dist/renderer/app.js + app.css
  */
 import { build } from 'esbuild';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, renameSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { compile } from '@tailwindcss/node';
 import { Scanner } from '@tailwindcss/oxide';
@@ -61,9 +61,12 @@ function publishNative(from, to) {
     const source = join(from, entry.name), target = join(to, entry.name);
     if (entry.isDirectory()) { publishNative(source, target); continue; }
     const bytes = readFileSync(source);
-    if (existsSync(target) && readFileSync(target).equals(bytes)) continue;
+    if (existsSync(target) && readFileSync(target).equals(bytes)) {
+      if (process.platform !== 'win32' && (statSync(target).mode & 0o777) !== (statSync(source).mode & 0o777)) chmodSync(target, statSync(source).mode & 0o777);
+      continue;
+    }
     const temporary = target + '.' + randomUUID() + '.tmp';
-    try { writeFileSync(temporary, bytes); renameSync(temporary, target); }
+    try { writeFileSync(temporary, bytes); if (process.platform !== 'win32') chmodSync(temporary, statSync(source).mode & 0o777); renameSync(temporary, target); }
     catch (error) { throw new Error('原生资源更新失败；请退出使用旧资源的开发预览后重试。' + String(error)); }
     finally { if (existsSync(temporary)) rmSync(temporary); }
   }
@@ -106,10 +109,11 @@ await build({
   banner: { js: "const __smaltImportMetaUrl = require('node:url').pathToFileURL(__filename).href;" },
 });
 await build({...shared,entryPoints:[join(here,'src/main/ssh-key-worker.ts')],outfile:join(here,'dist/main/ssh-key-worker.cjs'),platform:'node',format:'cjs',target:'node24'});
+await build({...shared,entryPoints:[join(here,'src/main/remote-certificate-worker.ts')],outfile:join(here,'dist/main/remote-certificate-worker.cjs'),platform:'node',format:'cjs',target:'node24'});
 for(const file of ['ssh-supervisor.py','container-helper.py','container-forward.py','office-worker.ps1','libreoffice-worker.py','word_editor.py','calc_editor.py','impress_editor.py','office_notes.py','office_job.py'])cpSync(join(here,'src/main',file),join(here,'dist/main',file));
 for (const folder of ['cmaps', 'standard_fonts']) cpSync(join(pdfAssets, folder), join(here, 'dist/main/pdf-assets', folder), { recursive: true });
 mkdirSync(join(here, 'dist/licenses'), { recursive: true });
-for (const name of ['js-yaml','argparse','minimatch','brace-expansion','balanced-match','tar-stream','bl','readable-stream','inherits','end-of-stream','once','wrappy','fs-constants','buffer','base64-js','ieee754','string_decoder','util-deprecate','ssh2','asn1','safer-buffer','bcrypt-pbkdf','tweetnacl','pdfjs-dist', 'fflate', 'fast-xml-parser', '@thednp/dommatrix', 'node-pty', '@xterm/xterm', '@xterm/addon-fit', '@modelcontextprotocol/client', '@modelcontextprotocol/core', 'ajv', 'fast-uri', 'fast-deep-equal', 'require-from-string', 'json-schema-traverse', 'cross-spawn', 'eventsource', 'eventsource-parser', 'jose', 'pkce-challenge', 'zod', 'which', 'path-key', 'shebang-command', 'shebang-regex', 'isexe']) {
+for (const name of ['node-forge', 'js-yaml','argparse','minimatch','brace-expansion','balanced-match','tar-stream','bl','readable-stream','inherits','end-of-stream','once','wrappy','fs-constants','buffer','base64-js','ieee754','string_decoder','util-deprecate','ssh2','asn1','safer-buffer','bcrypt-pbkdf','tweetnacl','pdfjs-dist', 'fflate', 'fast-xml-parser', '@thednp/dommatrix', 'node-pty', '@xterm/xterm', '@xterm/addon-fit', '@modelcontextprotocol/client', '@modelcontextprotocol/core', 'ajv', 'fast-uri', 'fast-deep-equal', 'require-from-string', 'json-schema-traverse', 'cross-spawn', 'eventsource', 'eventsource-parser', 'jose', 'pkce-challenge', 'zod', 'which', 'path-key', 'shebang-command', 'shebang-regex', 'isexe']) {
   let packageDir = dirname(require.resolve(['buffer','string_decoder'].includes(name)?name+'/':name));
   while (!existsSync(join(packageDir, 'package.json')) || JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')).name !== name) {
     const parent = dirname(packageDir);
@@ -181,3 +185,4 @@ cpSync(join(here, 'assets/smalt.svg'), join(here, 'dist/renderer/smalt.svg'));
 console.log('desktop bundle complete');
 cpSync(join(here, 'assets/smalt.png'), join(here, 'dist/main/smalt.png'));
 cpSync(join(here, 'assets/smalt.ico'), join(here, 'dist/main/smalt.ico'));
+for (const file of ['smalt-trayTemplate.png', 'smalt-trayTemplate@2x.png']) cpSync(join(here, 'assets', file), join(here, 'dist/main', file));

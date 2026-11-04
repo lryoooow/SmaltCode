@@ -343,27 +343,38 @@ export class Kernel {
       }
 
       case 'checkpoint/list': {
-        const { meta } = this.threads.read(String(p.threadId));
+        const { meta, items } = this.threads.read(String(p.threadId));
+        if (p.preview === true) return this.checkpoints.preview(meta.id, String(p.checkpointId), meta.cwd, items, p.paths as string[] | undefined, typeof p.diffPath === 'string' ? p.diffPath : undefined);
+        if (p.receipt === true && !p.checkpointId) {
+          const [checkpoints, latestRestore] = await Promise.all([this.checkpoints.list(meta.id, meta.cwd), this.checkpoints.latestRestore(meta.id, meta.cwd)]);
+          return { checkpoints, latestRestore };
+        }
         return { checkpoints: await this.checkpoints.list(meta.id, meta.cwd, p.checkpointId ? String(p.checkpointId) : undefined) };
       }
       case 'checkpoint/restore': {
-        const { meta } = this.threads.read(String(p.threadId));
+        const { meta, items } = this.threads.read(String(p.threadId));
         const assertIdle = () => {
           for (const other of this.threads.listMetas(true)) {
             if ((isInsideWorkspace(meta.cwd, other.cwd) || isInsideWorkspace(other.cwd, meta.cwd)) && this.threads.get(other.id)?.stateMachine.isRunning()) throw new Error('请先停止此工作区中的运行任务，再恢复检查点');
           }
         };
         assertIdle();
-        const result = await this.checkpoints.restore(meta.id, String(p.checkpointId), meta.cwd, p.paths as string[] | undefined, assertIdle);
-        const note = '用户已从检查点恢复文件：' + result.restored.join('、') + '。文件系统已改变，后续编辑前必须重新读取文件。';
-        const rt = this.threads.require(meta.id);
-        const restoredAt = new Date().toISOString();
-        rt.meta.restoredFiles = { ...rt.meta.restoredFiles, ...Object.fromEntries(result.restored.map(path => [path, restoredAt])) };
-        if (result.operationId) rt.meta.restoredChanges = { ...rt.meta.restoredChanges, [result.operationId]: [...new Set([...(rt.meta.restoredChanges?.[result.operationId] ?? []), ...result.restored])] };
-        this.store.append(meta.id, { t: 'meta', meta: { ...rt.meta } });
-        this.client.notify('thread/updated', { threadId: meta.id, meta: { ...rt.meta } });
-        rt.history.push({ role: 'user', content: note });
-        this.store.append(meta.id, { t: 'user-msg', id: 'restore_' + Date.now(), text: note, at: new Date().toISOString() });
+        if (p.versions !== undefined && (!p.versions || typeof p.versions !== 'object' || Array.isArray(p.versions) || !Array.isArray(p.paths))) throw new Error('无效的恢复确认版本');
+        if (p.previewPaths !== undefined && (!p.versions || p.previewPaths !== null && !Array.isArray(p.previewPaths))) throw new Error('无效的恢复预览范围');
+        const confirmation = p.previewPaths === undefined ? undefined : { previewPaths: p.previewPaths as string[] | null, items };
+        const result = await this.checkpoints.restore(meta.id, String(p.checkpointId), meta.cwd, p.paths as string[] | undefined, assertIdle, p.versions as Record<string, string> | undefined, confirmation);
+        if (!result.restored.length) return result;
+        try {
+          const note = '用户已从检查点恢复文件：' + result.restored.join('、') + '。文件系统已改变，后续编辑前必须重新读取文件。';
+          const rt = this.threads.require(meta.id);
+          const restoredAt = new Date().toISOString();
+          rt.meta.restoredFiles = { ...rt.meta.restoredFiles, ...Object.fromEntries(result.restored.map(path => [path, restoredAt])) };
+          if (result.operationId) rt.meta.restoredChanges = { ...rt.meta.restoredChanges, [result.operationId]: [...new Set([...(rt.meta.restoredChanges?.[result.operationId] ?? []), ...result.restored])] };
+          this.store.append(meta.id, { t: 'meta', meta: { ...rt.meta } });
+          this.client.notify('thread/updated', { threadId: meta.id, meta: { ...rt.meta } });
+          rt.history.push({ role: 'user', content: note });
+          this.store.append(meta.id, { t: 'user-msg', id: 'restore_' + Date.now(), text: note, at: new Date().toISOString() });
+        } catch { result.notice = [result.notice, '文件操作结果已确认，但对话记录写入失败，请重新打开工作区核对。'].filter(Boolean).join(' '); }
         this.client.notify('checkpoint/restored', { threadId: meta.id, paths: result.restored });
         return result;
       }

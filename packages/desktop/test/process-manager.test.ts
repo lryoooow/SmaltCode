@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IPty } from 'node-pty';
-import { ProcessManager, prepareLaunch, processEnvironment } from '../src/main/process-manager';
+import { ProcessManager, prepareLaunch, processEnvironment, interactiveShell, interactiveShellSubject } from '../src/main/process-manager';
 import { ProjectOperations } from '../src/main/project-operations';
 import { backgroundShell, processTools } from '../src/main/process-tools';
 import { shellTool } from '../../kernel/src/tools/defs/shell';
@@ -22,6 +22,19 @@ beforeEach(() => {
 afterEach(async () => { await manager.shutdown(); rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
 describe('owned background processes and terminal capabilities', () => {
+  it('checks the actual Mac terminal executable against deny rules instead of a Windows shell name', () => {
+    const permission = new PermissionService([parseRule('shell:/bin/zsh', 'user')], [], []);
+    expect(interactiveShellSubject('darwin')).toBe(interactiveShell('darwin').file);
+    expect(permission.check({ tool: 'shell', input: {}, subject: interactiveShellSubject('darwin'), cwd }).action).toBe('deny');
+    expect(interactiveShellSubject('win32')).toBe('powershell.exe');
+    expect(interactiveShellSubject('linux')).toBe('/bin/bash');
+  });
+  it('uses profile-free native interactive shells on each platform', () => {
+    expect(interactiveShell('darwin')).toEqual({ file: '/bin/zsh', args: ['-f'], command: 'zsh · 交互式终端' });
+    expect(interactiveShell('linux').args).toEqual(['--noprofile', '--norc']);
+    expect(interactiveShell('win32').args).toEqual(['-NoLogo', '-NoProfile']);
+    expect(interactiveShell('win32').command).toContain('PowerShell');
+  });
   it('requires stopping before conversation deletion and durably removes only that conversation history', async () => {
     const first=await manager.start('a',{program:process.execPath},'user');
     expect(()=>manager.forgetThread('a')).toThrow('停止');

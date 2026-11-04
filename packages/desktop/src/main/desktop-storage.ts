@@ -38,6 +38,11 @@ export function copyLocalData(source: string, destination: string): void {
 
 export function configureDesktopStorage(options: { appData: string; userHome: string; explicitHome?: string; platform?: NodeJS.Platform; systemDrive?: string; drives?: () => string[]; directory?: (drive: string) => string }): string {
   if (options.explicitHome) return resolve(options.explicitHome);
+  if ((options.platform ?? process.platform) === 'darwin') {
+    // Retain an existing CLI/desktop profile; a new Mac follows Application Support.
+    const legacy = join(options.userHome, '.smalt');
+    return existsSync(legacy) ? legacy : join(options.appData, 'SmaltCode');
+  }
   if ((options.platform ?? process.platform) !== 'win32') return join(options.userHome, '.smalt');
   const system = options.systemDrive ?? process.env.SystemDrive ?? 'C:', pointer = join(options.appData, 'SmaltCode', 'storage-location.json');
   const valid = (path: string) => /^[A-Z]:\\/i.test(path) && win32.parse(path).root.slice(0, 2).toUpperCase() !== system.slice(0, 2).toUpperCase();

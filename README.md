@@ -8,14 +8,14 @@
   <p><strong>从一句需求，到看得见、可核对的工作成果。</strong></p>
   <p>多模型 AI 编程与办公桌面助手 · 中文界面 · 本地保存 · 可控执行</p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.6%20preview-2F4FD0" alt="0.0.6 公开测试版" />
+    <img src="https://img.shields.io/badge/version-0.0.7%20preview-2F4FD0" alt="0.0.7 公开测试版" />
     <img src="https://img.shields.io/badge/platform-Windows%20x64-5B6475" alt="Windows x64" />
     <img src="https://img.shields.io/badge/license-Apache--2.0-23A075" alt="Apache-2.0" />
   </p>
-  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.6">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/releases/v0.0.6.md">本次更新</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a></p>
+  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.7">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/releases/v0.0.7.md">本次更新</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a></p>
 </div>
 
-> **0.0.6 是公开测试版本。** 本次加入 Tavily / DeepSeek 联网搜索，并修复 Windows 任务栏图标与开发预览身份。欢迎体验、报告 Bug、提出交互与功能建议，也欢迎参与代码和文档改进。Office、远程主机及第三方模型的兼容性仍需更多真实场景验证。
+> **0.0.7 是公开测试版本。** 本次新增验收卡、网页多点批注，以及支持逐文件核对和回查的恢复流程。欢迎体验、报告 Bug、提出交互与功能建议，也欢迎参与代码和文档改进。Office、远程主机及第三方模型的兼容性仍需更多真实场景验证。
 
 ![SmaltCode 0.0.5 首页](docs/images/v0.0.5/home.png)
 
@@ -68,19 +68,21 @@ SmaltCode 将对话、代码执行、文档编辑、终端和任务管理放在�
 
 ## 下载与安装
 
-**Windows x64 · v0.0.6 公开测试版 · 联网搜索与图标修复**
+**Windows x64 · v0.0.7 公开测试版 · 验收卡、网页批注与安全恢复**
 
-1. 下载 [SmaltCode-Setup-0.0.6-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.6/SmaltCode-Setup-0.0.6-SFox.exe)。
+1. 下载 [SmaltCode-Setup-0.0.7-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.7/SmaltCode-Setup-0.0.7-SFox.exe)。
 2. 升级前从系统托盘退出旧版，并备份已有工作资料；按向导选择安装目录。
 3. 从桌面或开始菜单打开 **SmaltCode**，配置模型即可开始对话。
 
-[Release 与更新说明](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.6) 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.6/SHA256SUMS.txt)。在 PowerShell 中核对：
+[Release 与更新说明](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.7) 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.7/SHA256SUMS.txt)。在 PowerShell 中核对：
 
 ```powershell
-Get-FileHash .\SmaltCode-Setup-0.0.6-SFox.exe -Algorithm SHA256
+Get-FileHash .\SmaltCode-Setup-0.0.7-SFox.exe -Algorithm SHA256
 ```
 
 当前安装包未做代码签名，Windows 可能显示未验证发布者。macOS、Linux 暂未提供经过桌面验收的安装包。
+
+macOS 适配正在开发：计划提供 **macOS 13+、Apple Silicon / Intel 分架构 DMG 和 ZIP**，使用原生窗口按钮、菜单与 ⌘ 快捷键。公开分发前须完成 Developer ID 签名、Apple 公证及真实 Mac 验收；当前发布的 v0.0.7 仍只有 Windows 包。详见 [macOS 构建与验收](docs/macos.md)。
 
 ## 快速开始
 
@@ -125,16 +127,13 @@ DeepSeek Search / Fetch 使用 DeepSeek 开放平台 API Key，可自行填写�
 
 ## 本次更新
 
-**0.0.6 加入双服务联网搜索，并修复 Windows 任务栏仍显示 Electron 或空白图标的问题**，重点包括：
+- **可追溯的验收卡**。在执行结果中按需查看失败和跳过原因、退出码、原始命令输出及后续复查。
+- **网页多点批注**。连续点选网页元素，逐条说明，发送前核对截图和来源。支持键盘切换父子元素。
+- **恢复前预览**。逐文件核对恢复范围、冲突和差异。确认后再次校验内容，保留后续修改。最近一次恢复的逐项结果可以在原对话回查。
 
-- 新增独立联网搜索设置，支持 Tavily / DeepSeek 搜索与网页读取、分别管理密钥、公开查询测试与取消；认证、余额或限流失败直接提示。
-- 开发预览使用独立的 `SmaltCode Preview.exe`，嵌入 S Fox 图标、产品名称和当前版本，不修改共享 Electron 运行时。
-- 安装版与品牌预览向 Windows Shell 提供真实 EXE 图标路径；主窗口和文档审阅窗统一应用身份与重启入口。
-- 创建专用“SmaltCode 开发预览”快捷方式；仅迁移严格匹配本仓库与预览身份的旧 `Electron.lnk`，先备份再处理。
-- GUI 回归使用独立测试身份，避免测试重新生成普通预览的旧 Electron 快捷方式；增加启动脚本契约检查。
-- 在真实桌面核对窗口、EXE 与快捷方式图标，维护者已确认当前任务栏显示正确。
+![恢复前逐文件检查与差异](docs/images/v0.0.7/restore-preview.png)
 
-详见 [0.0.6 Release 说明](docs/releases/v0.0.6.md)。工作区、SSH、Office 等既有能力见 [0.0.5](docs/releases/v0.0.5.md)；更早版本：[0.0.4](docs/releases/v0.0.4.md) · [0.0.3](docs/releases/v0.0.3.md) · [0.0.2](docs/releases/v0.0.2.md) · [0.0.1](docs/releases/v0.0.1.md)。
+详见 [0.0.7 Release 说明](docs/releases/v0.0.7.md)。此前的联网搜索和图标修复见 [0.0.6](docs/releases/v0.0.6.md)，工作区、SSH 和 Office 见 [0.0.5](docs/releases/v0.0.5.md)。更早版本见 [GitHub Releases](https://github.com/lryoooow/SmaltCode/releases)。
 
 ## 权限与数据
 
@@ -175,7 +174,7 @@ npm run package:desktop
 
 打包流水线验证版本与全部图标、ASAR 文件一致性、文档解析、原生 PTY/SSH 工作线程、启动和托盘退出。设置 `SMALT_TEST_OFFICE_LIBRE` 与 `SMALT_TEST_OFFICE_PYTHON` 后，还会验证打包目录下真实 Office 保存链；组件需自行准备。
 
-**本仓库保持 GitHub Actions 关闭**，验证在本地完成。测试范围和实际结果见 [本次发布说明](docs/releases/v0.0.6.md) 及各版本 Release。
+**本仓库保持 GitHub Actions 关闭**，验证在本地完成。测试范围和实际结果见 [本次发布说明](docs/releases/v0.0.7.md) 及各版本 Release。
 
 ```text
 packages/kernel/   智能体、模型、工具、权限和任务存储

@@ -10,7 +10,7 @@ import {ContainerExecution}from'./container-execution.js';
 import {containerTools}from'./container-tools.js';
 import { ArtifactManager } from './artifact-manager.js';
 import { ArtifactWindows } from './artifact-windows.js';
-import { ProcessManager, prepareLaunch } from './process-manager.js';
+import { ProcessManager, prepareLaunch, interactiveShellSubject } from './process-manager.js';
 import { BrowserManager } from './browser-manager.js';
 import { Autonomy } from './autonomy.js';
 import { Collaborations } from './collaborations.js';
@@ -197,7 +197,7 @@ export class DesktopBridge {
     for (const tool of this.webSearch.tools()) this.kernel.tools.register(tool);
     this.processes = new ProcessManager({ directory: smaltHome(), runtime: __dirname, thread: id => this.kernel.threads.read(id).meta, canInput: id => {
       const permission = this.kernel.permissionsForThread(id);
-      return !['plan', 'dontAsk'].includes(permission.mode) && permission.check({ tool: 'shell', input: {}, subject: 'powershell.exe', cwd: this.kernel.threads.require(id).meta.cwd }).action !== 'deny';
+      return !['plan', 'dontAsk'].includes(permission.mode) && permission.check({ tool: 'shell', input: {}, subject: interactiveShellSubject(), cwd: this.kernel.threads.require(id).meta.cwd }).action !== 'deny';
     }, notify: event => this.send('smalt:process', event) });
     this.operations = new ProjectOperations(smaltHome());
     this.kernel.tools.register(backgroundShell(this.kernel.tools.get('shell')!, this.processes));
@@ -606,6 +606,7 @@ export class DesktopBridge {
         const check = isValidWorkspace(meta.cwd);
         if (!check.ok && !historicalChild) throw new Error(check.reason);
         if (check.ok) await this.requireWorkspace(meta.cwd);
+        if (method === 'checkpoint/restore' && this.processes.active().some(process => isInsideWorkspace(meta.cwd, process.cwd) || isInsideWorkspace(process.cwd, meta.cwd))) throw new Error('请先停止此工作区的后台进程，再恢复检查点');
       }
       if (method === 'thread/start' || method === 'thread/settings/update') {
         const p = params as { threadId?: string; permissionMode?: string };
@@ -673,11 +674,12 @@ export class DesktopBridge {
       if (action === 'open-folder') { const error = await shell.openPath(meta.cwd); if (error) throw new Error(error); return { ok: true }; }
       if (action === 'terminal' || action === 'authorize-input') {
         const permission = this.kernel.permissionsForThread(threadId);
-        if (['plan', 'dontAsk'].includes(permission.mode) || permission.check({ tool: 'shell', input: {}, subject: 'powershell.exe', cwd: meta.cwd }).action === 'deny') throw new Error('当前权限禁止交互终端，请先调整任务权限');
+        if (['plan', 'dontAsk'].includes(permission.mode) || permission.check({ tool: 'shell', input: {}, subject: interactiveShellSubject(), cwd: meta.cwd }).action === 'deny') throw new Error('当前权限禁止交互终端，请先调整任务权限');
         if (meta.archived) throw new Error('请先恢复归档对话');
         const response = await dialog.showMessageBox({ type: 'warning', title: '授权手动终端', message: '允许在此对话中使用交互式终端？', detail: meta.cwd + '\n\n终端以当前系统用户运行，手动输入不会逐条审批，也不是操作系统沙箱；可以访问当前用户可访问的位置。此授权仅用于这个终端，模型不能向终端输入。退出应用会清理进程树，关闭视图不会停止。', buttons: ['授权此终端', '取消'], defaultId: 1, cancelId: 1 });
         if (response.response !== 0) throw new Error('已取消终端授权');
         if (action === 'authorize-input') { this.processes.authorizeInput(threadId, id); return { ok: true }; }
+        this.kernel.checkpoints.assertAvailable(meta.cwd);
         return this.processes.start(threadId, {}, 'user', true);
       }
       if (action === 'start' || action === 'run-operation') {
@@ -694,6 +696,7 @@ export class DesktopBridge {
         if (operation) this.operations.resolve(meta.cwd, operation.id, operation.digest);
         const current = this.kernel.permissionsForThread(threadId).check({ tool: 'shell', input: launch, subject: prepared.command, cwd: meta.cwd });
         if (current.action === 'deny') throw new Error('权限已变化，未启动后台命令');
+        this.kernel.checkpoints.assertAvailable(prepared.cwd);
         return this.processes.start(threadId, { ...launch, title: operation?.title ?? launch.title }, operation ? 'project' : 'user', false, operation?.id);
       }
       throw new Error('无效的进程操作');
@@ -745,7 +748,7 @@ export class DesktopBridge {
       const cwd = value.cwd; await this.requireWorkspace(cwd);
       const key=typeof value.threadId==='string'?value.threadId:undefined;if(key){const view=await this.filesContext.scope(key);if(resolve(view.cwd)!==resolve(cwd))throw Error('反馈环境与所属对话不一致')}
       const read = (path: string) => path.startsWith('attachment:') ? this.attachments.preview(path.slice(11)) : key ? path.startsWith('source:')?this.filesContext.contexts.preview(key,path,(name,bytes)=>this.documents.read(name,bytes)):this.filesContext.contexts.read(key,path,(name,bytes)=>this.documents.read(name,bytes)) : readContextFile(cwd, path, (name, bytes) => this.documents.read(name, bytes));
-      if (action === 'read' && typeof value.path === 'string') return this.feedback.read(cwd, { path: value.path }, async path => (await read(path)).digest);
+      if (action === 'read' && typeof value.path === 'string') return this.feedback.read(cwd, { path: value.path }, async path => (await read(path)).digest, key);
       if (action !== 'capture') throw new Error('无效的局部反馈操作');
       return captureObject(this.feedback, cwd, value, read);
     });
@@ -765,7 +768,7 @@ export class DesktopBridge {
           if(ref.path.startsWith('ssh-ref:')){const r=this.ssh.referenceValue(ref.path,cwd,undefined,true);return{text:r.file.text,digest:r.file.digest,format:'text',source:`SSH · ${r.file.target.root}/${r.file.path} · ${r.fingerprint}`,label:r.label,warnings:['只读远程资料快照；仅所属对话可发送。断开、撤销或重启后请重新选择。']};}
           if (ref.path.startsWith('memory:')) { const memory = this.autonomy.readMemory(ref.path, cwd); return { text: memory.body, digest: memory.digest, format: 'text', source: memory.source.note, label: memory.title }; }
           if (ref.path.startsWith('feedback:')) {
-            const capture = await this.feedback.read(cwd, ref, async path => (path.startsWith('attachment:') ? await this.attachments.preview(path.slice(11)) : await readContextFile(cwd, path, (name, bytes) => this.documents.read(name, bytes))).digest);
+            const capture = await this.feedback.read(cwd, ref, async path => (path.startsWith('attachment:') ? await this.attachments.preview(path.slice(11)) : await readContextFile(cwd, path, (name, bytes) => this.documents.read(name, bytes))).digest, threadId ?? fileScope);
             return { ...capture, format: 'snapshot', warnings: ['捕获时刻的只读快照；关闭页面后仍可发送，重启应用或缓存淘汰后需重新选择。'] };
           }
           if (ref.path.startsWith('skill:')) {
@@ -939,12 +942,15 @@ export class DesktopBridge {
           resolveContext(cwd, refs.filter(ref => !ref.path.startsWith('skill:') && !ref.path.startsWith('attachment:') && !ref.path.startsWith('feedback:') && !ref.path.startsWith('memory:')), (name, bytes) => this.documents.read(name, bytes)),
           (async () => { for (const ref of refs.filter(ref => ref.path.startsWith('skill:'))) this.integrations.assertSkill(ref.path.slice(6), false, (await this.skills.read(ref.path.slice(6))).origin); return this.skills.resolve(refs.filter(ref => ref.path.startsWith('skill:'))); })(),
           this.attachments.resolve(refs.filter(ref => ref.path.startsWith('attachment:'))),
-          this.feedback.resolve(cwd, refs.filter(ref => ref.path.startsWith('feedback:')), async path => {const key=fileScope??threadId;if(key)await this.filesContext.scope(key);return(path.startsWith('attachment:') ? await this.attachments.preview(path.slice(11)) : key ? path.startsWith('source:')?await this.filesContext.contexts.preview(key,path,(name,bytes)=>this.documents.read(name,bytes)):await this.filesContext.contexts.read(key,path,(name,bytes)=>this.documents.read(name,bytes)) : await readContextFile(cwd, path, (name, bytes) => this.documents.read(name, bytes))).digest}),
+          this.feedback.resolve(cwd, refs.filter(ref => ref.path.startsWith('feedback:')), async path => {const key=fileScope??threadId;if(key)await this.filesContext.scope(key);return(path.startsWith('attachment:') ? await this.attachments.preview(path.slice(11)) : key ? path.startsWith('source:')?await this.filesContext.contexts.preview(key,path,(name,bytes)=>this.documents.read(name,bytes)):await this.filesContext.contexts.read(key,path,(name,bytes)=>this.documents.read(name,bytes)) : await readContextFile(cwd, path, (name, bytes) => this.documents.read(name, bytes))).digest}, threadId ?? fileScope),
           (async () => { const selected = refs.filter(ref => ref.path.startsWith('memory:')); if (selected.length > 4) throw new Error('最多选择 4 项记忆'); return selected.map(ref => { const memory = this.autonomy.readMemory(ref.path, cwd); return { path: this.autonomy.memoryPath(memory), label: '记忆 · ' + memory.title }; }); })(),
         ]);
         const images = [...files.images, ...attachments.images, ...feedback.images,...sources.images];
         if (images.length > 4 || images.reduce((sum, image) => sum + image.dataBase64.length, 0) > 28 * 1024 * 1024) throw new Error('每条消息最多 4 张图片，合计不超过 20 MB');
-        const text = files.text + attachments.text + skills.text + feedback.text+ssh.text+sources.text;
+        const feedbackImageOrder = feedback.images.length && refs.some(ref => ref.annotation !== undefined)
+          ? `\n\n本组反馈图片从消息中的第 ${files.images.length + attachments.images.length + 1} 张图片开始。`
+          : '';
+        const text = files.text + attachments.text + skills.text + feedback.text + feedbackImageOrder + ssh.text + sources.text;
         if (text.length > 100_000) throw new Error('引用资料合计过长，请减少文件、选区或技能');
         return { text, images, references: [...files.references, ...attachments.references, ...skills.references, ...feedback.references, ...memories,...ssh.references,...sources.references] };
   }

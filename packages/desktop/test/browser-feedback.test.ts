@@ -13,6 +13,21 @@ let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'smalt-browser-')); });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 describe('browser and explicit feedback boundaries', () => {
+  it('scopes numbered browser notes to their conversation and preserves screenshot correspondence', async () => {
+    const store = new FeedbackStore()
+    const cwd = process.cwd(), thread = 'thread-a'
+    const first = store.add({ cwd, threadId: thread, label: '网页元素', source: 'https://example.test/a', text: JSON.stringify({ selector: '#parent' }) })
+    const second = store.add({ cwd, threadId: thread, label: '网页元素', source: 'https://example.test/b', text: JSON.stringify({ selector: '#title' }), image: { type: 'image', mimeType: 'image/png', dataBase64: 'c2NyZWVu' } })
+    const refs = [{ ...first, annotation: '调整卡片' }, { ...second, annotation: '修改标题' }]
+    await expect(store.resolve(cwd, refs, async () => '', 'thread-b')).rejects.toThrow('所属对话')
+    await expect(store.resolve(cwd, [{ ...first, annotation: 'x'.repeat(1001) }], async () => '', thread)).rejects.toThrow('1000')
+    const result = await store.resolve(cwd, refs, async () => '', thread)
+    expect(result.text).toContain('[{"number":1,"note":"调整卡片"},{"number":2,"note":"修改标题"}]')
+    expect(result.text).toContain('"annotationNumber":1,"feedbackImageIndex":null')
+    expect(result.text).toContain('"annotationNumber":2,"feedbackImageIndex":1')
+    expect(result.images).toHaveLength(1)
+    expect((await store.read(cwd, first, undefined, thread)).text).toBe('{"selector":"#parent"}')
+  })
   it('builds page policy from validated exact origins while keeping frames, workers and forms denied', () => {
     const csp = browserCSP(['https://cdn.example.com/assets', 'http://127.0.0.1:8080']);
     expect(csp).toContain('https://cdn.example.com'); expect(csp).not.toContain('/assets'); expect(csp).toContain("frame-src 'none'"); expect(csp).toContain("form-action 'none'");

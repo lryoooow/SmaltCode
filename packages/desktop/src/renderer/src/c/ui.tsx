@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Icon from './icons'
 import Popover from './Popover'
+import { shortcutText } from '../../../shared/platform'
+
+const platformShortcut = (text: string) => shortcutText(text, typeof window === 'undefined' ? '' : window.smalt?.platform ?? window.smaltArtifact?.platform ?? '')
 
 export type Status = 'running' | 'approval' | 'question' | 'unread' | 'failed' | 'stopped' | 'done' | 'findings' | 'unverified' | 'attention'
 export type Task = { id: string; title: string; ws: string; status: Status; time: string; group: string; pinned?: boolean; projectId?: string }
@@ -23,6 +26,7 @@ export function Btn({ children, v = 'ghost', className = '', ...p }: { v?: 'prim
 }
 
 export function IconBtn({ n, label, onClick, active, disabled, className = '' }: { n: string; label: string; onClick?: () => void; active?: boolean; disabled?: boolean; className?: string }) {
+  label = platformShortcut(label)
   return (
     <button type="button" disabled={disabled} aria-label={label} title={label} onClick={onClick} className={cx('group relative grid place-items-center size-8 rounded-md text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition disabled:opacity-35 disabled:pointer-events-none', active && 'text-[var(--text)] bg-[var(--hover)]', className)}>
       <Icon n={n} s={16} />
@@ -31,7 +35,7 @@ export function IconBtn({ n, label, onClick, active, disabled, className = '' }:
 }
 
 export function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="px-1.5 h-5 inline-grid place-items-center rounded border border-[var(--line)] bg-[var(--sunken)] text-[11px] font-mono text-[var(--muted)]">{children}</kbd>
+  return <kbd className="px-1.5 h-5 inline-grid place-items-center rounded border border-[var(--line)] bg-[var(--sunken)] text-[11px] font-mono text-[var(--muted)]">{typeof children === 'string' ? platformShortcut(children) : children}</kbd>
 }
 
 export function StatusDot({ s }: { s: Status }) {

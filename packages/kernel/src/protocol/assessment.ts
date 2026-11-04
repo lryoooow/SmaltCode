@@ -51,7 +51,7 @@ export function executionAssessment(command: string, output: string, exitCode: n
   if (exitCode !== 0 && /not recognized as an internal|command not found|:\s*[\w.-]+:\s*not found|spawn .+ ENOENT|无法将.+识别/i.test(text)) return { ...base, kind: 'error', code: 'commandUnavailable', summary: '当前环境没有该命令，请使用可用程序或独立文件搜索工具' };
   if (/\[spawn error\]/.test(text)) return { ...base, kind: 'error', code: 'spawnError', summary: '程序未能启动' };
   if (exitCode !== 0 && /unknown (?:option|argument)|unrecognized arguments?|invalid (?:option|argument)|UsageError:|failed to parse|unexpected argument/i.test(text)) return { ...base, kind: 'error', code: 'invalidInvocation', summary: '检查未能按预期启动，请核对参数与工具版本' };
-  const skipped = Math.max(0, ...[...text.matchAll(/\b(\d+) skipped\b/gi)].map(m => Number(m[1])));
+  const skipped = Math.max(0, ...Array.from(text.matchAll(/\b(\d+) skipped\b|^#\s+skipped\s+(\d+)\s*$/gim), m => Number(m[1] ?? m[2])));
   const testFailed = /\b[1-9]\d* failed\b|^\s*FAIL(?:ED)?\s|ELIFECYCLE.*failed/im.test(text);
   const finding = check === 'format' && /Would reformat|files? would be reformatted|Code style issues found/i.test(text)
     || check === 'test' && testFailed
@@ -61,7 +61,7 @@ export function executionAssessment(command: string, output: string, exitCode: n
   if (check && exitCode === 0 && finding) return { ...base, kind: 'unverified', code: 'exitCodeConflict', summary: '输出报告检查失败，但外层命令返回 0；请单独执行检查，核实真实结果', skipped };
   if (source === 'shell' && check && hasStatusMask(command)) return { ...base, kind: 'unverified', code: 'shellStatusMasked', summary: '复合命令可能覆盖检查退出码，请单独运行检查', skipped };
   if ((exitCode === 1 || exitCode === 2 && (check === 'typecheck' || check === 'build')) && finding) return { ...base, kind: 'finding', summary: check === 'format' ? '格式检查已完成，发现待格式化文件' : '检查已执行，发现项目问题', skipped };
-  if (exitCode !== 0) return { ...base, kind: 'error', summary: '操作执行失败，请核对原始输出' };
+  if (exitCode !== 0) return { ...base, kind: 'error', summary: '操作执行失败，请核对原始输出', ...(check && skipped ? { skipped } : {}) };
   if (check && skipped > 0) return { ...base, kind: 'unverified', summary: `检查结束，${skipped} 项跳过，覆盖尚不完整`, skipped };
   return { ...base, kind: 'success', summary: check ? '检查通过' : '操作完成' };
 }

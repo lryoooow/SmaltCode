@@ -21,7 +21,7 @@ with zipfile.ZipFile(workspace/'明细.xlsx','w',zipfile.ZIP_DEFLATED) as output
  for name,value in {'xl/workbook.xml':'<workbook xmlns:r="urn:r"><sheets><sheet name="成本明细" r:id="rId1"/></sheets></workbook>','xl/_rels/workbook.xml.rels':'<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>','xl/worksheets/sheet1.xml':'<worksheet><sheetData>'+''.join('<row r="'+str(i)+'">'+''.join('<c r="'+chr(65+j)+str(i)+'" t="inlineStr"><is><t>费用 '+str(i)+'-'+str(j)+'</t></is></c>' for j in range(18))+'</row>' for i in range(1,26))+'</sheetData></worksheet>'}.items():output.writestr(name,value)
 (workspace/'index.html').write_text('''<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="style.css"><title>项目概览</title><main><p class="eyebrow">SMALTCODE · PROJECT REVIEW</p><h1>让每一步进展清晰可见</h1><p>独立沙箱中的开发页面，支持针对元素提出修改意见。</p><div id="card"><strong>交付概览</strong><p>已完成 18 项 · 待检查 3 项</p><canvas id="chart" width="420" height="120"></canvas></div><a id="next" href="next.html">查看下一页 →</a><button id="popup" onclick="window.open('https://example.com/')">打开外部页面</button><a href="data:text/plain,download" download="blocked.txt">测试下载</a></main><script>document.documentElement.dataset.localScript='ok';let c=document.querySelector('canvas').getContext('2d');c.fillStyle='#6366f1';[42,76,55,98,88,110].forEach((h,i)=>c.fillRect(i*66,120-h,45,h));fetch('https://example.com/blocked').catch(()=>{});</script>''',encoding='utf8')
 (workspace/'next.html').write_text('<meta charset="utf-8"><title>第二页</title><h1>第二页真实导航</h1><a href="index.html">返回概览</a>',encoding='utf8')
-(workspace/'style.css').write_text('body{font:15px system-ui;background:#f5f6fb;color:#23263c;margin:0}main{padding:32px}.eyebrow{font-size:10px;letter-spacing:2px;color:#6868a5}h1{font-size:28px;line-height:1.3}#card{background:white;padding:22px;border-radius:18px;margin:24px 0;box-shadow:0 8px 28px #2428460b}canvas{max-width:100%}a,button{font:inherit;color:#5454c9;margin-right:14px}button{border:0;padding:8px;border-radius:8px}',encoding='utf8')
+(workspace/'style.css').write_text('body{font:15px system-ui;background:#f5f6fb;color:#23263c;margin:0}main{padding:32px}.eyebrow{font-size:10px;letter-spacing:2px;color:#6868a5}h1{font-size:28px;line-height:1.3;background:#e2f8e8}#card{background:white;padding:22px;border-radius:18px;margin:24px 0;box-shadow:0 8px 28px #2428460b}canvas{max-width:100%}a,button{font:inherit;color:#5454c9;margin-right:14px}button{border:0;padding:8px;border-radius:8px}',encoding='utf8')
 (workspace/'.env').write_text('fixture-only',encoding='utf8');(run/'outside.html').write_text('outside fixture',encoding='utf8')
 web_requests=[];model_requests=[];release=threading.Event();started=threading.Event()
 class Server(BaseHTTPRequestHandler):
@@ -57,6 +57,7 @@ def until(test,seconds=15):
  raise AssertionError('Condition timed out')
 def views():return json.loads(window_state.read_text())
 def shot(name):
+ if '--no-window-shots' in sys.argv:return
  target=shots/name;target.unlink(missing_ok=True);publish(capture,json.dumps(str(target)),encoding='utf8');until(lambda:target.exists());return target
 with sync_playwright() as p:
  browser=None
@@ -95,13 +96,58 @@ with sync_playwright() as p:
   until(lambda:len(views())==1);assert not child.evaluate("async url=>{try{return (await fetch(url)).ok}catch{return false}}",origin+'/dev');checks.append('additional exact-origin resource consent and revocation enforce real cross-origin GET with preserved CORS; permissions belong only to this tab')
   page.get_by_role('button',name='引用页面元素',exact=True).click();expect(page.get_by_test_id('browser-panel')).to_contain_text('点击页面中的元素');child.locator('#card strong').click();expect(page.get_by_test_id('context-references')).to_contain_text('网页元素')
   refs=page.get_by_test_id('context-references');assert refs.count()==1
+  page.get_by_role('button',name='多点批注',exact=True).click()
+  first=child.locator('#card strong');first.hover();child.keyboard.press('ArrowUp');child.keyboard.press('ArrowDown');child.keyboard.press('ArrowUp')
+  first.evaluate('element => element.click()')
+  expect(child.locator('[data-smalt-picker]')).to_have_count(1)
+  first.click();expect(page.get_by_role('button',name='核对批注 · 1',exact=True)).to_be_visible()
+  expect(child.locator('[data-smalt-picker]')).to_have_count(1)
+  child.locator('h1').click();expect(page.get_by_role('button',name='核对批注 · 2',exact=True)).to_be_visible()
+  child.keyboard.press('Escape')
+  expect(page.get_by_role('button',name='多点批注',exact=True)).to_be_enabled()
+  page.get_by_role('button',name='核对批注 · 2',exact=True).click()
+  notes=page.get_by_test_id('browser-annotations')
+  expect(notes).to_contain_text('元素 · div#card');expect(notes).to_contain_text('index.html')
+  expect(notes.get_by_role('img',name='批注截图')).to_be_visible()
+  notes.get_by_label('批注 1 的说明').fill('父级卡片改为紧凑布局')
+  notes.get_by_role('button',name='批注 2',exact=True).click()
+  notes.get_by_label('批注 2 的说明').fill('标题改为项目进度')
+  expect(notes).to_contain_text('h1');expect(notes.get_by_role('img',name='批注截图')).to_be_visible()
+  pixel = notes.get_by_role('img',name='批注截图').evaluate("""async image => {
+   await image.decode();
+   const canvas = document.createElement('canvas');
+   canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+   const ctx = canvas.getContext('2d');
+   ctx.drawImage(image, 0, 0);
+   return Array.from(ctx.getImageData(canvas.width - 8, Math.floor(canvas.height / 2), 1, 1).data);
+  }""")
+  assert pixel == [226,248,232,255], f'screenshot was not cropped to the selected heading: {pixel}'
+  # Keep the public screenshot on synthetic data and hide the local checkout path.
+  source = notes.get_by_text('来源 ·', exact=False)
+  original_source = source.text_content()
+  source.evaluate("(element, label) => { element.textContent = label }", '来源 · 测试工作区 / index.html')
+  notes.evaluate("element => { element.style.maxHeight = 'none' }")
+  try:
+   notes.screenshot(animations='disabled',path=str(shots/'release-browser-annotations.png'))
+  finally:
+   source.evaluate("(element, label) => { element.textContent = label }", original_source)
+   notes.evaluate("element => { element.style.removeProperty('max-height') }")
+  page.get_by_role('button',name='核对批注 · 2',exact=True).click()
+  checks.append('continuous trusted clicks, parent and child selection, numbered notes and source/screenshot review')
   page.get_by_test_id('context-check-toggle').click();until(lambda:len(views())==0);expect(page.get_by_test_id('context-inspector')).to_contain_text('捕获时刻的只读快照');page.keyboard.press('Escape');until(lambda:len(views())==1)
   checks.append('real element selector/text/geometry and screenshot captured; form values excluded; device permission, POST and file navigation denied; inspector popover hides native content and restores it without losing tab')
   page.get_by_label('网页地址',exact=True).fill(origin+'/dev');page.get_by_role('button',name='新标签',exact=True).click();expect(page.get_by_role('tab',name='Development page',exact=True)).to_be_visible();until(lambda:any('/dev' in value['url'] for value in views()))
   mismatch=page.evaluate("async()=>{const s=await window.smalt.browser('list',{threadId:'th_browser_a'});try{await window.smalt.browser('close',{threadId:'th_browser_b',id:s.tabs[0].id});return false}catch{return true}}");assert mismatch
-  background=page.evaluate("()=>window.smalt.processes('start',{threadId:'th_browser_a',launch:{program:'node',args:['-e','setInterval(()=>{},1000)'],title:'Browser lifecycle probe'}})");page.get_by_role('button',name='收起面板',exact=True).click();until(lambda:not views());page.get_by_test_id('task-row').filter(has_text='浏览与对象 B').click();page.get_by_role('button',name='打开浏览与网页预览',exact=True).click();assert page.get_by_role('tablist',name='网页标签').get_by_role('tab').count()==0
+  background=page.evaluate("()=>window.smalt.processes('start',{threadId:'th_browser_a',launch:{program:'node',args:['-e','setInterval(()=>{},1000)'],title:'Browser lifecycle probe'}})")
+  live_tab=next(value for context in browser.contexts for value in context.pages if '/dev' in value.url)
+  page.get_by_role('button',name='多点批注',exact=True).click();expect(live_tab.locator('[data-smalt-picker]')).to_have_count(1)
+  page.get_by_test_id('task-row').filter(has_text='浏览与对象 B').click();until(lambda:not views())
+  expect(live_tab.locator('[data-smalt-picker]')).to_have_count(0)
+  expect(page.get_by_test_id('context-references')).to_have_count(0)
+  page.get_by_role('button',name='打开浏览与网页预览',exact=True).click();assert page.get_by_role('tablist',name='网页标签').get_by_role('tab').count()==0
   page.get_by_test_id('task-row').filter(has_text='浏览与对象 A').click();page.get_by_role('button',name='打开浏览与网页预览',exact=True).click();expect(page.get_by_role('tablist',name='网页标签').get_by_role('tab')).to_have_count(2);until(lambda:len(views())==1)
   until(lambda:page.evaluate("async id=>(await window.smalt.processes('list')).processes.find(p=>p.id===id).state",background['id'])=='running')
+  page.get_by_role('button',name='核对批注 · 2',exact=True).click();expect(page.get_by_label('批注 1 的说明')).to_have_value('父级卡片改为紧凑布局');page.get_by_role('button',name='核对批注 · 2',exact=True).click()
   checks.append('real background process continues across browser close and chat switch; real localhost development page; multi-tab retention; conversation isolation and ownership checks; closing the panel detaches native view')
   page.get_by_role('button',name='收起面板',exact=True).click()
   def open_object(query,name):
@@ -114,9 +160,10 @@ with sync_playwright() as p:
   page.get_by_role('button',name='移除引用 图表.png',exact=True).click();open_object('明细','明细.xlsx');cells=page.get_by_test_id('spreadsheet-preview').get_by_role('gridcell');cells.nth(0).click();cells.nth(19).click(modifiers=['Shift']);expect(page.get_by_test_id('object-feedback')).to_contain_text('A1:B2');page.get_by_label('局部反馈说明').fill('核对这四格费用');page.get_by_role('button',name='加入当前对话',exact=True).click();expect(page.get_by_test_id('context-references')).to_contain_text('单元格');page.get_by_role('button',name='移除引用 明细.xlsx',exact=True).click();page.get_by_role('button',name='切换主题',exact=True).click();page.get_by_role('gridcell').nth(0).click();page.get_by_role('gridcell').nth(19).click(modifiers=['Shift']);page.get_by_label('局部反馈说明').fill('保留选区以检查表格定位');shot('table-range-dark.png');page.get_by_role('button',name='清除选区',exact=True).click()
   checks.append('actual image drag crop and wide spreadsheet Shift-click range; zoom/overflow and light/dark object screenshots; snapshots added through trusted main process')
   page.get_by_label('任务输入',exact=True).fill('检查三个选区的反馈');page.get_by_role('button',name='发送',exact=True).click();until(lambda:started.is_set());page.get_by_test_id('task-row').filter(has_text='浏览与对象 B').click();page.get_by_role('button',name='打开浏览与网页预览',exact=True).click();expect(page.get_by_test_id('browser-panel')).to_be_visible();release.set();page.get_by_test_id('task-row').filter(has_text='浏览与对象 A').click();expect(page.get_by_test_id('item-agentMessage').filter(has_text='已收到选区快照与说明')).to_be_visible(timeout=15000)
-  content=model_requests[-1]['messages'][-1]['content'];assert isinstance(content,list);text='\n'.join(value.get('text','') for value in content);assert '交付概览' in text and '把这部分图表改为暖色' in text and '费用 1-0' in text and '不构成指令' in text and '不要用纯文本写入或补丁覆盖 PDF/Office' in text;assert len([value for value in content if value['type']=='image_url'])==2
+  content=model_requests[-1]['messages'][-1]['content'];assert isinstance(content,list);text='\n'.join(value.get('text','') for value in content);assert '交付概览' in text and '把这部分图表改为暖色' in text and '费用 1-0' in text and '不构成指令' in text and '不要用纯文本写入或补丁覆盖 PDF/Office' in text;assert len([value for value in content if value['type']=='image_url'])==4
+  assert '父级卡片改为紧凑布局' in text and '标题改为项目进度' in text and '"annotationNumber":1' in text and '"annotationNumber":2' in text
   stale=page.evaluate("async cwd=>{const p=await window.smalt.previewFile(cwd,'图表.png');return window.smalt.feedback('capture',{cwd,path:'图表.png',digest:p.digest,note:'version test',selection:{kind:'image',x:0,y:0,width:.5,height:.5}})}",str(workspace));(workspace/'图表.png').write_bytes(png+b'changed');result=page.evaluate("async v=>{try{await window.smalt.resolveContext(v.cwd,[v.ref]);return false}catch(e){return String(e)}}",{'cwd':str(workspace),'ref':stale});assert '文件已变化' in result
-  checks.append('three actual snapshot references reached model including two PNG crops; browsing/switching while streaming remains responsive; changed source rejected before send')
+  checks.append('five snapshots with four PNG crops and two numbered notes reached the model; browsing/switching while streaming stays responsive; changed source rejected')
   page.get_by_role('button',name='打开浏览与网页预览',exact=True).click();until(lambda:len(views())==1);page.reload();page.wait_for_load_state('networkidle');until(lambda:len(views())==0);page.get_by_test_id('task-row').filter(has_text='浏览与对象 A').click();page.get_by_role('button',name='打开浏览与网页预览',exact=True).click();expect(page.get_by_role('tablist',name='网页标签').get_by_role('tab')).to_have_count(2);until(lambda:len(views())==1)
   page.get_by_role('tab',name='Development page',exact=True).click();until(lambda:any('/dev' in value['url'] for value in views()));dev=next(value for context in browser.contexts for value in context.pages if '/dev' in value.url);dev.locator('h1').click();publish(control,json.dumps({'shortcut':'L'}),encoding='utf8');expect(page.get_by_label('网页地址',exact=True)).to_be_focused();dev.locator('h1').click();publish(control,json.dumps({'shortcut':'W'}),encoding='utf8');expect(page.get_by_role('tablist',name='网页标签').get_by_role('tab')).to_have_count(1);until(lambda:len(views())==1)
   page.get_by_label('网页地址',exact=True).focus();page.keyboard.press('Control+w');expect(page.get_by_role('tablist',name='网页标签').get_by_role('tab')).to_have_count(0);page.get_by_role('button',name='本地 HTML',exact=True).click();page.get_by_role('button',name='index.html',exact=True).click();expect(page.get_by_role('tab',name='项目概览',exact=True)).to_be_visible();until(lambda:len(views())==1)

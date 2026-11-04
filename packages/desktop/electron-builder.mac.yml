@@ -1,0 +1,30 @@
+# Direct distribution. The Mac App Store needs a separate sandboxed product.
+extends: ./electron-builder.yml
+afterPack: after-pack-mac.cjs
+forceCodeSigning: true
+directories:
+  output: release-mac
+  buildResources: build
+mac:
+  icon: assets/smalt.icns
+  category: public.app-category.developer-tools
+  minimumSystemVersion: '13.0'
+  darkModeSupport: true
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true
+  target:
+    - dmg
+    - zip
+  artifactName: SmaltCode-${version}-macOS-${arch}.${ext}
+dmg:
+  sign: true
+  contents:
+    - x: 140
+      y: 160
+      type: file
+    - x: 420
+      y: 160
+      type: link
+      path: /Applications

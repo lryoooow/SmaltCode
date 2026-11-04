@@ -34,6 +34,11 @@ font notices are retained alongside dist/main/pdf-assets.
 
 The desktop stages node-pty 1.1.0 (MIT) with a Windows natural-exit cleanup fix for its input socket and output worker. Original copyright and license accompany the staged copy.
 
+Portable HTTPS certificate generation uses node-forge 1.4.2 under its BSD
+license option. The upstream license text (including the available license
+options) is retained in dist/licenses/node-forge-LICENSE. Certificate trust
+and TLS peer verification continue to use Node.js/OpenSSL and explicit pins.
+
 The desktop MCP client uses @modelcontextprotocol/client and core 2.3.1
 (Apache-2.0), AJV 8.20.0 and the SDK authentication/transport dependencies.
 Original license texts are retained in dist/licenses, including MIT and

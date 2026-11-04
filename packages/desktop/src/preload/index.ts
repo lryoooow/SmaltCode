@@ -15,6 +15,13 @@ contextBridge.exposeInMainWorld('smalt', {
   onArtifactUpdated:(cb:(value:{threadId:string;path:string})=>void)=>{const handler=(_e:unknown,value:{threadId:string;path:string})=>cb(value);ipcRenderer.on('smalt:artifact-updated',handler);return()=>ipcRenderer.removeListener('smalt:artifact-updated',handler);},
   version: versionArg ? versionArg.split('=')[1]! : '0.0.0',
   platform: process.platform,
+  onAppCommand: (cb: (value: 'new-task' | 'settings') => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: unknown) => {
+      if (value === 'new-task' || value === 'settings') cb(value);
+    };
+    ipcRenderer.on('smalt:app-command', listener);
+    return () => ipcRenderer.removeListener('smalt:app-command', listener);
+  },
   developmentPreview: process.argv.includes('--smalt-development-preview'),
 
   /** invoke a kernel JSON-RPC method */

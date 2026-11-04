@@ -23,6 +23,7 @@ dist-bundle/
 
 # Build outputs are distributed through GitHub Releases.
 packages/desktop/release/
+packages/desktop/release-mac/
 packages/desktop/.build-stage/
 
 # Local QA fixtures and reports; selected public images live in docs/images/.

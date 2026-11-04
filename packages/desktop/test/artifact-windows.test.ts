@@ -10,6 +10,13 @@ let windows:ArtifactWindows,manager:any,preview:ReturnType<typeof vi.fn>;
 beforeEach(()=>{mocks.handlers.clear();mocks.windows=[];mocks.fail=false;mocks.loadErrors=[];mocks.loads=[];manager={withLease:async(_id:string,fn:()=>Promise<any>)=>fn(),open:vi.fn(async(threadId:string,path:string)=>({id:'artifact-'+path,threadId,path,name:path})),view:vi.fn(async()=>({})),draft:vi.fn(async()=>({})),release:vi.fn(),save:vi.fn(),comment:vi.fn(),reload:vi.fn(),restore:vi.fn(),export:vi.fn()};preview=vi.fn(async()=>({}));windows=new ArtifactWindows(manager,preview as any);});
 afterEach(()=>windows.dispose());
 const invoke=(e:any,action:string,value:any={})=>mocks.handlers.get('smalt:artifact-window')(e,action,{_documentId:'artifact-'+(e.sender?.id===2?'b.md':'a.md'),...value});
+it('cancels a read-only engine diagnostic before switching documents without blocking the next tab',async()=>{
+ await windows.open('a','a.md',false);await windows.open('a','b.md',false);
+ const entry=(windows as any).entries.get(mocks.windows[0].webContents.id),controller=new AbortController();
+ entry.diagnostic=controller;entry.diagnosticTask=new Promise(resolve=>controller.signal.addEventListener('abort',()=>resolve(undefined),{once:true}));
+ await invoke(event(),'activate-document',{_documentId:'artifact-b.md',id:'artifact-a.md'});
+ expect(controller.signal.aborted).toBe(true);expect(entry.id).toBe('artifact-a.md');expect(entry.switching).toBe(false);
+});
 function event(index=0){const sender=mocks.windows[index].webContents;return{sender,senderFrame:sender.mainFrame};}
 it('rejects foreign frames, other local pages and unregistered senders before touching data',async()=>{await windows.open('chat-a','a.md',false);const good=event();for(const e of [{...good,senderFrame:{url:good.sender.getURL()}},{...good,sender:{id:999}},{...good,senderFrame:{url:'https://outside.invalid'}}])await expect(invoke(e,'view')).rejects.toThrow('untrusted');good.sender.url='file:///different.html';await expect(invoke(good,'view')).rejects.toThrow('untrusted');expect(manager.view).not.toHaveBeenCalled();});
 it('binds every allowed operation to the registered artifact and never exposes kernel operations',async()=>{await windows.open('chat-a','a.md',false);await windows.open('chat-b','b.md',true);await invoke(event(),'draft',{id:'artifact-b.md',threadId:'chat-b',path:'../private',revision:3,changes:{text:'own'}});expect(manager.draft).toHaveBeenCalledWith('artifact-a.md',3,{text:'own'});await invoke(event(),'preview',{path:'../private'});expect(preview).toHaveBeenCalledWith('chat-a','a.md');await expect(invoke(event(),'turn/start',{input:'bad'})).rejects.toThrow('不能执行');});

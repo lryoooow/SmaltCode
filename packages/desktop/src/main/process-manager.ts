@@ -10,6 +10,14 @@ import type { ManagedProcess, ProcessEvent, ProcessLaunch, ProcessOutput } from 
 const ACTIVE = new Set(['starting', 'running', 'stopping']);
 const TAIL = 64 * 1024;
 const READY = '\x1b]777;smalt-ready\x07';
+export function interactiveShell(platform = process.platform) {
+  if (platform === 'win32') return { file: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'), args: ['-NoLogo', '-NoProfile'], command: 'PowerShell · 交互式终端' };
+  if (platform === 'darwin') return { file: '/bin/zsh', args: ['-f'], command: 'zsh · 交互式终端' };
+  return { file: '/bin/bash', args: ['--noprofile', '--norc'], command: 'bash · 交互式终端' };
+}
+export function interactiveShellSubject(platform = process.platform): string {
+  return platform === 'win32' ? 'powershell.exe' : interactiveShell(platform).file;
+}
 type Entry = { meta: ManagedProcess; output: string; end: number; sent: number; pty?: IPty; settled: Promise<void>; settle: () => void; stop?: Promise<void> };
 type Options = {
   directory: string; runtime: string; thread: (id: string) => { cwd: string; archived?: boolean };
@@ -121,7 +129,7 @@ export class ProcessManager {
     if (terminal && !this.options.canInput(threadId)) throw new Error('当前权限不允许交互终端');
     if (this.active(threadId).length >= 8 || this.active().length >= 24) throw new Error('后台进程达到上限：每对话 8 个，应用共 24 个');
     if (actionId) { const existing = this.active(threadId).find(meta => meta.actionId === actionId); if (existing) return existing; }
-    const launch = terminal ? { file: process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe') : '/bin/bash', args: process.platform === 'win32' ? ['-NoLogo', '-NoProfile'] : ['--noprofile', '--norc'], cwd: thread.cwd, command: process.platform === 'win32' ? 'PowerShell · 交互式终端' : 'bash · 交互式终端' } : prepareLaunch(thread.cwd, input);
+    const launch = terminal ? { ...interactiveShell(), cwd: thread.cwd } : prepareLaunch(thread.cwd, input);
     const meta: ManagedProcess = { id: 'proc_' + randomUUID(), revision: 1, threadId, workspace: thread.cwd, cwd: launch.cwd, title: (input.title?.trim() || (terminal ? '交互终端' : basename(launch.file))).slice(0, 100), command: launch.command, kind: terminal ? 'terminal' : 'background', source, state: 'starting', startedAt: new Date().toISOString(), inputAllowed: terminal, columns: 100, rows: 28, truncated: false, actionId };
     let settle!: () => void; const entry: Entry = { meta, output: '', end: 0, sent: 0, settled: new Promise(resolve => settle = resolve), settle: () => settle() };
     while (this.entries.size >= 80) { const oldest = [...this.entries.values()].find(value => !ACTIVE.has(value.meta.state)); if (!oldest) throw new Error('进程历史已满'); this.entries.delete(oldest.meta.id); }
@@ -133,7 +141,7 @@ export class ProcessManager {
       const config = { file: launch.file, args: launch.args, parentPid: process.pid, parentStartedAt: Date.now() - process.uptime() * 1000 };
       const args = process.platform === 'win32' && !this.options.spawn ? [Buffer.from(JSON.stringify(config)).toString('base64')] : launch.args;
       const file = process.platform === 'win32' && !this.options.spawn ? supervisor : launch.file;
-      const ptyOptions: IWindowsPtyForkOptions = { cwd: launch.cwd, env: processEnvironment(), name: 'xterm-256color', cols: meta.columns, rows: meta.rows, useConpty: true, useConptyDll: true };
+      const ptyOptions: IWindowsPtyForkOptions = { cwd: launch.cwd, env: processEnvironment(), name: 'xterm-256color', cols: meta.columns, rows: meta.rows, ...(process.platform === 'win32' ? { useConpty: true, useConptyDll: true } : {}) };
       entry.pty = driver(file, args, ptyOptions);
       meta.pid = entry.pty.pid;
       let startup = '', ready = !!this.options.spawn || process.platform !== 'win32';

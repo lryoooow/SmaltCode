@@ -26,11 +26,15 @@ export type Skill = import('../../main/skills').Skill
 export type SkillPreview = import('../../main/skills').SkillPreview & { token: string }
 export type Attachment = import('../../shared/documents').Attachment
 export type DesktopOverview = import('../../shared/overview').DesktopOverview
-export type ContextReference = { path: string; start?: number; end?: number; digest?: string; label?: string }
+import type { ContextReference } from '../../shared/context'
+export type { ContextReference } from '../../shared/context'
 export type Checkpoint = import('../../../../kernel/src/storage/checkpoints').CheckpointSummary
+export type { RestorePreviewRow, RestoreReceipt } from '../../../../kernel/src/storage/checkpoints'
+import type { RestorePreviewRow, RestoreReceipt } from '../../../../kernel/src/storage/checkpoints'
 export type { ManagedProcess, ProcessOutput, ProcessEvent } from '../../shared/processes'
 import type { ManagedProcess, ProcessOutput, ProcessEvent } from '../../shared/processes'
 export interface DesktopAPI {
+  onAppCommand?(cb: (value: 'new-task' | 'settings') => void): () => void
   webSearch<T = unknown>(action: 'get' | 'save' | 'test' | 'cancel-test', value?: unknown): Promise<T>
   fileContext?<T=any>(action:string,value?:unknown):Promise<T>
   localSpace?(action: 'create'): Promise<{ cwd: string; kind: 'managed' }>;
@@ -114,6 +118,22 @@ export class DesktopStore {
   private deltaTimer?: ReturnType<typeof setTimeout>
   private deltas = new Map<string, Map<string, string>>()
   private current: string | null = null
+  private checkpointRuns = new Map<string, { pending: boolean; result?: RestoreReceipt; error?: string }>()
+  checkpointRun(threadId: string) { return this.checkpointRuns.get(threadId) }
+  async restoreCheckpoint(threadId: string, checkpointId: string, preview: RestorePreviewRow[], previewPaths: string[] | null) {
+    const ready = preview.filter(row => row.status === 'ready' && row.version)
+    if (!ready.length || this.checkpointRuns.get(threadId)?.pending) return
+    this.checkpointRuns.set(threadId, { pending: true }); this.commit({})
+    try {
+      const result = await this.api!.call<RestoreReceipt>('checkpoint/restore', {
+        threadId, checkpointId, previewPaths, paths: ready.map(row => row.path), versions: Object.fromEntries(ready.map(row => [row.path, row.version])),
+      })
+      if (this.checkpointRuns.has(threadId)) this.checkpointRuns.set(threadId, { pending: false, result })
+      return result
+    } catch (error) {
+      if (this.checkpointRuns.has(threadId)) this.checkpointRuns.set(threadId, { pending: false, error: '未收到完整恢复结果。请刷新后核对文件。' + errorText(error) })
+    } finally { this.commit({}) }
+  }
   private seen = readSeen()
   private rememberRead(id: string) {
     this.seen[id] = Date.now()
@@ -224,8 +244,12 @@ export class DesktopStore {
     if ((method === 'item/started' || method === 'item/completed') && p.item) this.item(p.item)
     if (!p.threadId) return
     const id = p.threadId
+    if (method === 'checkpoint/restored') {
+      const { paths } = value as { paths: string[] }
+      for (const path of paths) this.artifactUpdated({ threadId: id, path })
+    }
     if ((method === 'turn/completed' || method === 'turn/failed') && id === this.current) this.rememberRead(id)
-    if (method === 'thread/deleted') { const sessions = { ...this.state.sessions }, processes = { ...this.state.processes }, processOutput = { ...this.state.processOutput }; delete sessions[id]; for (const [key, value] of Object.entries(processes)) if (value.threadId === id) { delete processes[key]; delete processOutput[key] }; this.commit({ sessions, processes, processOutput }); return }
+    if (method === 'thread/deleted') { this.checkpointRuns.delete(id); const sessions = { ...this.state.sessions }, processes = { ...this.state.processes }, processOutput = { ...this.state.processOutput }; delete sessions[id]; for (const [key, value] of Object.entries(processes)) if (value.threadId === id) { delete processes[key]; delete processOutput[key] }; this.commit({ sessions, processes, processOutput }); return }
     if (method === 'thread/archived') this.update(id, s => ({ ...s, meta: { ...s.meta, archived: true } }))
     if (method === 'thread/steering/changed' && p.entry) this.updateSteering(id, p.entry)
     if (method === 'thread/status/changed') this.update(id, s => ({ ...s, status: p as ThreadStatus }))

@@ -18,14 +18,14 @@ if (!process.argv.includes('--no-build')) {
 }
 // The preview must have its own branded executable as well as a window icon.
 // Windows may resolve the taskbar group through executable/shortcut resources.
-let executable;
-try { ({ executable } = await prepareDesktopPreviewRuntime(root)); }
+let executable, packaged = false;
+try { ({ executable, packaged = false } = await prepareDesktopPreviewRuntime(root)); }
 catch (error) { console.error('独立预览运行时准备失败：' + (error?.message ?? error)); process.exit(1); }
 mkdirSync(home, { recursive: true });
 const log = openSync(join(home, 'preview-launch.log'), 'a');
 const env = { ...process.env, SMALT_HOME: home };
 delete env.ELECTRON_RUN_AS_NODE;
-const child = spawn(executable, [desktop, '--development-preview'], { cwd: desktop, env, detached: true, stdio: ['ignore', log, log], windowsHide: false });
+const child = spawn(executable, [...(packaged ? [] : [desktop]), '--development-preview'], { cwd: desktop, env, detached: true, stdio: ['ignore', log, log], windowsHide: false });
 child.once('error', error => { console.error('预览启动失败：' + error.message); process.exitCode = 1; });
 child.once('spawn', () => { console.log('SmaltCode 开发预览已启动。\n独立数据目录：' + home + '\n首次使用请在设置中配置模型。关闭窗口会驻留托盘，右键托盘退出。'); });
 child.unref(); closeSync(log);

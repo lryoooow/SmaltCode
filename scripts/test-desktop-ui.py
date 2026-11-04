@@ -218,8 +218,11 @@ try:
             if (!titles.includes(options.title)) throw new Error('Unexpected test dialog: ' + options.title);
             return {response: 0, checkboxChecked: false};
           };
+          dialog.showOpenDialog = async options => options.properties.includes('openDirectory')
+            ? {canceled: false, filePaths: [__FIXTURE_WORKSPACE__]}
+            : {canceled: true, filePaths: []};
           return true;
-        })()""".replace('__FIXTURE_HOME__', json.dumps(str(home)))
+        })()""".replace('__FIXTURE_HOME__', json.dumps(str(home))).replace('__FIXTURE_WORKSPACE__', json.dumps(str(workspace)))
         inspector = """
 const port=PORT, expression=EXPRESSION; let targets;
 for(let attempt=0;attempt<60;attempt++) {
@@ -854,7 +857,25 @@ await new Promise((resolve,reject)=>{
     resize_for_conversation({'width':1240,'height':820})
     page.get_by_role('button',name='切换主题',exact=True).click()
     row.get_by_role('button',name='撤销此文件',exact=True).click()
-    page.get_by_role('dialog',name='恢复检查点',exact=True).get_by_role('button',name='确认恢复文件',exact=True).click()
+    restore_preview = page.get_by_test_id('checkpoint-restore-preview')
+    expect(restore_preview).to_contain_text('将恢复')
+    restore_preview.get_by_role('button',name='查看恢复差异',exact=True).click()
+    expect(restore_preview.get_by_label('恢复差异')).to_be_visible()
+    edited_bytes = (workspace / '片段资料.md').read_bytes()
+    (workspace / '片段资料.md').write_bytes(edited_bytes + '\n用户随后补写的内容'.encode('utf-8'))
+    restore_preview.get_by_role('button',name='确认恢复文件（1 项）',exact=True).click()
+    expect(page.get_by_test_id('checkpoint-results')).to_contain_text('冲突 · 已保留')
+    assert '用户随后补写的内容' in (workspace / '片段资料.md').read_text(encoding='utf-8')
+    row.get_by_role('button',name='预览本次恢复',exact=True).click()
+    expect(restore_preview).to_contain_text('有冲突')
+    restore_preview.get_by_role('button',name='查看恢复差异',exact=True).click()
+    expect(restore_preview.get_by_label('恢复差异')).to_contain_text('用户随后补写的内容')
+    page.screenshot(animations='disabled',path=str(shots / 'release-restore-preview.png'))
+    (workspace / '片段资料.md').write_bytes(edited_bytes)
+    restore_preview.get_by_role('button',name='重新核对',exact=True).click()
+    expect(restore_preview).to_contain_text('将恢复')
+    restore_preview.get_by_role('button',name='确认恢复文件（1 项）',exact=True).click()
+    expect(page.get_by_test_id('checkpoint-results')).to_contain_text('1 个文件已恢复')
     expect(row).to_contain_text('已恢复',timeout=15000)
     assert '选区原文唯一' in (workspace / '片段资料.md').read_text(encoding='utf-8')
     assert '选区修改已完成' in page.get_by_test_id('item-agentMessage').all_text_contents()[-1]
@@ -872,6 +893,10 @@ await new Promise((resolve,reject)=>{
     page.get_by_test_id('task-row').filter(has_text='准备多标签验收资料').click()
     expect(page.get_by_test_id('context-references')).to_contain_text('会议记录.txt')
     expect(page.get_by_label('任务输入',exact=True)).to_have_value('验证上下文引用 ')
+    open_panel()
+    page.get_by_test_id('artifact-panel').get_by_role('button',name='变更',exact=True).click()
+    expect(page.get_by_test_id('checkpoint-results')).to_contain_text('1 个文件已恢复')
+    checks.append('per-file restore receipt remains readable after switching conversations')
     if '--stage-two' in sys.argv:
         page.get_by_test_id('context-check-toggle').click()
         inspector=page.get_by_test_id('context-inspector')
@@ -950,6 +975,9 @@ await new Promise((resolve,reject)=>{
             output = ('[exit 1]\n' + failures[i]) if failed else ('source code record ' * 1400)[:24000]
             tool_name = 'shell' if failed else 'read'
             arguments = {'command':'diagnostic-fixture-' + str(i)} if failed else {'path':'source-' + str(i) + '.txt'}
+            if failed and i == 6:
+                arguments = {'command':'pytest -rs'}
+                output += '\nSKIPPED [1] tests/test_resource.py:12: display unavailable\n1 failed, 1 skipped'
             seeded += [{'t':'tool-call','id':call_id,'tool':tool_name,'input':arguments,'at':fixture_time}, {'t':'tool-result','id':call_id,'tool':tool_name,'output':output,'isError':failed,'at':fixture_time}]
         seeded += [{'t':'turn-ended','turnId':turn_id,'at':fixture_time,**({'error':failure_reason} if failed else {})}]
         (home / 'threads' / (thread_id + '.jsonl')).write_text(''.join(json.dumps(event,ensure_ascii=False)+'\n' for event in seeded),encoding='utf8')
@@ -982,7 +1010,21 @@ await new Promise((resolve,reject)=>{
     resize_for_conversation({'width':1240,'height':820})
     checks.append('historical plan uses only its final snapshot outside execution records; stopped plan retains actual 1/20 completion; long wrapped plan scrolls by keyboard in a bounded popup')
     page.get_by_text('失败诊断验收', exact=True).click()
-    expect(page.get_by_test_id('failure-overview')).to_contain_text('7 项')
+    acceptance = page.get_by_test_id('delivery-checks')
+    expect(acceptance).not_to_have_attribute('open', '')
+    expect(acceptance.get_by_test_id('acceptance-check')).to_have_count(0)
+    acceptance.locator('summary').first.click()
+    expect(acceptance).to_contain_text('ValueError: unreadable resource')
+    expect(acceptance).to_contain_text('display unavailable')
+    expect(acceptance.get_by_label('原始检查输出')).to_have_count(0)
+    acceptance.get_by_text('查看原始证据',exact=True).click()
+    expect(acceptance.get_by_label('原始检查输出')).to_contain_text('1 failed, 1 skipped')
+    expect(acceptance).to_contain_text('退出码 1')
+    acceptance.screenshot(animations='disabled',path=str(shots / 'release-acceptance-card.png'))
+    acceptance.locator('summary').first.click()
+    expect(acceptance.get_by_test_id('acceptance-check')).to_have_count(0)
+    checks.append('acceptance card is collapsed by default and exposes failure, skip reason, exit status and saved output on demand')
+    expect(page.get_by_test_id('failure-overview')).to_contain_text('6 项执行需处理 · 1 项检查发现')
     expect(page.get_by_test_id('task-error')).to_contain_text('摘要输出预算耗尽')
     expect(page.get_by_test_id('activity-toggle')).to_have_attribute('aria-expanded','false')
     expect(page.get_by_test_id('activity-issue-preview')).to_contain_text("'ls' is not recognized")
@@ -1162,6 +1204,27 @@ await new Promise((resolve,reject)=>{
         page.screenshot(animations='disabled',path=str(shots/'phase-two-queue-pending.png'))
         page.keyboard.press('Escape')
         queue_title = page.get_by_test_id('task-row').filter(has_text='验证第二阶段队列')
+        page.get_by_test_id('task-row').filter(has_text='准备多标签验收资料').click()
+        open_panel()
+        review_panel = page.get_by_test_id('artifact-panel')
+        review_panel.get_by_role('button',name='变更',exact=True).click()
+        expect(review_panel.get_by_test_id('checkpoint-results')).to_contain_text('1 个文件已恢复')
+        expect(review_panel.get_by_test_id('checkpoint-results')).to_contain_text('片段资料.md')
+        restored_row = review_panel.get_by_test_id('checkpoint-row').filter(has_text='修改文件 片段资料.md')
+        restored_row.get_by_role('button',name='预览本次恢复',exact=True).click()
+        expect(page.get_by_test_id('checkpoint-restore-preview')).to_contain_text('已恢复')
+        queue_title.click()
+        expect(page.get_by_test_id('task-progress-dock')).to_contain_text('queue-probe.cjs')
+        checks.append('restore receipt survives renderer reload, and restore preview remains readable while another task runs')
+        page.get_by_text('失败诊断验收',exact=True).click()
+        saved_card = page.get_by_test_id('delivery-checks')
+        saved_card.locator('summary').first.click()
+        saved_card.get_by_text('查看原始证据',exact=True).click()
+        expect(saved_card.get_by_label('原始检查输出')).to_contain_text('display unavailable')
+        queue_title.click()
+        expect(page.get_by_test_id('task-progress-dock')).to_contain_text('queue-probe.cjs')
+        expect(page.get_by_test_id('delivery-checks')).to_have_count(0)
+        checks.append('a running task stays active while opening a different conversation and reading its acceptance evidence')
         page.get_by_text('任务中心',exact=True).click()
         expect(page.get_by_test_id('task-center')).to_be_visible()
         queue_title.click()

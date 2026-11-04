@@ -4,12 +4,21 @@ import type { BrowserState } from '../../../shared/browser'
 import { Btn, IconBtn, cx } from './ui'
 import Popover from './Popover'
 
-export default function Browser({ threadId, cwd, activeId, onActive, onReference }: { threadId: string; cwd: string; activeId?: string; onActive: (id?: string) => void; onReference: (ref: ContextReference) => void }) {
+const MAX_ANNOTATIONS = 4
+
+export default function Browser({ threadId, cwd, activeId, onActive, onReference, references, onReferencesChange }: { threadId: string; cwd: string; activeId?: string; onActive: (id?: string) => void; onReference: (ref: ContextReference) => void; references: ContextReference[]; onReferencesChange: (refs: ContextReference[]) => void }) {
   const [state, setState] = useState<BrowserState>({ tabs: [] }), [url, setURL] = useState(''), [error, setError] = useState<string>(), [busy, setBusy] = useState(false), [picking, setPicking] = useState(false), [local, setLocal] = useState(false), [query, setQuery] = useState('.html'), [files, setFiles] = useState<string[]>([])
   const meta=store.getSnapshot().sessions[threadId]?.meta,localAllowed=!meta?.sshTarget&&!meta?.containerTarget
   const address = useRef<HTMLInputElement>(null), host = useRef<HTMLDivElement>(null), alive = useRef(true), request = useRef(0)
   const [permissions, setPermissions] = useState(false), [sourceURL, setSourceURL] = useState('')
   const permissionAnchor = useRef<HTMLButtonElement>(null)
+  const [batch, setBatch] = useState(false), [review, setReview] = useState(false), [selected, setSelected] = useState<string>()
+  const [preview, setPreview] = useState<{ path: string; source?: string; selector?: string; capturedAt?: string; image?: string; error?: string }>()
+  const pickingRun = useRef(0), latest = useRef({ references, onReference })
+  latest.current = { references, onReference }
+  const annotations = references.filter(ref => ref.annotation !== undefined)
+  const reviewed = annotations.find(ref => ref.path === selected) ?? annotations[0]
+  const reviewedPath = reviewed?.path
   const tab = state.tabs.find(value => value.id === activeId) ?? state.tabs[0], id = tab?.id
   const call = <T,>(action: string, value: Record<string, unknown> = {}) => store.api!.browser<T>(action, { threadId, id, ...value })
   const refresh = async () => { const sequence = ++request.current; try { const next = await call<BrowserState>('list'); if (alive.current && sequence === request.current) setState(next) } catch (error) { if (alive.current) setError(errorText(error)) } }
@@ -35,8 +44,20 @@ export default function Browser({ threadId, cwd, activeId, onActive, onReference
     const observer = new ResizeObserver(schedule); if (host.current) observer.observe(host.current)
     const mutation = new MutationObserver(schedule); mutation.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] })
     addEventListener('resize', schedule); addEventListener('scroll', schedule, true); document.addEventListener('visibilitychange', schedule); schedule()
-    return () => { disposed = true; cancelAnimationFrame(frame); observer.disconnect(); mutation.disconnect(); removeEventListener('resize', schedule); removeEventListener('scroll', schedule, true); document.removeEventListener('visibilitychange', schedule); void call('layout', { id }).catch(() => {}); void call('cancel-pick', { id }).catch(() => {}) }
+    return () => { disposed = true; ++pickingRun.current; cancelAnimationFrame(frame); observer.disconnect(); mutation.disconnect(); removeEventListener('resize', schedule); removeEventListener('scroll', schedule, true); document.removeEventListener('visibilitychange', schedule); void call('layout', { id }).catch(() => {}); void call('cancel-pick', { id }).catch(() => {}) }
   }, [id,threadId])
+  useEffect(() => { setPicking(false); setBatch(false) }, [id])
+  useEffect(() => {
+    if (!review || !reviewedPath) { setPreview(undefined); return }
+    let current = true
+    setPreview(undefined)
+    void store.api!.feedback<{ source: string; text: string; image?: { mimeType: string; dataBase64: string } }>('read', { cwd, threadId, path: reviewedPath }).then(capture => {
+      if (!current) return
+      const detail = JSON.parse(capture.text)
+      setPreview({ path: reviewedPath, source: capture.source, selector: detail.selector, capturedAt: detail.capturedAt, image: capture.image && `data:${capture.image.mimeType};base64,${capture.image.dataBase64}` })
+    }).catch(error => { if (current) setPreview({ path: reviewedPath, error: errorText(error) }) })
+    return () => { current = false }
+  }, [review, reviewedPath, cwd, threadId])
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || document.querySelector('[role="dialog"]')) return
@@ -48,7 +69,25 @@ export default function Browser({ threadId, cwd, activeId, onActive, onReference
   }, [id, state.tabs])
   const act = async (action: string, value: Record<string, unknown> = {}) => { setError(undefined); try { await call(action, value); await refresh() } catch (error) { if (alive.current) setError(errorText(error)) } }
   const open = async (value: Record<string, unknown>) => { setBusy(true); setError(undefined); try { const result = await call<{ id: string }>('open', value); if (alive.current) { onActive(result.id); setLocal(false); await refresh() } } catch (error) { if (alive.current) setError(errorText(error)) } finally { if (alive.current) setBusy(false) } }
-  const pick = async () => { setPicking(true); setError(undefined); try { const ref = await call<ContextReference | null>('pick'); if (alive.current && ref) onReference(ref) } catch (error) { if (alive.current) setError(errorText(error)) } finally { if (alive.current) setPicking(false) } }
+  const pick = async (continuous = false) => {
+    const run = ++pickingRun.current
+    const current = () => alive.current && pickingRun.current === run
+    setPicking(true); setBatch(continuous); setError(undefined)
+    let remaining = Math.min(10 - references.length, continuous ? MAX_ANNOTATIONS - annotations.length : 1)
+    let first = true
+    try {
+      while (current() && remaining > 0 && latest.current.references.length < 10) {
+        const ref = await call<ContextReference | null>('pick', { annotation: continuous, focus: first })
+        first = false
+        if (!current() || !ref) break
+        latest.current.onReference(continuous ? { ...ref, annotation: '' } : ref)
+        if (!continuous) break
+        remaining--
+      }
+    } catch (error) { if (current()) setError(errorText(error)) }
+    finally { if (current()) { setPicking(false); setBatch(false) } }
+  }
+  const endPick = () => { ++pickingRun.current; setPicking(false); setBatch(false); void act('cancel-pick') }
   return <div data-testid="browser-panel" className="flex flex-col flex-1 min-h-0 min-w-0">
     <div role="tablist" aria-label="网页标签" className="flex items-center overflow-x-auto gap-1 px-2 pt-2 shrink-0">{state.tabs.map(value => <div className={cx('panel-file-tab', value.id === id && 'is-active')} key={value.id}><button role="tab" aria-selected={value.id === id} onClick={() => onActive(value.id)} className="px-2 py-2 truncate max-w-40 text-[12px]" title={value.localPath ?? value.url}>{value.loading ? '◌ ' : ''}{value.title}</button><button className="p-1" aria-label={'关闭网页 ' + value.title} onClick={() => void act('close', { id: value.id })}>×</button></div>)}</div>
     <form className="flex flex-wrap items-center gap-1.5 p-2 shrink-0" onSubmit={event => { event.preventDefault(); void (tab && !tab.localPath ? act('navigate', { url }) : open({ url })) }}>
@@ -58,12 +97,23 @@ export default function Browser({ threadId, cwd, activeId, onActive, onReference
     </form>
     {tab?.externalSource && <div data-testid="external-source" className="px-3 py-2 text-[11px] text-[var(--muted)] border-t border-[var(--line)] break-all shrink-0"><span className="font-medium text-[var(--text)]">外部内容</span> · {tab.externalSource}<span className="block mt-0.5">独立沙箱 · 无工具调用权限</span></div>}
     {local && <div className="p-3 border-y border-[var(--line)] shrink-0 max-h-48 overflow-auto"><input className="browser-address w-full" aria-label="查找本地 HTML" value={query} onChange={event => setQuery(event.target.value)} /><div className="mt-2">{files.length ? files.map(path => <button key={path} disabled={busy} className="block w-full px-2 py-1.5 text-left truncate rounded hover:bg-[var(--hover)] text-[12px]" onClick={() => void open({ path })}>{path}</button>) : <p className="text-[12px] text-[var(--muted)]">工作区中未找到匹配的 HTML 文件。</p>}</div></div>}
-    <div className="flex flex-wrap gap-2 items-center px-3 py-2 border-y border-[var(--line)] text-[11px] shrink-0"><span className="text-[var(--muted)] flex-1">{tab?.localPath ? '本地沙箱 · 默认断网' : '隔离浏览 · 只读'}</span><button ref={permissionAnchor} aria-expanded={permissions} disabled={!tab} className="status-action" onClick={() => setPermissions(!permissions)}>站点权限{tab?.sources.length ? ' · ' + tab.sources.length : ''}</button><label>缩放 <select aria-label="网页缩放" disabled={!tab} value={tab?.zoom ?? 1} onChange={event => void act('zoom', { zoom: Number(event.target.value) })}>{[.5, .75, 1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value * 100}%</option>)}</select></label><Btn type="button" disabled={!tab || tab.loading || busy} onClick={() => picking ? void act('cancel-pick') : void pick()}>{picking ? '取消选取' : '引用页面元素'}</Btn></div>
+    <div className="flex flex-wrap gap-2 items-center px-3 py-2 border-y border-[var(--line)] text-[11px] shrink-0"><span className="text-[var(--muted)] flex-1">{tab?.localPath ? '本地沙箱 · 默认断网' : '隔离浏览 · 只读'}</span><button ref={permissionAnchor} aria-expanded={permissions} disabled={!tab} className="status-action" onClick={() => setPermissions(!permissions)}>站点权限{tab?.sources.length ? ' · ' + tab.sources.length : ''}</button><label>缩放 <select aria-label="网页缩放" disabled={!tab} value={tab?.zoom ?? 1} onChange={event => void act('zoom', { zoom: Number(event.target.value) })}>{[.5, .75, 1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value * 100}%</option>)}</select></label><Btn type="button" disabled={!tab || tab.loading || busy || (!picking && references.length >= 10)} onClick={() => picking ? endPick() : void pick()}>{picking ? (batch ? '结束点选' : '取消选取') : '引用页面元素'}</Btn><Btn disabled={!tab || tab.loading || busy || picking || references.length >= 10 || annotations.length >= MAX_ANNOTATIONS} title={annotations.length >= MAX_ANNOTATIONS ? '本条消息已收集 4 条网页批注' : undefined} onClick={() => void pick(true)}>多点批注</Btn>{annotations.length > 0 && <Btn aria-expanded={review} onClick={() => { if (picking) endPick(); setReview(!review) }}>核对批注 · {annotations.length}</Btn>}</div>
     {permissions && tab && <Popover anchor={permissionAnchor} label="网页站点权限" width={400} onClose={() => setPermissions(false)}><div data-testid="browser-permissions" className="p-3 space-y-3"><h2 className="font-medium">此标签的网络来源</h2><p className="text-[12px] text-[var(--muted)]">默认限制跨站资源；可单独授权开发 API 或 CDN。只发送 GET / HEAD，不带系统 Cookie 或模型密钥。授权与撤销会刷新当前页；关闭标签后失效。</p>{tab.sources.length ? tab.sources.map(source => <div key={source} className="flex gap-2 items-center text-[12px]"><span className="break-all flex-1">{source}</span>{source !== (() => { try { return new URL(tab.url).origin } catch { return '' } })() ? <Btn onClick={() => { setPermissions(false); void act('revoke-source', { url: source }) }}>撤销</Btn> : <span className="text-[var(--muted)] shrink-0">当前站点</span>}</div>) : <p className="text-[12px]">尚未授权网络来源 · 本地页面保持断网</p>}<input aria-label="新增网页资源来源" className="browser-address w-full" value={sourceURL} onChange={event => setSourceURL(event.target.value)} placeholder="https://cdn.example.com 或本机开发 API" /><Btn v="primary" disabled={!sourceURL || busy} onClick={() => { setPermissions(false); void act('grant-source', { url: sourceURL }) }}>核对来源并授权</Btn><p className="text-[11px] text-[var(--muted)]">表单提交、WebSocket、嵌入页面、下载及设备权限保持关闭。</p></div></Popover>}
     {error && <p role="alert" className="px-3 py-2 text-[12px] text-rose-500 break-words shrink-0">{error}</p>}
     {tab?.error && <p role="alert" className="px-3 py-2 text-[12px] text-rose-500 break-words shrink-0">{tab.error}</p>}
     {tab?.notice && <div className="px-3 py-2 text-[11px] bg-[var(--sunken)] break-words shrink-0">{tab.notice}<button className="ml-2 text-accent" aria-label="关闭网页提示" onClick={() => void act('dismiss-notice')}>关闭</button>{tab.pendingURL && <><p className="break-all mt-1">{tab.pendingURL}</p><Btn type="button" disabled={busy} onClick={() => void open({ url: tab.pendingURL })}>核对并打开新标签</Btn></>}</div>}
-    {picking && <p role="status" className="px-3 py-2 text-[12px] text-accent shrink-0">点击页面中的元素添加快照；Esc 取消，30 秒后自动结束。</p>}
+    {picking && <p role="status" className="px-3 py-2 text-[12px] text-accent shrink-0">{batch ? '连续点击添加批注。悬停后按 ↑ 选父级、↓ 返回子级。Esc 结束，已选内容留在本对话。' : '点击页面中的元素添加快照；Esc 取消，30 秒后自动结束。'}</p>}
+    {review && reviewed && <section data-testid="browser-annotations" aria-label="网页批注草稿" className="max-h-[42%] overflow-auto shrink-0 border-b border-[var(--line)] px-3 py-2 text-[12px] space-y-2">
+      <p className="text-[var(--muted)]">批注随当前对话的下一条消息发送。截图和来源以捕获时刻为准。截图与其他图片共用每条消息的 4 张图片额度。</p>
+      <div className="flex flex-wrap gap-1">{annotations.map((ref, index) => <Btn key={ref.path} aria-pressed={ref.path === reviewed.path} v={ref.path === reviewed.path ? 'soft' : 'ghost'} onClick={() => setSelected(ref.path)}>批注 {index + 1}</Btn>)}</div>
+      <label className="block">批注 {annotations.indexOf(reviewed) + 1} 的说明<textarea className="browser-address block w-full mt-1" rows={2} maxLength={1000} value={reviewed.annotation} onChange={event => onReferencesChange(references.map(ref => ref.path === reviewed.path ? { ...ref, annotation: event.target.value } : ref))} /></label>
+      {preview?.path !== reviewed.path ? <p role="status">正在读取快照…</p> : preview.error ? <p role="alert" className="text-rose-500">{preview.error}</p> : <>
+        <p className="break-all">来源 · {preview.source}</p><p className="break-all text-[var(--muted)]">元素 · {preview.selector}</p>
+        {preview.capturedAt && <p className="text-[var(--muted)]">捕获时间 · {new Date(preview.capturedAt).toLocaleString()}</p>}
+        {preview.image ? <img src={preview.image} alt="批注截图" className="max-h-40 max-w-full object-contain rounded border border-[var(--line)]" /> : <p>该快照没有截图。</p>}
+      </>}
+      <Btn onClick={() => onReferencesChange(references.filter(ref => ref.path !== reviewed.path))}>移除此条批注</Btn>
+    </section>}
     {tab ? <div ref={host} data-testid="browser-viewport" className="flex-1 min-h-24 bg-white relative"><p className="p-4 text-[12px] text-slate-500">隔离网页视图 · 打开浮层时暂时隐藏，关闭后恢复</p></div> : <div className="flex-1 p-8 text-center text-[var(--muted)] text-[13px] leading-7">打开本地 HTML、开发页面或 HTTPS 站点。<br />标签与当前对话关联，关闭面板不会停止任务或开发服务器。</div>}
   </div>
 }

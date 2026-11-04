@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { emptyInspector, inspectorGeometry } from '../src/renderer/src/c/inspector-layout'
-import { deliveryModel } from '../src/renderer/src/c/delivery-state'
+import { checkExplanation, deliveryModel } from '../src/renderer/src/c/delivery-state'
 import { activityProgress } from '../src/renderer/src/c/activity'
 import { assessTurn } from '../../kernel/src/protocol/assessment'
 import type { Session, Item } from '../src/renderer/src/bridge'
@@ -9,6 +9,17 @@ const base = { threadId: 'thread', turnId: 'current', createdAt: '2026-10-22T00:
 const change = (id: string, turnId = 'current'): Item => ({ ...base, id, turnId, kind: 'fileChange', path: 'D:/project/' + id + '.md', changeKind: 'add' })
 function session(items: Item[]): Session { return { meta: { id: 'thread', title: '任务', cwd: 'D:/project', model: 'fixture', createdAt: base.createdAt, updatedAt: base.createdAt, turnCount: 1 }, items, summaries: [], approvals: {}, questions: {} } }
 describe('workspace presentation contracts', () => {
+  it('preserves saved evidence and distinguishes reported skip reasons from totals', () => {
+    const item = { ...base, id: 'check', kind: 'commandExecution' as const, command: 'pytest -rs', exitCode: 1, output: '\u001b[31mFAILED test_ui.py - AssertionError: panel clipped\u001b[0m\nSKIPPED [1] tests/test_ui.py:12: display unavailable\n1 failed, 2 skipped' }
+    const [check] = deliveryModel(session([item]), 'current', assessTurn([item], '修复')).checks
+    expect(check.item.output).toBe(item.output)
+    expect(check.result).toMatchObject({ kind: 'finding', skipped: 2 })
+    expect(checkExplanation(check.item, check.result)).toEqual({ reason: 'FAILED test_ui.py - AssertionError: panel clipped', skipReasons: ['display unavailable'] })
+    const tap = { ...item, command: 'node --test', exitCode: 0, output: 'ok 1 - optional fixture # SKIP\n# skipped 1' }
+    const [unverified] = deliveryModel(session([tap]), 'current', assessTurn([tap], '')).checks
+    expect(unverified.result).toMatchObject({ kind: 'unverified', skipped: 1 })
+    expect(checkExplanation(unverified.item, unverified.result).skipReasons).toEqual([])
+  })
   it('shows checkpoint text in the single progress surface without claiming model statements are verified work', () => {
     const checkpoint:Item={...base,id:'checkpoint',kind:'commandExecution',tool:'task_checkpoint',command:'task_checkpoint',output:JSON.stringify({managedCheckpoint:true,status:'continue',summary:'已整理待核对来源，接下来检查文档。'}),exitCode:0};
     const result=activityProgress([checkpoint],{running:true,lifecycle:'running'});

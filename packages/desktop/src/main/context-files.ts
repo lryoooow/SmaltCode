@@ -7,7 +7,8 @@ import { isValidWorkspace } from './workspace.js';
 import type { DocumentContent, DocumentPreview } from '../shared/documents.js';
 import type { ImagePart } from '../../../kernel/src/models/types.js';
 
-export type ContextReference = { path: string; start?: number; end?: number; digest?: string; label?: string };
+import type { ContextReference } from '../shared/context.js';
+export type { ContextReference } from '../shared/context.js';
 const ignored = new Set(['.git', '.smalt', 'node_modules', 'dist', 'release', '.build-stage', '.qa-work', '.qa-python', 'coverage', '.venv', '__pycache__']);
 export const textDigest = (text: string) => createHash('sha256').update(text).digest('hex');
 export type DocumentLoader = (name: string, bytes: Uint8Array) => Promise<DocumentContent>;

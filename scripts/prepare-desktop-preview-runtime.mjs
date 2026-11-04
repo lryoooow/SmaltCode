@@ -93,6 +93,7 @@ export async function prepareDesktopPreviewRuntime(root, { cacheRoot } = {}) {
   const workspace = realpathSync(resolve(root));
   const sourceRuntime = realpathSync(join(workspace, 'node_modules/electron/dist'));
   const sourceExecutable = join(sourceRuntime, process.platform === 'win32' ? 'electron.exe' : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron');
+  if (process.platform === 'darwin') return (await import('./prepare-macos-preview-runtime.mjs')).prepareMacPreviewRuntime(root);
   if (process.platform !== 'win32') return { executable: sourceExecutable, runtime: sourceRuntime, sourceExecutable, reused: true, branded: false };
   const product = readJson(join(workspace, 'packages/desktop/package.json'));
   const electron = readJson(join(workspace, 'node_modules/electron/package.json'));

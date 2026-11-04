@@ -8,16 +8,35 @@ import { readContextFile } from './context-files.js';
 import { FeedbackStore } from './feedback.js';
 import type { BrowserTab } from '../shared/browser.js';
 
-type Entry = { state: BrowserTab; view: WebContentsView; cwd: string; fileCwd?:string; root?: string; origin: string; inflight: number; picking: boolean; navigation: number };
-const picker = `new Promise(resolve => {
+type Entry = { state: BrowserTab; view: WebContentsView; cwd: string; fileCwd?:string; root?: string; origin: string; inflight: number; picking: boolean; navigation: number; pickGeneration?: number };
+const picker = (hierarchy: boolean) => `new Promise(resolve => {
   if (globalThis.__smaltPickCancel) globalThis.__smaltPickCancel();
-  const marker=document.createElement('div');marker.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #6366f1;background:#6366f11a;box-sizing:border-box';document.documentElement.append(marker);
-  let timer;
+  const marker=document.createElement('div');marker.setAttribute('data-smalt-picker','');marker.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #6366f1;background:#6366f11a;box-sizing:border-box';document.documentElement.append(marker);
+  let timer, hovered, selected;
   const clean=()=>{clearTimeout(timer);document.removeEventListener('pointermove',move,true);document.removeEventListener('click',click,true);document.removeEventListener('keydown',key,true);marker.remove();delete globalThis.__smaltPickCancel};
   const cancel=()=>{clean();resolve(null)};globalThis.__smaltPickCancel=cancel;
-  const move=e=>{const r=e.target.getBoundingClientRect();Object.assign(marker.style,{left:r.x+'px',top:r.y+'px',width:r.width+'px',height:r.height+'px'})};
-  const click=e=>{e.preventDefault();e.stopImmediatePropagation();const el=e.target,r=el.getBoundingClientRect();let node=el,parts=[];for(let i=0;node&&i<6;i++,node=node.parentElement){let p=node.tagName.toLowerCase();if(node.id){p+='#'+CSS.escape(node.id);parts.unshift(p);break}if(node.parentElement)p+=':nth-child('+([...node.parentElement.children].indexOf(node)+1)+')';parts.unshift(p)}const sensitive=!!el.closest('input,textarea,[contenteditable=true]')||!!el.querySelector('input,textarea,[contenteditable=true]');const out={selector:parts.join(' > ').slice(0,1000),sensitive,text:sensitive?'[表单输入内容不采集]':(el.innerText||el.getAttribute('alt')||'').slice(0,6000),rect:{x:Math.max(0,r.x),y:Math.max(0,r.y),width:Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.x)),height:Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.y))},viewport:{width:innerWidth,height:innerHeight},tag:el.tagName};clean();resolve(out)};
-  const key=e=>{if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();cancel()}};document.addEventListener('pointermove',move,true);document.addEventListener('click',click,true);document.addEventListener('keydown',key,true);timer=setTimeout(cancel,30000)
+  const outline=()=>{const r=selected.getBoundingClientRect();Object.assign(marker.style,{left:r.x+'px',top:r.y+'px',width:r.width+'px',height:r.height+'px'})};
+  const move=e=>{if(!e.isTrusted||!(e.target instanceof Element)||e.target===hovered)return;hovered=selected=e.target;outline()};
+  const click=e=>{
+    if(!e.isTrusted||e.button!==0||!(e.target instanceof Element))return;
+    e.preventDefault();e.stopImmediatePropagation();
+    const el=${hierarchy} && e.target===hovered && selected?.isConnected ? selected : e.target,r=el.getBoundingClientRect();
+    let node=el,parts=[];
+    for(let i=0;node&&i<6;i++,node=node.parentElement){let p=node.tagName.toLowerCase();if(node.id){p+='#'+CSS.escape(node.id);parts.unshift(p);break}if(node.parentElement)p+=':nth-child('+([...node.parentElement.children].indexOf(node)+1)+')';parts.unshift(p)}
+    const controls='input,textarea,select,[contenteditable]:not([contenteditable=false])';
+    const sensitive=!!el.closest(controls)||[...document.querySelectorAll(controls)].some(control=>{const c=control.getBoundingClientRect();return c.width>0&&c.height>0&&c.left<r.right&&c.right>r.left&&c.top<r.bottom&&c.bottom>r.top});
+    const out={selector:parts.join(' > ').slice(0,1000),sensitive,text:sensitive?'[表单输入内容不采集]':(el.innerText||el.getAttribute('alt')||'').slice(0,6000),rect:{x:Math.max(0,r.x),y:Math.max(0,r.y),width:Math.max(0,Math.min(r.right,innerWidth)-Math.max(0,r.x)),height:Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(0,r.y))},viewport:{width:innerWidth,height:innerHeight,density:devicePixelRatio}};
+    clean();resolve(out)
+  };
+  const key=e=>{
+    if(!e.isTrusted)return;
+    if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();cancel();return}
+    if(!${hierarchy}||!selected?.isConnected||!hovered?.isConnected||!['ArrowUp','ArrowDown'].includes(e.key))return;
+    e.preventDefault();e.stopImmediatePropagation();
+    if(e.key==='ArrowUp'&&selected.parentElement&&selected.parentElement!==document.documentElement)selected=selected.parentElement;
+    if(e.key==='ArrowDown'&&selected!==hovered){let child=hovered;while(child?.parentElement&&child.parentElement!==selected)child=child.parentElement;if(child?.parentElement===selected)selected=child}
+    outline()
+  };document.addEventListener('pointermove',move,true);document.addEventListener('click',click,true);document.addEventListener('keydown',key,true);timer=setTimeout(cancel,30000)
 })`;
 
 export class BrowserManager {
@@ -142,7 +161,12 @@ export class BrowserManager {
     });
     void wc.loadURL(url).catch(() => {}); this.changed(); return { id };
   }
-  hide() { if (this.attached) { const win = BrowserWindow.fromWebContents(this.owner); win?.contentView.removeChildView(this.attached.view); this.attached = undefined; } }
+  private async cancelPick(entry: Entry) {
+    entry.pickGeneration = (entry.pickGeneration ?? 0) + 1;
+    const wc = entry.view.webContents;
+    if (entry.picking && !wc.isDestroyed()) await wc.executeJavaScriptInIsolatedWorld(998, [{ code: 'globalThis.__smaltPickCancel?.()' }]);
+  }
+  hide() { if (this.attached) { const entry = this.attached; const win = BrowserWindow.fromWebContents(this.owner); win?.contentView.removeChildView(entry.view); this.attached = undefined; void this.cancelPick(entry).catch(() => {}); } }
   private pendingLayout?:{threadId:string;id:unknown;bounds:{x:number;y:number;width:number;height:number}};
   layout(threadId: string, id: unknown, bounds?: { x: number; y: number; width: number; height: number }) {
     const entry = this.get(threadId, id), win = BrowserWindow.fromWebContents(this.owner);
@@ -184,24 +208,38 @@ export class BrowserManager {
     else if (action === 'stop') wc.stop();
     else if (action === 'zoom') { if (typeof value.zoom !== 'number' || ![.5, .75, 1, 1.25, 1.5, 2].includes(value.zoom)) throw new Error('无效的缩放比例'); wc.setZoomFactor(value.zoom); entry.state.zoom = value.zoom; this.changed(); }
     else if (action === 'navigate') { const target = browserURL(value.url); if (!browserRequestAllowed(target.href, entry.origin)) throw new Error('来源不同，请新建标签并授权该站点'); void wc.loadURL(target.href).catch(() => {}); }
-    else if (action === 'cancel-pick') await wc.executeJavaScriptInIsolatedWorld(998, [{ code: 'globalThis.__smaltPickCancel?.()' }]);
+    else if (action === 'cancel-pick') await this.cancelPick(entry);
     else if (action === 'pick') {
       if (entry.picking || this.attached !== entry || entry.state.loading) throw new Error('请等待页面就绪后在当前可见页面选择元素');
-      entry.picking = true; const url = wc.getURL(), navigation = entry.navigation;
+      entry.picking = true; const url = wc.getURL(), navigation = entry.navigation, generation = entry.pickGeneration;
+      const annotation = value.annotation === true;
+      const stillVisible = () => this.attached === entry && entry.pickGeneration === generation;
       try {
-        const result = await wc.executeJavaScriptInIsolatedWorld(998, [{ code: picker }], true);
-        if (!result) return null;
+        if (annotation && value.focus === true) wc.focus();
+        const result = await wc.executeJavaScriptInIsolatedWorld(998, [{ code: picker(annotation) }], true);
+        if (!result || !stillVisible()) return null;
         if (wc.isDestroyed() || wc.getURL() !== url || entry.navigation !== navigation || !this.entries.has(entry.state.id)) throw new Error('页面已变化，请重新选择');
         if (typeof result.selector !== 'string' || typeof result.text !== 'string' || result.selector.length > 1000 || result.text.length > 6000) throw new Error('元素内容无效');
         const capturedAt = new Date().toISOString(), source = entry.state.localPath ?? url;
         const rect = result.rect, viewport = result.viewport;
         if (!rect || !viewport || ![rect.x, rect.y, rect.width, rect.height, viewport.width, viewport.height].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0) || !viewport.width || !viewport.height) throw new Error('元素坐标已失效');
-        const shot = await wc.capturePage(), size = shot.getSize(), x = Math.floor(Math.min(rect.x / viewport.width, .999) * size.width), y = Math.floor(Math.min(rect.y / viewport.height, .999) * size.height);
-        let crop = shot.crop({ x, y, width: Math.max(1, Math.min(size.width - x, Math.round(rect.width / viewport.width * size.width))), height: Math.max(1, Math.min(size.height - y, Math.round(rect.height / viewport.height * size.height))) });
+        const snapshot = { cwd: entry.cwd, threadId: annotation ? threadId : undefined, label: '网页元素 · ' + entry.state.title.slice(0, 50), source, text: JSON.stringify({ source, url, title: entry.state.title, selector: result.selector, text: result.text, viewport, rect, capturedAt }) };
+        if (result.sensitive) return this.feedback.add(snapshot);
+        if (!rect.width || !rect.height) throw new Error('元素已离开可见区域，请重新选择');
+        // Electron 44's capture source rectangle is measured in compositor pixels.
+        const density = viewport.density;
+        if (typeof density !== 'number' || !Number.isFinite(density) || density <= 0 || density > 16) throw new Error('截图缩放比例无效');
+        const x = Math.ceil(rect.x * density), y = Math.ceil(rect.y * density);
+        const width = Math.floor((rect.x + rect.width) * density) - x;
+        const height = Math.floor((rect.y + rect.height) * density) - y;
+        if (width < 1 || height < 1) throw new Error('元素可见区域太小，请重新选择');
+        let crop = await wc.capturePage({ x, y, width, height });
+        if (!stillVisible()) return null;
+        if (crop.isEmpty()) throw new Error('截图为空，请重新选择');
         const scale = Math.min(1, 1200 / crop.getSize().width, 1200 / crop.getSize().height);
         if (scale < 1) crop = crop.resize({ width: Math.max(1, Math.round(crop.getSize().width * scale)), height: Math.max(1, Math.round(crop.getSize().height * scale)) });
         if (wc.isDestroyed() || wc.getURL() !== url || entry.navigation !== navigation || !this.entries.has(entry.state.id)) throw new Error('页面已变化，请重新选择');
-        return this.feedback.add({ cwd: entry.cwd, label: '网页元素 · ' + entry.state.title.slice(0, 50), source, ...(!result.sensitive ? { image: { type: 'image' as const, mimeType: 'image/png' as const, dataBase64: crop.toPNG().toString('base64') } } : {}), text: JSON.stringify({ source, url, title: entry.state.title, selector: result.selector, text: result.text, viewport, rect, capturedAt }) });
+        return this.feedback.add({ ...snapshot, image: { type: 'image', mimeType: 'image/png', dataBase64: crop.toPNG().toString('base64') } });
       } finally { entry.picking = false; }
     }
     else throw new Error('无效的网页操作');

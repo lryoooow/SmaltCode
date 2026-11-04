@@ -13,6 +13,38 @@ async function change(path: string, before: string | null, after: string | null)
   await store.complete(cp); return cp;
 }
 describe('durable file checkpoints', () => {
+  it('previews the actual restore direction and reports conflicts arising after confirmation alongside successful files', async () => {
+    await writeFile(join(cwd, 'a'), 'old-a'); await writeFile(join(cwd, 'b'), 'old-b');
+    const cp = await store.capture('thread', 'turn', cwd, 'two files', ['a', 'b']);
+    await writeFile(join(cwd, 'a'), 'new-a'); await writeFile(join(cwd, 'b'), 'new-b'); await store.complete(cp);
+    const items = [{ turnId: 'turn', kind: 'fileChange', path: 'untracked.txt' }];
+    const { rows } = await store.preview('thread', cp.id, cwd, items);
+    expect(rows.map(row => [row.path, row.status])).toEqual([['a', 'ready'], ['b', 'ready'], ['untracked.txt', 'missing']]);
+    const [detail] = (await store.preview('thread', cp.id, cwd, [], undefined, 'a')).rows;
+    expect(detail?.diff).toContain('-new-a'); expect(detail?.diff).toContain('+old-a');
+    await writeFile(join(cwd, 'b'), 'user-edit');
+    const versions = Object.fromEntries(rows.flatMap(row => row.version ? [[row.path, row.version]] : []));
+    const result = await store.restore('thread', cp.id, cwd, ['a', 'b'], () => {}, versions, { previewPaths: null, items });
+    expect(result.rows.map(row => [row.path, row.status])).toEqual([['a', 'restored'], ['b', 'conflict'], ['untracked.txt', 'skipped']]);
+    expect(result.restored).toEqual(['a']);
+    const restarted = new CheckpointStore(join(root, 'backups'));
+    expect(await restarted.latestRestore('thread', cwd)).toEqual(result);
+    expect(await restarted.latestRestore('other', cwd)).toBeUndefined();
+    expect(await restarted.latestRestore('thread', root)).toBeUndefined();
+    expect(await readFile(join(cwd, 'a'), 'utf8')).toBe('old-a'); expect(await readFile(join(cwd, 'b'), 'utf8')).toBe('user-edit');
+    const [conflict] = (await store.preview('thread', cp.id, cwd, [], undefined, 'b')).rows;
+    expect(conflict).toMatchObject({ status: 'conflict' }); expect(conflict?.diff).toContain('-user-edit');
+    await restarted.delete('thread');
+    expect(await restarted.latestRestore('thread', cwd)).toBeUndefined();
+  });
+  it('keeps a later directory removal intact when a checkpoint could recreate a deleted file', async () => {
+    await mkdir(join(cwd, 'nested'));
+    const cp = await change('nested/file.txt', 'old', null);
+    await rm(join(cwd, 'nested'), { recursive: true });
+    const { rows } = await store.preview('thread', cp.id, cwd, []);
+    expect(rows[0]).toMatchObject({ path: 'nested/file.txt', status: 'conflict', reason: '原目录已不存在，已保留当前目录结构' });
+    await expect(readFile(join(cwd, 'nested/file.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
   it('keeps healthy checkpoints visible when another record is malformed', async () => {
     const cp = await change('good.txt', 'before', 'after');
     await writeFile(join(root, 'backups', 'thread', 'bad.json'), '{broken');

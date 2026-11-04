@@ -10,6 +10,15 @@ beforeEach(() => { directory = mkdtempSync(join(process.cwd(), '.qa-work/local-s
 afterEach(() => rmSync(directory, { recursive: true, force: true }));
 
 describe('independent local conversation storage', () => {
+  it('uses Application Support for a new Mac while preserving an existing local profile and explicit preview isolation', () => {
+    const appData = join(directory, 'Library', 'Application Support'), userHome = join(directory, 'user');
+    expect(configureDesktopStorage({ platform: 'darwin', appData, userHome })).toBe(join(appData, 'SmaltCode'));
+    const legacy = join(userHome, '.smalt'); mkdirSync(legacy, { recursive: true }); writeFileSync(join(legacy, 'history.jsonl'), 'preserve');
+    expect(configureDesktopStorage({ platform: 'darwin', appData, userHome })).toBe(legacy);
+    expect(configureDesktopStorage({ platform: 'darwin', appData, userHome, explicitHome: home })).toBe(home);
+    expect(readFileSync(join(legacy, 'history.jsonl'), 'utf8')).toBe('preserve');
+    expect(existsSync(join(appData, 'SmaltCode'))).toBe(false);
+  });
   it('selects only fixed-drive candidates other than the system drive, preferring D without assuming C is always the system', () => {
     expect(nonSystemDrives(['C:', 'E:', 'd:', 'D:\\', '\\\\server\\share', '/tmp', 'F:'], 'C:')).toEqual(['D:\\', 'E:\\', 'F:\\']);
     expect(nonSystemDrives(['C:', 'D:', 'E:'], 'D:')).toEqual(['C:\\', 'E:\\']);

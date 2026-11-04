@@ -49,8 +49,8 @@ export default function Composer({ big, running, disabled, submitBlocked, blocke
     const name = ref.label ?? folderName(ref.path); setPreview({ name, loading: true })
     try {
       if (ref.path.startsWith('memory:')) { const memory = await store.api!.autonomy<{ body: string; source: { note: string } }>('memory-read', { cwd: ws, path: ref.path }); if (alive.current && request === previewRequest.current) setPreview({ name, text: '来源：' + memory.source.note + '\n\n' + memory.body, loading: false }); } else if (ref.path.startsWith('feedback:')) {
-        const capture = await store.api!.feedback<{ text: string; image?: { mimeType: string; dataBase64: string } }>('read', { cwd: ws, path: ref.path })
-        if (alive.current && request === previewRequest.current) setPreview({ name, text: JSON.stringify(JSON.parse(capture.text), null, 2), image: capture.image ? 'data:' + capture.image.mimeType + ';base64,' + capture.image.dataBase64 : undefined, loading: false })
+        const capture = await store.api!.feedback<{ text: string; image?: { mimeType: string; dataBase64: string } }>('read', { cwd: ws, path: ref.path, threadId: ref.annotation === undefined ? undefined : fileScope })
+        if (alive.current && request === previewRequest.current) setPreview({ name, text: (ref.annotation === undefined ? '' : '批注说明 · ' + (ref.annotation || '尚未填写') + '\n\n') + JSON.stringify(JSON.parse(capture.text), null, 2), image: capture.image ? 'data:' + capture.image.mimeType + ';base64,' + capture.image.dataBase64 : undefined, loading: false })
       } else if (ref.path.startsWith('skill:')) {
         const skill = await store.api!.skills<Skill & { text: string }>('read', { id: ref.path.slice(6) })
         if (alive.current && request === previewRequest.current) setPreview({ name, text: skill.text, loading: false })
