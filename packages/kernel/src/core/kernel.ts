@@ -25,7 +25,9 @@ import type { ThreadStore } from '../storage/thread-store.js';
 import { ToolOrchestrator } from '../tools/orchestrator.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { Compactor } from '../compact/compactor.js';
-import { ContextPipeline, envInterceptor, systemInterceptor } from '../context/pipeline.js';
+import { ContextPipeline, draftAgentsMd, envInterceptor, repoInstructionsInterceptor, systemInterceptor } from '../context/pipeline.js';
+import { createSubagentTool } from '../tools/defs/subagent.js';
+import type { ReasoningEffort } from '../models/types.js';
 import { TurnRunner } from './turn-runner.js';
 import { ThreadManager } from './thread-manager.js';
 import type { ThreadRuntime } from './thread.js';
@@ -112,7 +114,28 @@ export class Kernel {
       ...this.settings.compact,
       contextWindow: this.gateway.contextWindowFor(resolveModelRef(undefined, this.settings)),
     });
-    const pipeline = new ContextPipeline([envInterceptor(), systemInterceptor()]);
+    const pipeline = new ContextPipeline([envInterceptor(), repoInstructionsInterceptor(), systemInterceptor()]);
+    this.tools.register(createSubagentTool({
+      gatewayFor: (threadId) => {
+        const rt = this.threads.get(threadId);
+        const targetCwd = rt?.meta.cwd ?? this.cwd;
+        const threadSettings = loadSettings(targetCwd, undefined, this.settings);
+        const modelRef = rt ? { ...rt.modelRef } : resolveModelRef(undefined, threadSettings);
+        return { gateway: this.gateway.fork(threadSettings), modelRef, settings: threadSettings };
+      },
+      permissionsFor: (threadId) => {
+        const rt = this.threads.get(threadId);
+        if (!rt) return this.permissions;
+        if (!rt.permissions) this.updatePermissions(rt);
+        return rt.permissions!;
+      },
+      tools: this.tools,
+      checkpoints: this.checkpoints,
+      hooks: this.hooks,
+      requestApproval: (req) => this.client.requestApproval(req),
+      cancelApproval: (id) => this.client.cancelApproval?.(id),
+      log: this.logFn,
+    }));
     const orchestrator = new ToolOrchestrator({
       checkpoints: this.checkpoints,
       tools: this.tools,
@@ -220,7 +243,7 @@ export class Kernel {
     rt.runner = new TurnRunner({
       gateway, hooks, orchestrator, tools: this.tools, store: this.store,
       compactor: new Compactor(gateway, hooks, { ...settings.compact, contextWindow: gateway.contextWindowFor(rt.modelRef) }),
-      pipeline: new ContextPipeline([envInterceptor(), systemInterceptor(), {name:'execution-target',priority:2100,intercept:async ctx=>{const target=this.executionContext?.(ctx.threadId);if(target)ctx.systemExtras.push(target);}}, {
+      pipeline: new ContextPipeline([envInterceptor(), repoInstructionsInterceptor(), systemInterceptor(), {name:'execution-target',priority:2100,intercept:async ctx=>{const target=this.executionContext?.(ctx.threadId);if(target)ctx.systemExtras.push(target);}}, {
         name: 'project', priority: 1600,
         intercept: async ctx => {
           if (!rt.meta.projectId) return;
@@ -239,7 +262,7 @@ export class Kernel {
   async handle(method: string, params: unknown): Promise<unknown> {
     if (params !== undefined && params !== null && (typeof params !== 'object' || Array.isArray(params))) throw new RpcError(RpcErrorCode.InvalidParams, 'params must be an object');
     const values = (params ?? {}) as Record<string, unknown>;
-    for (const key of ['cwd', 'model', 'title', 'threadId', 'projectId', 'input', 'displayText', 'checkpointId', 'name', 'instructions']) {
+    for (const key of ['cwd', 'model', 'title', 'threadId', 'projectId', 'input', 'displayText', 'checkpointId', 'name', 'instructions', 'upToItemId']) {
       const value = values[key];
       if (value === undefined || value === null && (key === 'projectId' || key === 'cwd')) continue;
       if (typeof value !== 'string' || value.length > (key === 'input' ? 500000 : key === 'instructions' ? 20000 : 10000)) throw new RpcError(RpcErrorCode.InvalidParams, 'Invalid parameter: ' + key);
@@ -258,10 +281,36 @@ export class Kernel {
           model: p.model as unknown as string | undefined,
           title: p.title as unknown as string | undefined,
           permissionMode: this.validMode(p.permissionMode),
+          reasoningEffort: this.validReasoningEffort(p.reasoningEffort) ?? undefined,
           projectId,
         });
         void this.hooks.emit('SessionStart', { threadId: rt.meta.id });
         return { threadId: rt.meta.id, meta: rt.meta };
+      }
+
+      case Methods.threadFork: {
+        const rt = this.threads.fork(String(p.threadId), {
+          upToItemId: typeof p.upToItemId === 'string' && p.upToItemId ? p.upToItemId : undefined,
+          title: typeof p.title === 'string' && p.title ? p.title : undefined,
+        });
+        void this.hooks.emit('SessionStart', { threadId: rt.meta.id });
+        return { threadId: rt.meta.id, meta: rt.meta, items: rt.items };
+      }
+
+      case Methods.workspaceInit: {
+        const targetCwd = p.threadId
+          ? this.threads.read(String(p.threadId)).meta.cwd
+          : typeof p.cwd === 'string' && p.cwd
+            ? resolve(p.cwd)
+            : this.cwd;
+        const agentsPath = join(targetCwd, 'AGENTS.md');
+        const existed = existsSync(agentsPath);
+        const content = draftAgentsMd(targetCwd);
+        const shouldWrite = p.write !== false && (!existed || Boolean(p.overwrite));
+        if (shouldWrite) {
+          writeFileSync(agentsPath, content, 'utf8');
+        }
+        return { path: agentsPath, existed, written: shouldWrite, content };
       }
 
       case Methods.threadResume: {
@@ -279,7 +328,21 @@ export class Kernel {
         const threadSettings = loadSettings(rt.meta.cwd, undefined, this.settings);
         const contextWindow = activeRunner?.contextWindow ?? this.gateway.fork(threadSettings).contextWindowFor(rt.modelRef);
         const estimate = estimateHistoryTokens(rt.history) + (rt.runner?.contextOverhead ?? 0);
-        return { ...r, status: this.threads.status(r.meta.id), usage: { inputTokens: estimate, outputTokens: total.outputTokens, totalInputTokens: total.inputTokens, totalOutputTokens: total.outputTokens, contextWindow, thresholdTokens: activeRunner?.thresholdTokens ?? Math.floor(contextWindow * threadSettings.compact.threshold), contextUsage: Math.min(1, estimate / contextWindow) } };
+        return {
+          ...r,
+          status: this.threads.status(r.meta.id),
+          usage: {
+            inputTokens: estimate,
+            outputTokens: total.outputTokens,
+            ...(rt.lastCachedInputTokens > 0 ? { cachedInputTokens: rt.lastCachedInputTokens } : {}),
+            totalInputTokens: total.inputTokens,
+            totalOutputTokens: total.outputTokens,
+            ...(rt.cachedInputTokens > 0 ? { totalCachedInputTokens: rt.cachedInputTokens } : {}),
+            contextWindow,
+            thresholdTokens: activeRunner?.thresholdTokens ?? Math.floor(contextWindow * threadSettings.compact.threshold),
+            contextUsage: Math.min(1, estimate / contextWindow),
+          },
+        };
       }
 
       case Methods.threadArchive:
@@ -319,7 +382,7 @@ export class Kernel {
       case Methods.threadPin:
         return { meta: this.threads.update(String(p.threadId), { pinned: Boolean(p.pinned) }) };
       case Methods.threadSettings:
-        return { meta: this.threads.update(String(p.threadId), { model: p.model, permissionMode: this.validMode(p.permissionMode) }) };
+        return { meta: this.threads.update(String(p.threadId), { model: p.model, permissionMode: this.validMode(p.permissionMode), reasoningEffort: this.validReasoningEffort(p.reasoningEffort) }) };
       case Methods.threadPermissionsReset:
         return { meta: this.threads.resetApprovals(String(p.threadId)) };
 
@@ -412,6 +475,15 @@ export class Kernel {
     if (value === undefined) return undefined;
     if (typeof value !== 'string' || !(PERMISSION_MODES as readonly string[]).includes(value)) throw new Error('Invalid permission mode');
     return value as ThreadMeta['permissionMode'];
+  }
+
+  private validReasoningEffort(value: unknown): ReasoningEffort | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null || value === '') return null;
+    if (typeof value !== 'string' || !['low', 'medium', 'high', 'max'].includes(value)) {
+      throw new Error('Invalid reasoning effort');
+    }
+    return value as ReasoningEffort;
   }
 
   private initialize(): InitializeResult {

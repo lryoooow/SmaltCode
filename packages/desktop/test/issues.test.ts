@@ -28,5 +28,8 @@ describe('actual operation failure reasons', () => {
     expect(operationIssues([first, single]).map(i => i.id)).toEqual(['suite']);
     expect(operationIssues([first, command('[exit 0]\n41 passed', { id: 'rerun', command: 'pnpm test', exitCode: 0, status: 'completed' })])).toEqual([]);
     expect(first.kind === 'commandExecution' && first.output).toContain('1 failed');
+    const patchFail: Item = { id: 'p1', threadId: 'thread', turnId: 'turn', createdAt: '', kind: 'fileChange', path: 'src/app.ts', status: 'failed', changeKind: 'update', diff: 'context mismatch' };
+    const patchOk: Item = { ...patchFail, id: 'p2', status: 'completed', diff: '+fixed' };
+    expect(operationIssues([patchFail, patchOk])).toEqual([]);
   });
 });

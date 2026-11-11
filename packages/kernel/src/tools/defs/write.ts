@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { resolveWorkspacePath } from '../../config/settings.js';
 import { unifiedDiff, diffPreview } from '../../util.js';
+import { checkPostEditDiagnostics } from '../diagnostics.js';
 import type { ToolDefinition, ToolEvent } from '../types.js';
 
 export const writeTool: ToolDefinition = {
@@ -33,9 +34,10 @@ export const writeTool: ToolDefinition = {
         content.endsWith('\n') ? content.slice(0, -1).split('\n') : content.split('\n'),
       );
       await ctx.emitItem({ kind: 'fileChange', payload: { path, changeKind: existed ? 'update' : 'add', diff } });
+      const diag = checkPostEditDiagnostics(abs, path);
       yield {
         type: 'result',
-        text: `${existed ? 'Updated' : 'Created'} ${path}\n\n${diffPreview(diff)}`,
+        text: `${existed ? 'Updated' : 'Created'} ${path}\n\n${diffPreview(diff)}${diag ? `\n\n${diag}` : ''}`,
       };
     } catch (err) {
       yield { type: 'result', text: `Error writing ${path}: ${err instanceof Error ? err.message : err}`, isError: true };

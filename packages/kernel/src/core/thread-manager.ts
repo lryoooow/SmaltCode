@@ -32,7 +32,7 @@ export class ThreadManager {
 
   constructor(private readonly deps: ThreadManagerDeps) {}
 
-  start(opts: { cwd: string; model?: string; title?: string; permissionMode?: ThreadMeta['permissionMode']; projectId?: string; collaboration?: ThreadMeta['collaboration']; remoteOrigin?: ThreadMeta['remoteOrigin'] }): ThreadRuntime {
+  start(opts: { cwd: string; model?: string; title?: string; permissionMode?: ThreadMeta['permissionMode']; reasoningEffort?: ThreadMeta['reasoningEffort']; projectId?: string; collaboration?: ThreadMeta['collaboration']; remoteOrigin?: ThreadMeta['remoteOrigin'] }): ThreadRuntime {
     const settings = this.deps.settings();
     const modelRef = resolveModelRef(opts.model, settings);
     const meta: ThreadMeta = {
@@ -45,6 +45,7 @@ export class ThreadManager {
       updatedAt: nowIso(),
       turnCount: 0,
       permissionMode: opts.permissionMode,
+      reasoningEffort: opts.reasoningEffort,
       projectId: opts.projectId,
       collaboration: opts.collaboration,
       remoteOrigin: opts.remoteOrigin,
@@ -167,7 +168,101 @@ export class ThreadManager {
     return deleted;
   }
 
-  update(threadId: string, patch: { title?: string; pinned?: boolean; model?: string; permissionMode?: ThreadMeta['permissionMode']; projectId?: string | null }): ThreadMeta {
+  fork(sourceThreadId: string, opts?: { upToItemId?: string; title?: string }): ThreadRuntime {
+    if (this.get(sourceThreadId)?.stateMachine.isRunning() || this.chains.has(sourceThreadId)) {
+      throw new Error('Stop the running task before forking this conversation');
+    }
+    const events = this.deps.store.load(sourceThreadId);
+    if (!events) throw new Error(`thread not found: ${sourceThreadId}`);
+    const srcMeta = latestMeta(events);
+    if (!srcMeta) throw new Error(`thread ${sourceThreadId} has no metadata`);
+
+    let sliceEnd = events.length;
+    if (opts?.upToItemId) {
+      const targetId = opts.upToItemId;
+      const matchIdx = events.findIndex((ev) => {
+        if (ev.t === 'user-msg' || ev.t === 'agent-msg' || ev.t === 'reasoning' || ev.t === 'plan') {
+          return ev.id === targetId;
+        }
+        if (ev.t === 'tool-result') {
+          return ev.id === targetId || Boolean(ev.items?.some((it) => it.id === targetId));
+        }
+        return false;
+      });
+      if (matchIdx === -1) throw new Error(`item not found in thread: ${targetId}`);
+      // Extend to the end of the turn containing matchIdx if a turn-ended follows before the next turn-started,
+      // unless the caller targeted a user-msg specifically and wants to keep through that turn's completion.
+      sliceEnd = matchIdx + 1;
+      for (let i = matchIdx + 1; i < events.length; i++) {
+        const ev = events[i]!;
+        if (ev.t === 'turn-started') break;
+        sliceEnd = i + 1;
+        if (ev.t === 'turn-ended') break;
+      }
+    }
+
+    const newThreadId = newId('th');
+    const now = nowIso();
+    const clonedBody: StoreEvent[] = [];
+    const openToolCalls = new Map<string, string>();
+    let completedTurns = 0;
+
+    for (const ev of events.slice(0, sliceEnd)) {
+      if (ev.t === 'meta' || ev.t === 'steering') continue;
+      if (ev.t === 'turn-ended') completedTurns++;
+      if (ev.t === 'tool-call') openToolCalls.set(ev.id, ev.tool);
+      if (ev.t === 'tool-result') {
+        openToolCalls.delete(ev.id);
+        clonedBody.push({
+          ...ev,
+          items: ev.items?.map((it) => ({ ...it, threadId: newThreadId })),
+        });
+        continue;
+      }
+      clonedBody.push(structuredClone(ev));
+    }
+    for (const [callId, toolName] of openToolCalls) {
+      clonedBody.push({
+        t: 'tool-result',
+        id: callId,
+        tool: toolName,
+        output: '[Conversation forked before tool result completed]',
+        isError: true,
+        at: now,
+      });
+    }
+
+    const baseTitle = opts?.title?.trim() || `${srcMeta.title} (分支)`;
+    const newMeta: ThreadMeta = {
+      id: newThreadId,
+      title: baseTitle.slice(0, 120),
+      model: srcMeta.model,
+      provider: srcMeta.provider,
+      cwd: srcMeta.cwd,
+      createdAt: now,
+      updatedAt: now,
+      turnCount: completedTurns,
+      permissionMode: srcMeta.permissionMode,
+      reasoningEffort: srcMeta.reasoningEffort,
+      projectId: srcMeta.projectId,
+      localSpace: srcMeta.localSpace,
+      sshTarget: srcMeta.sshTarget,
+      containerTarget: srcMeta.containerTarget,
+      forkedFrom: { threadId: sourceThreadId, ...(opts?.upToItemId ? { itemId: opts.upToItemId } : {}) },
+    };
+
+    this.deps.store.append(newThreadId, { t: 'meta', meta: newMeta });
+    for (const ev of clonedBody) {
+      this.deps.store.append(newThreadId, ev);
+    }
+    this.deps.store.append(newThreadId, { t: 'meta', meta: newMeta });
+
+    const runtime = this.resume(newThreadId);
+    this.deps.notify(Notifications.threadStarted, { threadId: newThreadId, meta: runtime.meta });
+    return runtime;
+  }
+
+  update(threadId: string, patch: { title?: string; pinned?: boolean; model?: string; permissionMode?: ThreadMeta['permissionMode']; reasoningEffort?: ThreadMeta['reasoningEffort'] | null; projectId?: string | null }): ThreadMeta {
     const rt = this.get(threadId) ?? this.resume(threadId);
     if (rt.stateMachine.isRunning() && patch.model) throw new Error('Stop the task before changing its model');
     if (rt.stateMachine.isRunning() && patch.projectId !== undefined) throw new Error('Stop the task before moving it to another project');
@@ -184,6 +279,7 @@ export class ThreadManager {
       rt.meta.provider = ref.provider;
     }
     if (patch.permissionMode) { rt.meta.permissionMode = patch.permissionMode; this.deps.permissionsChanged?.(rt); }
+    if (patch.reasoningEffort !== undefined) rt.meta.reasoningEffort = patch.reasoningEffort ?? undefined;
     if (patch.projectId !== undefined) rt.meta.projectId = patch.projectId ?? undefined;
     if (!rt.stateMachine.isRunning()) rt.runner = undefined;
     rt.meta.updatedAt = nowIso();
@@ -353,8 +449,10 @@ export class ThreadManager {
         rt.history = history;
       },
       onContextNotice: (notice: import('../protocol/types.js').ContextNotice) => { rt.contextNotice = notice; },
-      addUsage: (i: number, o: number) => rt.addUsage(i, o),
+      addUsage: (i: number, o: number, cached = 0) => rt.addUsage(i, o, cached),
       usageTotals: () => rt.snapshotUsage(),
+      cachedUsageTotals: () => ({ lastCachedInputTokens: rt.lastCachedInputTokens, totalCachedInputTokens: rt.cachedInputTokens }),
+      reasoningEffort: () => rt.meta.reasoningEffort,
       contextWindow: () => rt.runner?.contextWindow ?? this.deps.contextWindowFor(rt.modelRef),
     };
   }

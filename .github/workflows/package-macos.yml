@@ -1,0 +1,102 @@
+name: Package macOS Desktop (Manual)
+
+# Manual trigger ONLY — never runs automatically on push or pull_request.
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Target macOS architecture to package'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - arm64
+          - x64
+      release_tag:
+        description: 'Optional existing GitHub Release tag (e.g. v0.0.8) to attach DMG/ZIP assets to'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package-macos:
+    name: Build macOS (${{ matrix.arch }})
+    if: ${{ inputs.arch == 'both' || inputs.arch == matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 (${{ matrix.arch }})
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Verify native architecture
+        run: |
+          node -e "console.log({ platform: process.platform, arch: process.arch }); if (process.arch !== '${{ matrix.arch }}') process.exit(1);"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build & run kernel regression suite
+        run: |
+          npm run build
+          npx vitest run packages/kernel/test
+
+      - name: Package & smoke-test macOS DMG + ZIP (Ad-hoc signed)
+        env:
+          SMALT_MAC_ADHOC: '1'
+        run: node scripts/build-desktop-mac.mjs --arch ${{ matrix.arch }} --adhoc
+
+      - name: Collect release artifacts
+        id: collect
+        run: |
+          OUT_DIR=$(ls -dt packages/desktop/release-mac/*-${{ matrix.arch }}-adhoc-* | head -n 1)
+          if [ -z "$OUT_DIR" ]; then
+            echo "No release-mac output directory found" >&2
+            exit 1
+          fi
+          echo "out_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+          cp "$OUT_DIR/SHA256SUMS.txt" "$OUT_DIR/SHA256SUMS-macOS-${{ matrix.arch }}.txt"
+          ls -lh "$OUT_DIR"
+
+      - name: Upload macOS ${{ matrix.arch }} DMG + ZIP artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmaltCode-macOS-${{ matrix.arch }}-adhoc
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ steps.collect.outputs.out_dir }}/*.dmg
+            ${{ steps.collect.outputs.out_dir }}/*.zip
+            ${{ steps.collect.outputs.out_dir }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
+            ${{ steps.collect.outputs.out_dir }}/verification.json
+
+      - name: Attach assets to GitHub Release (optional)
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          OUT_DIR: ${{ steps.collect.outputs.out_dir }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "$OUT_DIR"/*.dmg \
+            "$OUT_DIR"/*.zip \
+            "$OUT_DIR/SHA256SUMS-macOS-${{ matrix.arch }}.txt" \
+            --clobber

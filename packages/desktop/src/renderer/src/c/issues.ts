@@ -1,6 +1,6 @@
 import { sshSetupMarker } from '../../../shared/ssh-routing'
 import type { Item } from '../bridge'
-import { operationAssessments, type ExecutionAssessment } from '../../../../../kernel/src/protocol/assessment'
+import { isSupersededOperation, operationAssessments, type ExecutionAssessment } from '../../../../../kernel/src/protocol/assessment'
 
 export type OperationIssue = { id: string; title: string; reason: string; hint: string; output: string; command?: string; blocked: boolean; kind: 'error' | 'finding' | 'unverified' }
 const labels: Record<string, string> = { read: '读取文件', glob: '查找文件', grep: '搜索内容', web_search: '联网搜索', web_fetch: '读取网页', shell: '执行命令', write: '写入文件', apply_patch: '修改文件' }
@@ -9,8 +9,8 @@ const labels: Record<string, string> = { read: '读取文件', glob: '查找文�
 export function operationIssues(items: Item[], allItems = items, assessments: Map<string, ExecutionAssessment> = operationAssessments(allItems)): OperationIssue[] {
   return items.flatMap(item => {
     const assessment = assessments.get(item.id)
-    if (assessment?.recoveredBy) return []
-    if (assessment?.kind === 'success' && item.status !== 'failed') return []
+    if (assessment?.recoveredBy || (!assessment && isSupersededOperation(item, allItems))) return []
+    if (assessment?.kind === 'success' && (item.status !== 'failed' || (item.kind === 'commandExecution' && item.exitCode === 1))) return []
     if (!assessment && item.status !== 'failed' && item.status !== 'blocked' && !(item.kind === 'commandExecution' && item.status === 'completed' && item.exitCode !== null && item.exitCode !== 0)) return []
     const kind = assessment?.kind === 'finding' || assessment?.kind === 'unverified' ? assessment.kind : 'error'
     const output = item.kind === 'commandExecution' || item.kind === 'mcpToolCall' ? item.output : item.kind === 'fileChange' ? item.diff ?? '' : ''

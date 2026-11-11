@@ -1,45 +1,237 @@
 /**
- * glob + grep — dependency-free file search.
+ * glob + grep — high-throughput non-blocking file & content search.
  *
- * Walks the tree with a bounded budget, skips the usual VCS/node_modules
- * noise by default, and supports `**`, `*`, `?` in patterns (glob) plus
- * regex-or-literal matching (grep).
+ * Uses local `rg` (ripgrep) asynchronously when available on PATH for native
+ * multi-threaded speed + full `.gitignore` support, and falls back seamlessly
+ * to an async `.gitignore`-aware filesystem walker with periodic event-loop
+ * yields so Electron's main process never freezes even without `rg`.
+ *
+ * Security invariants enforced identically on BOTH paths:
+ *  - `isInsideWorkspace(ctx.cwd, file)`
+ *  - `!isSensitivePath(ctx.cwd, file)`
+ *  - `ctx.canReadPath?.(file) ?? true`
  */
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { spawn } from 'node:child_process';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
+import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { resolveWorkspacePath } from '../../config/settings.js';
 import { isInsideWorkspace, isSensitivePath } from '../workspace-guard.js';
 import { truncate } from '../../util.js';
 import type { ToolDefinition, ToolEvent } from '../types.js';
 
-const DEFAULT_IGNORES = ['node_modules', '.git', '.hg', '.svn', 'dist', 'out', '.next', 'target', '__pycache__', '.venv'];
-const MAX_FILES_SCANNED = 20_000;
+const DEFAULT_IGNORES = new Set([
+  'node_modules',
+  '.git',
+  '.hg',
+  '.svn',
+  'dist',
+  'out',
+  '.next',
+  'target',
+  '__pycache__',
+  '.venv',
+]);
+const MAX_FILES_SCANNED = 25_000;
 const MAX_RESULTS = 200;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-function walk(
+let rgAvailable: boolean | null = null;
+
+interface GitignoreRule {
+  negated: boolean;
+  dirOnly: boolean;
+  anchored: boolean;
+  regex: RegExp;
+}
+
+function compileGitignorePattern(rawLine: string): GitignoreRule | null {
+  let line = rawLine.replace(/\r$/, '');
+  if (!line || line.startsWith('#')) return null;
+  if (!line.endsWith('\\ ')) line = line.trimEnd();
+  if (!line) return null;
+
+  let negated = false;
+  if (line.startsWith('!')) {
+    negated = true;
+    line = line.slice(1);
+  }
+  let dirOnly = false;
+  if (line.endsWith('/')) {
+    dirOnly = true;
+    line = line.slice(0, -1);
+  }
+  if (!line) return null;
+
+  const anchored = line.includes('/');
+  if (line.startsWith('/')) line = line.slice(1);
+
+  let expr = anchored ? '^' : '(?:^|/)';
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (ch === '*') {
+      if (line[i + 1] === '*') {
+        if (line[i + 2] === '/') {
+          expr += '(?:.*/)?';
+          i += 2;
+        } else {
+          expr += '.*';
+          i++;
+        }
+      } else {
+        expr += '[^/]*';
+      }
+    } else if (ch === '?') {
+      expr += '[^/]';
+    } else if ('\\^$.|+()[]{}'.includes(ch)) {
+      expr += `\\${ch}`;
+    } else {
+      expr += ch;
+    }
+  }
+  expr += dirOnly ? '(?:/|$)' : '(?:$|/)';
+  try {
+    return { negated, dirOnly, anchored, regex: new RegExp(expr) };
+  } catch {
+    return null;
+  }
+}
+
+async function loadGitignoreRules(dir: string): Promise<GitignoreRule[]> {
+  try {
+    const raw = await readFile(join(dir, '.gitignore'), 'utf8');
+    if (raw.length > 128 * 1024) return [];
+    const rules: GitignoreRule[] = [];
+    for (const line of raw.split('\n')) {
+      const rule = compileGitignorePattern(line);
+      if (rule) rules.push(rule);
+    }
+    return rules;
+  } catch {
+    return [];
+  }
+}
+
+function isIgnoredByRules(
+  relFromRuleBase: string,
+  isDir: boolean,
+  scopes: Array<{ base: string; rules: GitignoreRule[] }>,
+  fullPath: string,
+): boolean {
+  let ignored = false;
+  for (const scope of scopes) {
+    if (!scope.rules.length) continue;
+    const rel = relative(scope.base, fullPath).replace(/\\/g, '/');
+    if (!rel || rel.startsWith('..')) continue;
+    const candidate = isDir ? `${rel}/` : rel;
+    for (const rule of scope.rules) {
+      if (rule.dirOnly && !isDir && !rel.includes('/')) continue;
+      if (rule.regex.test(candidate) || rule.regex.test(rel)) {
+        ignored = !rule.negated;
+      }
+    }
+  }
+  void relFromRuleBase;
+  return ignored;
+}
+
+async function walkAsync(
   root: string,
-  opts: { respectIgnores: boolean; budget: { count: number } },
+  workspaceRoot: string,
+  opts: {
+    respectIgnores: boolean;
+    budget: { count: number; ticks: number };
+    signal?: AbortSignal;
+    scopes: Array<{ base: string; rules: GitignoreRule[] }>;
+  },
   out: string[],
-): void {
+): Promise<void> {
+  if (opts.signal?.aborted || opts.budget.count <= 0) return;
   let entries;
   try {
-    entries = readdirSync(root, { withFileTypes: true });
+    entries = await readdir(root, { withFileTypes: true });
   } catch {
     return;
   }
+  const localRules = opts.respectIgnores ? await loadGitignoreRules(root) : [];
+  const nextScopes = localRules.length ? [...opts.scopes, { base: root, rules: localRules }] : opts.scopes;
+
   for (const entry of entries) {
-    if (opts.budget.count-- <= 0) return;
+    if (opts.signal?.aborted || opts.budget.count-- <= 0) return;
+    if (++opts.budget.ticks % 250 === 0) await yieldEventLoop();
     const full = join(root, entry.name);
-    if (isSensitivePath(root, full)) continue;
+    if (isSensitivePath(workspaceRoot, full) || isSensitivePath(root, full)) continue;
     if (entry.isDirectory()) {
-      if (opts.respectIgnores && DEFAULT_IGNORES.includes(entry.name)) continue;
-      walk(full, opts, out);
+      if (opts.respectIgnores && DEFAULT_IGNORES.has(entry.name)) continue;
+      if (opts.respectIgnores && isIgnoredByRules(entry.name, true, nextScopes, full)) continue;
+      await walkAsync(full, workspaceRoot, { ...opts, scopes: nextScopes }, out);
     } else if (entry.isFile()) {
+      if (opts.respectIgnores && isIgnoredByRules(entry.name, false, nextScopes, full)) continue;
       out.push(full);
     }
   }
+}
+
+async function runRipgrep(args: string[], cwd: string, signal?: AbortSignal, maxBytes = 4 * 1024 * 1024): Promise<{ ok: true; stdout: string; exitCode: number } | { ok: false }> {
+  if (rgAvailable === false) return { ok: false };
+  return new Promise((resolvePromise) => {
+    let child;
+    try {
+      child = spawn('rg', args, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      });
+    } catch {
+      rgAvailable = false;
+      resolvePromise({ ok: false });
+      return;
+    }
+    let stdout = '';
+    let bytes = 0;
+    let settled = false;
+    const finish = (res: { ok: true; stdout: string; exitCode: number } | { ok: false }) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      clearTimeout(timer);
+      resolvePromise(res);
+    };
+    const onAbort = () => {
+      child.kill();
+      finish({ ok: true, stdout, exitCode: 130 });
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish({ ok: true, stdout, exitCode: 124 });
+    }, 15_000);
+    timer.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      rgAvailable = true;
+      bytes += Buffer.byteLength(chunk, 'utf8');
+      if (bytes <= maxBytes) {
+        stdout += chunk;
+      } else {
+        child.kill();
+      }
+    });
+    child.on('error', () => {
+      rgAvailable = false;
+      finish({ ok: false });
+    });
+    child.on('close', (code) => {
+      if (code === null && rgAvailable === null) {
+        finish({ ok: false });
+        return;
+      }
+      rgAvailable = true;
+      finish({ ok: true, stdout, exitCode: code ?? 0 });
+    });
+  });
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -81,7 +273,7 @@ function baseDirOfPattern(pattern: string): { dir: string; rest: string } {
 export const globTool: ToolDefinition = {
   name: 'glob',
   description:
-    'Find files by glob pattern (e.g. "src/**/*.ts", "**/*.test.js"). Returns matching paths, newest-first when possible. Common build/VCS directories are skipped.',
+    'Find files by glob pattern (e.g. "src/**/*.ts", "**/*.test.js"). Respects .gitignore and skips common build/VCS directories.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -99,7 +291,13 @@ export const globTool: ToolDefinition = {
     if (!rest && dir) {
       const target = join(searchRoot, dir);
       if (isInsideWorkspace(ctx.cwd, target) && !isSensitivePath(ctx.cwd, target) && (ctx.canReadPath?.(target) ?? true)) {
-        try { if (statSync(target).isFile()) { yield { type: 'result', text: relative(searchRoot, target).replace(/\\/g, '/') + '\n(1 matches)' }; return; } } catch { /* absent literal */ }
+        try {
+          const st = await stat(target);
+          if (st.isFile()) {
+            yield { type: 'result', text: relative(searchRoot, target).replace(/\\/g, '/') + '\n(1 matches)' };
+            return;
+          }
+        } catch { /* absent literal */ }
       }
     }
     const root = dir ? join(searchRoot, dir) : searchRoot;
@@ -115,11 +313,36 @@ export const globTool: ToolDefinition = {
       return;
     }
 
-    const files: string[] = [];
-    walk(root, { respectIgnores: true, budget: { count: MAX_FILES_SCANNED } }, files);
+    let files: string[] | null = null;
+    const rootSt = await stat(root).catch(() => null);
+    if (rootSt?.isDirectory()) {
+      const rg = await runRipgrep(
+        ['--files', '--no-config', '--hidden', '--glob', '!.git', '--glob', '!node_modules', '--color', 'never'],
+        root,
+        ctx.signal,
+      );
+      if (rg.ok && (rg.exitCode === 0 || rg.exitCode === 1)) {
+        files = rg.stdout
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .slice(0, MAX_FILES_SCANNED)
+          .map((rel) => resolve(root, rel));
+      }
+    }
+
+    if (!files) {
+      files = [];
+      await walkAsync(
+        root,
+        ctx.cwd,
+        { respectIgnores: true, budget: { count: MAX_FILES_SCANNED, ticks: 0 }, signal: ctx.signal, scopes: [] },
+        files,
+      );
+    }
+
     const re = globToRegExp(effective);
     const matches = files
-      .filter((f) => ctx.canReadPath?.(f) ?? true)
+      .filter((f) => isInsideWorkspace(ctx.cwd, f) && !isSensitivePath(ctx.cwd, f) && (ctx.canReadPath?.(f) ?? true))
       .filter((f) => re.test(relative(root, f).replace(/\\/g, '/')))
       .map((f) => relative(searchRoot, f).replace(/\\/g, '/'))
       .sort()
@@ -137,7 +360,7 @@ export const globTool: ToolDefinition = {
 export const grepTool: ToolDefinition = {
   name: 'grep',
   description:
-    'Search file CONTENTS for a pattern (regex when valid, otherwise literal). Returns `path:line:text` matches. Prefer this over reading many files.',
+    'Search file CONTENTS for a pattern (regex when valid, otherwise literal). Respects .gitignore and returns `path:line:text` matches. Prefer this over reading many files.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -167,6 +390,14 @@ export const grepTool: ToolDefinition = {
       return;
     }
 
+    let rootStat;
+    try {
+      rootStat = await stat(searchRoot);
+    } catch (err) {
+      yield { type: 'result', text: `Error: ${err instanceof Error ? err.message : err}`, isError: true };
+      return;
+    }
+
     let re: RegExp | null = null;
     let literal = false;
     try {
@@ -175,28 +406,82 @@ export const grepTool: ToolDefinition = {
       literal = true;
     }
 
+    const cap = Math.min(maxResults ?? MAX_RESULTS, 1000);
+    const root0 = rootStat.isFile() ? join(searchRoot, '..') : searchRoot;
+
+    // Fast path: async ripgrep when available and regex is standard
+    if (!rootStat.isFile()) {
+      const rgArgs = [
+        '--no-config',
+        '--line-number',
+        '--with-filename',
+        '--no-heading',
+        '--color',
+        'never',
+        '--hidden',
+        '--max-filesize',
+        '2M',
+        '-i',
+        '--glob',
+        '!.git',
+        '--glob',
+        '!node_modules',
+      ];
+      if (include) rgArgs.push('--glob', include);
+      if (literal) rgArgs.push('-F');
+      rgArgs.push('--', pattern, '.');
+      const rg = await runRipgrep(rgArgs, searchRoot, ctx.signal);
+      if (rg.ok && (rg.exitCode === 0 || rg.exitCode === 1)) {
+        const results: string[] = [];
+        for (const rawLine of rg.stdout.split(/\r?\n/)) {
+          if (!rawLine) continue;
+          const m = /^(?:\.[\\/])?(.+?):(\d+):(.*)$/.exec(rawLine);
+          if (!m) continue;
+          const absFile = resolve(searchRoot, m[1]!);
+          if (!isInsideWorkspace(ctx.cwd, absFile) || isSensitivePath(ctx.cwd, absFile) || !(ctx.canReadPath?.(absFile) ?? true)) {
+            continue;
+          }
+          const relPath = relative(root0, absFile).replace(/\\/g, '/');
+          results.push(`${relPath}:${m[2]}:${m[3]!.trim().slice(0, 240)}`);
+          if (results.length >= cap) break;
+        }
+        yield {
+          type: 'result',
+          text: results.length
+            ? truncate(results.join('\n'), 20_000) + `\n(${results.length} matches)`
+            : 'No matches found.',
+        };
+        return;
+      }
+    }
+
+    // Universal async fallback: non-blocking .gitignore-aware walk + async file reads
     const files: string[] = [];
-    try {
-      const st = statSync(searchRoot);
-      if (st.isFile()) files.push(searchRoot);
-      else walk(searchRoot, { respectIgnores: true, budget: { count: MAX_FILES_SCANNED } }, files);
-    } catch (err) {
-      yield { type: 'result', text: `Error: ${err instanceof Error ? err.message : err}`, isError: true };
-      return;
+    if (rootStat.isFile()) {
+      files.push(searchRoot);
+    } else {
+      await walkAsync(
+        searchRoot,
+        ctx.cwd,
+        { respectIgnores: true, budget: { count: MAX_FILES_SCANNED, ticks: 0 }, signal: ctx.signal, scopes: [] },
+        files,
+      );
     }
 
     const includeRe = include ? globToRegExp(include) : null;
     const results: string[] = [];
-    const cap = Math.min(maxResults ?? MAX_RESULTS, 1000);
-    const root0 = files.length && statSync(searchRoot).isFile() ? join(searchRoot, '..') : searchRoot;
+    let fileIdx = 0;
 
     outer: for (const file of files) {
+      if (ctx.signal?.aborted) break;
+      if (++fileIdx % 40 === 0) await yieldEventLoop();
       if (isSensitivePath(ctx.cwd, file) || !isInsideWorkspace(ctx.cwd, file) || !(ctx.canReadPath?.(file) ?? true)) continue;
       if (includeRe && !includeRe.test(file.replace(/\\/g, '/').split('/').pop() ?? '')) continue;
       let content: string;
       try {
-        if (statSync(file).size > MAX_FILE_BYTES) continue;
-        content = readFileSync(file, 'utf8');
+        const st = await stat(file);
+        if (st.size > MAX_FILE_BYTES) continue;
+        content = await readFile(file, 'utf8');
         if (content.includes('\u0000')) continue;
       } catch {
         continue;

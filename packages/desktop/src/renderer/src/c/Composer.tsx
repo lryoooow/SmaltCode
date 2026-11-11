@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import Icon from './icons'
 import Popover from './Popover'
 import { Btn, Menu, MODES, cx } from './ui'
-import { errorText, folderName, store, type ContextReference, type Skill, type FilePreview } from '../bridge'
+import { errorText, folderName, store, type ContextReference, type Skill, type FilePreview, type ReasoningEffort } from '../bridge'
 import ContextInspector from './ContextInspector'
-import { ContextTray, FileMentions, mentionAt, type Mention } from './ContextFiles'
+import { ContextTray, FileMentions, VIRTUAL_CONTEXTS, mentionAt, type Mention } from './ContextFiles'
 import DocumentView from './DocumentView'
 import { Modal } from './Overlays'
 import { PROVIDER_NAMES } from './Overlays'
@@ -12,10 +12,29 @@ import ModelPicker from './ModelPicker'
 import type { ModelChoice } from './model-choices'
 
 export type { ModelChoice } from './model-choices'
-export default function Composer({ big, running, disabled, submitBlocked, blockedHint, onSend, onStop, value, setValue, mode, setMode, model, setModel, models, ws, fileScope, workspaceLabel, workspaceTitle, queued = 0, onError, onResetPermissions, approvedCategories, references = [], onReferencesChange, onPreview }: {
+
+const SLASH_COMMANDS = [
+  { cmd: '/init', label: '生成项目说明 (AGENTS.md)', desc: '扫描仓库目录与工具链，初始化可审计的 AGENTS.md 规范草稿', icon: 'file' },
+  { cmd: '/compact', label: '压缩对话上下文', desc: '立即执行多级上下文微压缩与结构化摘要', icon: 'refresh' },
+  { cmd: '/fork', label: '创建对话分支', desc: '从当前进度分叉出独立会话，方便并行探索不同方案', icon: 'branch' },
+  { cmd: '/plan', label: '切换到计划模式', desc: '仅分析代码与输出方案，不修改任何文件或执行写命令', icon: 'eye' },
+  { cmd: '/accept', label: '切换到允许编辑模式', desc: '自动允许工作区内文件编辑，命令执行仍需确认', icon: 'check' },
+  { cmd: '/default', label: '恢复默认审批模式', desc: '写操作与命令执行均先请求确认', icon: 'shield' },
+] as const
+
+const EFFORT_LABELS: Record<ReasoningEffort, { label: string; desc: string }> = {
+  low: { label: '低', desc: '快速响应，适合轻量修改与问答' },
+  medium: { label: '中', desc: '均衡推理深度与延迟' },
+  high: { label: '高', desc: '深度架构分析与复杂重构' },
+  max: { label: '极高', desc: '最大思考预算，适合疑难排障' },
+}
+
+export default function Composer({ big, running, disabled, submitBlocked, blockedHint, onSend, onStop, value, setValue, mode, setMode, model, setModel, models, reasoningEffort, onReasoningEffortChange, onSlashCommand, ws, fileScope, workspaceLabel, workspaceTitle, queued = 0, onError, onResetPermissions, approvedCategories, references = [], onReferencesChange, onPreview }: {
   big?: boolean; running?: boolean; disabled?: boolean; submitBlocked?: boolean; blockedHint?: string; onSend: (text: string) => Promise<void>; onStop?: () => void
   value: string; setValue: (value: string) => void; mode: string; setMode: (mode: string) => void
-  model: string; setModel: (model: string) => void; models: ModelChoice[]; ws?: string; fileScope?:string; workspaceLabel?: string; workspaceTitle?: string; queued?: number; onError: (message: string) => void
+  model: string; setModel: (model: string) => void; models: ModelChoice[]; reasoningEffort?: ReasoningEffort; onReasoningEffortChange?: (effort?: ReasoningEffort) => void
+  onSlashCommand?: (cmd: string) => Promise<void> | void
+  ws?: string; fileScope?:string; workspaceLabel?: string; workspaceTitle?: string; queued?: number; onError: (message: string) => void
   references?: ContextReference[]; onReferencesChange?: (refs: ContextReference[]) => void
   onResetPermissions?: () => void; approvedCategories?: string[]
   onPreview?: (ref: ContextReference) => void
@@ -23,12 +42,30 @@ export default function Composer({ big, running, disabled, submitBlocked, blocke
   const ta = useRef<HTMLTextAreaElement>(null), skillAnchor = useRef<HTMLButtonElement>(null)
   const [focus, setFocus] = useState(false)
   const [mention, setMention] = useState<Mention>()
+  const [slashDismissed, setSlashDismissed] = useState(false), [slashChoice, setSlashChoice] = useState(0)
+  const slashMatch = !slashDismissed ? /^\/([a-zA-Z0-9_-]*)$/.exec(value.trim()) : null
+  const slashQuery = slashMatch ? slashMatch[1]!.toLowerCase() : undefined
+  const slashItems = slashQuery !== undefined ? SLASH_COMMANDS.filter(item => item.cmd.slice(1).startsWith(slashQuery)) : []
   const choose = (path: string) => {
     if (!mention || !ws) return
     if (references.length >= 10) { onError('最多引用 10 项资料'); return }
-    const absolute = ws.replace(/\\/g, '/').replace(/\/$/, '') + '/' + path
-    if (!references.some(ref => ref.path === absolute && ref.start === undefined)) onReferencesChange?.([...references, { path: absolute, label: path }])
+    const virtual = VIRTUAL_CONTEXTS.find(v => v.path === path)
+    const targetPath = virtual ? virtual.path : ws.replace(/\\/g, '/').replace(/\/$/, '') + '/' + path
+    const targetLabel = virtual ? virtual.label : path
+    if (!references.some(ref => ref.path === targetPath && ref.start === undefined)) onReferencesChange?.([...references, { path: targetPath, label: targetLabel }])
     setValue(value.slice(0, mention.start) + value.slice(mention.end)); setMention(undefined); ta.current?.focus()
+  }
+  const runSlash = async (cmd: string) => {
+    const normalized = cmd.trim().split(/\s+/)[0]!.toLowerCase()
+    if (normalized === '/plan') { setMode('plan'); setValue(''); return true }
+    if (normalized === '/accept') { setMode('acceptEdits'); setValue(''); return true }
+    if (normalized === '/default') { setMode('default'); setValue(''); return true }
+    if (['/init', '/compact', '/fork'].includes(normalized) && onSlashCommand) {
+      setValue('')
+      await onSlashCommand(cmd.trim())
+      return true
+    }
+    return false
   }
   const [sending, setSending] = useState(false)
   const [confirmBypass, setConfirmBypass] = useState(false)
@@ -44,7 +81,7 @@ export default function Composer({ big, running, disabled, submitBlocked, blocke
     onReferencesChange?.(next.slice(0, 10))
   }
   const showPreview = async (ref: ContextReference) => {
-    if (onPreview && !ref.path.startsWith('skill:') && !ref.path.startsWith('feedback:') && !ref.path.startsWith('ssh-ref:') && !ref.path.startsWith('memory:')) { onPreview(ref); return }
+    if (onPreview && !ref.path.startsWith('@') && !ref.path.startsWith('skill:') && !ref.path.startsWith('feedback:') && !ref.path.startsWith('ssh-ref:') && !ref.path.startsWith('memory:')) { onPreview(ref); return }
     const request = ++previewRequest.current
     const name = ref.label ?? folderName(ref.path); setPreview({ name, loading: true })
     try {
@@ -68,8 +105,15 @@ export default function Composer({ big, running, disabled, submitBlocked, blocke
   }
   useEffect(() => { const el = ta.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, big ? 220 : 160) + 'px' } }, [value, big])
   const permission = MODES.find(m => m.id === mode) ?? MODES[0]
+  const currentChoice = models.find(m => m.id === model)
+  const supportedEfforts = currentChoice?.info?.reasoningEfforts?.filter((e): e is ReasoningEffort => e === 'low' || e === 'medium' || e === 'high' || e === 'max')
+  const activeEfforts = supportedEfforts?.length ? supportedEfforts : undefined
   const send = async () => {
     if (!value.trim() || sending || disabled || submitBlocked || adding) return
+    if (value.trim().startsWith('/')) {
+      setSending(true)
+      try { if (await runSlash(value.trim())) return } catch (err) { onError(errorText(err)); return } finally { if (alive.current) setSending(false) }
+    }
     setSending(true)
     try {
       await onSend(value.trim())
@@ -95,15 +139,23 @@ export default function Composer({ big, running, disabled, submitBlocked, blocke
   }
   return <div data-testid="composer" className="relative">
     {mention && <FileMentions ws={ws} mention={mention} onChoose={choose} onClose={() => setMention(undefined)} />}
+    {!mention && slashItems.length > 0 && <div data-testid="slash-commands" role="listbox" aria-label="快捷指令" className="absolute bottom-full left-0 right-0 mb-2 z-30 max-h-64 overflow-auto rounded-xl border border-[var(--line)] bg-[var(--surface-solid)] shadow-xl p-1.5"><div className="px-2 py-1.5 text-[11px] text-[var(--muted)]">快捷指令 · ↑↓ 选择，Enter 执行，Esc 关闭</div>{slashItems.map((item, idx) => <button key={item.cmd} role="option" aria-selected={idx === slashChoice} onMouseDown={e => e.preventDefault()} onClick={() => { void runSlash(item.cmd).catch(e => onError(errorText(e))); ta.current?.focus() }} className={cx('w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left', idx === slashChoice ? 'bg-[var(--accent-soft)] text-accent' : 'hover:bg-[var(--hover)]')}><Icon n={item.icon} s={14} /><span className="font-mono text-[12px] font-semibold">{item.cmd}</span><span className="text-[12px] font-medium">{item.label}</span><span className="ml-auto text-[11px] text-[var(--muted)] truncate max-w-56">{item.desc}</span></button>)}</div>}
     <div className={cx('composer-container relative rounded-2xl border bg-[var(--surface-solid)] transition-all duration-200', focus ? 'border-accent/50 shadow-[0_0_0_4px_rgba(47,79,208,.10),0_12px_40px_-12px_rgba(20,30,80,.25)]' : 'border-[var(--line)] shadow-[0_8px_30px_-14px_rgba(20,30,80,.2)]')}>
       {mode === 'bypassPermissions' && <div className="flex items-center gap-2 px-4 pt-2.5 text-[12px] text-rose-500"><Icon n="alert" s={13} />跳过操作审批，工作区与敏感路径限制仍生效</div>}
       <ContextTray refs={references} onChange={refs => onReferencesChange?.(refs)} onPreview={ref => void showPreview(ref)} controls={<ContextInspector fileScope={fileScope} refs={references} ws={ws} onChange={refs => onReferencesChange?.(refs)} onPreview={ref => void showPreview(ref)} />} />
       {adding && <div role="status" className="px-4 pt-2 text-[11px] text-[var(--muted)]">正在添加并检查资料…</div>}
       {queued > 0 && <div role="status" className="px-4 pt-2 text-[12px] text-[var(--muted)]">{queued} 条补充说明待处理</div>}
-      <textarea ref={ta} aria-label="任务输入" value={value} rows={big ? 3 : 1} disabled={disabled || sending} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} onChange={e => { setValue(e.target.value); setMention(mentionAt(e.target.value, e.target.selectionStart)) }}
+      <textarea ref={ta} aria-label="任务输入" value={value} rows={big ? 3 : 1} disabled={disabled || sending} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} onChange={e => { setValue(e.target.value); setSlashDismissed(false); setSlashChoice(0); setMention(mentionAt(e.target.value, e.target.selectionStart)) }}
         onPaste={e => { void paste(e) }}
-        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) { e.preventDefault(); void send() } }}
-        placeholder={submitBlocked ? blockedHint ?? '可以先写草稿，暂停托管任务后发送…' : running ? '补充说明，将在当前步骤后处理…' : big ? '描述你想完成的工作，输入 @ 引用文件…' : '继续对话，输入 @ 引用文件…'}
+        onKeyDown={e => {
+          if (!mention && slashItems.length > 0 && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
+            if (e.key === 'Escape') { e.preventDefault(); setSlashDismissed(true); return }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setSlashChoice(i => Math.max(0, Math.min(slashItems.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))); return }
+            if (e.key === 'Enter' && !e.shiftKey && slashItems[slashChoice]) { e.preventDefault(); void runSlash(slashItems[slashChoice].cmd).catch(err => onError(errorText(err))); return }
+          }
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) { e.preventDefault(); void send() }
+        }}
+        placeholder={submitBlocked ? blockedHint ?? '可以先写草稿，暂停托管任务后发送…' : running ? '补充说明，将在当前步骤后处理…' : big ? '描述你想完成的工作，输入 @ 引用文件或 Git 状态，输入 / 查看快捷指令…' : '继续对话，输入 @ 引用文件，输入 / 查看快捷指令…'}
         className={cx('block w-full resize-none bg-transparent outline-none placeholder:text-[var(--muted)]/70 leading-relaxed disabled:opacity-60', big ? 'px-4 pt-4 text-[15px]' : 'px-4 pt-3 text-[14px]')} />
       <div className="composer-tools flex flex-wrap items-center gap-1 p-2">
         <button aria-label="添加文件引用" title="添加 PNG/JPEG、PDF、Word、Excel 或文本，也可粘贴截图" disabled={disabled || sending || adding} onClick={() => void pick()} className="size-8 grid place-items-center rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] disabled:opacity-40"><Icon n="paperclip" s={17} /></button>
@@ -113,6 +165,11 @@ export default function Composer({ big, running, disabled, submitBlocked, blocke
         {!!approvedCategories?.length && <span title="可在权限菜单中撤销" className="composer-grants text-[12px] text-accent px-1">已允许{approvedCategories.map(c => ({ edit: '编辑', shell: '命令', read: '读取' }[c] ?? c)).join('、')}</span>}
         {ws && !big && <span data-testid="composer-work-location" title={workspaceTitle ?? ws} className="composer-workspace items-center gap-1 text-[12px] text-[var(--muted)] max-w-28 truncate"><Icon n="folder" s={12} />{workspaceLabel ?? folderName(ws)}</span>}
         <div className="flex-1" />
+        {activeEfforts && onReasoningEffortChange && <Menu up trigger={() => <button aria-label="思考深度" disabled={running || disabled || submitBlocked} title="调整推理模型的思考深度预算" className={cx('h-8 px-2 flex items-center gap-1 rounded-lg whitespace-nowrap text-[12px] hover:bg-[var(--hover)] disabled:opacity-50', reasoningEffort ? 'text-accent font-medium' : 'text-[var(--muted)]')}><Icon n="brain" s={13} /><span>{reasoningEffort ? '思考·' + EFFORT_LABELS[reasoningEffort].label : '思考深度'}</span><Icon n="down" s={11} /></button>}
+          items={[
+            { label: '模型默认', desc: '使用服务商默认思考深度', icon: 'brain', sel: !reasoningEffort, onClick: () => onReasoningEffortChange(undefined) },
+            ...activeEfforts.map(level => ({ label: EFFORT_LABELS[level].label + ` (${level})`, desc: EFFORT_LABELS[level].desc, icon: 'brain', sel: reasoningEffort === level, onClick: () => onReasoningEffortChange(level) })),
+          ]} />}
         <ModelPicker value={model} choices={models} onChange={setModel} disabled={running || disabled || submitBlocked} names={PROVIDER_NAMES} />
         {running && <button onClick={onStop} aria-label="停止" className="size-8 grid place-items-center rounded-lg bg-[var(--text)] text-[var(--bg)] hover:opacity-85"><Icon n="stop" s={13} w={2.4} /></button>}
         <button onClick={() => void send()} disabled={!value.trim() || sending || disabled || submitBlocked || adding} title={submitBlocked ? blockedHint ?? '暂停托管任务后发送' : undefined} aria-label={running ? '发送补充说明' : '发送'} className="size-8 grid place-items-center rounded-lg bg-accent text-white disabled:bg-[var(--line)] disabled:text-[var(--muted)] hover:brightness-110 transition"><Icon n="send" s={15} w={2.2} /></button>

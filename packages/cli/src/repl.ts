@@ -156,6 +156,48 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         activeKernel.getPermissions().setMode('plan');
         renderer.info('plan mode ON — only read-only tools run; /mode default to leave');
         break;
+      case 'init': {
+        try {
+          const overwrite = arg === '--force' || arg === 'force';
+          const res = (await activeKernel.handle('workspace/init', { threadId: meta.id, overwrite })) as { path: string; written: boolean; exists: boolean };
+          if (res.written) renderer.info(`created ${res.path}`);
+          else if (res.exists) renderer.info(`${res.path} already exists (use /init --force to overwrite)`);
+        } catch (err) {
+          renderer.error(err instanceof Error ? err.message : String(err));
+        }
+        break;
+      }
+      case 'fork': {
+        try {
+          const res = (await activeKernel.handle('thread/fork', { threadId: meta.id, ...(arg ? { title: arg } : {}) })) as { threadId: string; meta: ThreadMeta };
+          meta = res.meta;
+          renderer.info(`forked conversation -> ${meta.title} (${meta.id})`);
+        } catch (err) {
+          renderer.error(err instanceof Error ? err.message : String(err));
+        }
+        break;
+      }
+      case 'compact': {
+        try {
+          const res = (await activeKernel.handle('thread/compact/start', { threadId: meta.id })) as { compacted: boolean; reason?: string };
+          renderer.info(res.compacted ? 'context compacted' : (res.reason ?? 'context does not need compaction'));
+        } catch (err) {
+          renderer.error(err instanceof Error ? err.message : String(err));
+        }
+        break;
+      }
+      case 'effort': {
+        if (!arg || !['low', 'medium', 'high', 'max', 'default', 'off'].includes(arg)) {
+          renderer.info(`current reasoning effort: ${meta.reasoningEffort ?? 'default'}`);
+          renderer.info('usage: /effort <low|medium|high|max|default>');
+        } else {
+          const effort = arg === 'default' || arg === 'off' ? null : arg;
+          const res = (await activeKernel.handle('thread/settings/update', { threadId: meta.id, reasoningEffort: effort })) as { meta: ThreadMeta };
+          meta = res.meta;
+          renderer.info(`reasoning effort: ${meta.reasoningEffort ?? 'default'}`);
+        }
+        break;
+      }
       case 'status': {
         const s = activeKernel.threads.status(meta.id);
         renderer.info(`lifecycle=${s.lifecycle} state=${s.state} queued=${s.queuedMessages}`);
@@ -165,7 +207,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         renderer.info(meta.cwd);
         break;
       case 'help':
-        renderer.info('commands: /exit /model <ref> /mode <name> /plan /status /cwd');
+        renderer.info('commands: /exit /model <ref> /mode <name> /effort <level> /plan /init [--force] /fork [title] /compact /status /cwd');
         break;
       default:
         renderer.info(`unknown command: ${cmd} (try /help)`);

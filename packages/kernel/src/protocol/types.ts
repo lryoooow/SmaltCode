@@ -139,6 +139,8 @@ export interface ThreadMeta {
   archived?: boolean;
   approvedCategories?: Array<'edit' | 'read' | 'shell'>;
   permissionMode?: import('../permissions/rules.js').PermissionMode;
+  reasoningEffort?: import('../models/types.js').ReasoningEffort;
+  forkedFrom?: { threadId: string; itemId?: string };
   lastOutcome?: 'completed' | 'failed' | 'interrupted';
   lastError?: string;
   lastAssessment?: import('./assessment.js').TurnAssessment;
@@ -185,9 +187,13 @@ export interface ThreadStatus {
 export interface ThreadTokenUsage {
   inputTokens: number;
   outputTokens: number;
+  /** prompt prefix cache hit tokens on the latest model response, when reported */
+  cachedInputTokens?: number;
   /** total across the thread, loaded from persistence + this session */
   totalInputTokens: number;
   totalOutputTokens: number;
+  /** cumulative cached input tokens across this session */
+  totalCachedInputTokens?: number;
   contextWindow: number;
   thresholdTokens?: number;
   /** rough share of the context window currently occupied (0..1) */
@@ -243,12 +249,14 @@ export const Methods = {
   initialize: 'initialize',
   threadStart: 'thread/start',
   threadResume: 'thread/resume',
+  threadFork: 'thread/fork',
   threadList: 'thread/list',
   threadRead: 'thread/read',
   threadArchive: 'thread/archive',
   threadRestore: 'thread/restore',
   threadDelete: 'thread/delete',
   threadProject: 'thread/project/update',
+  workspaceInit: 'workspace/init',
   projectList: 'project/list',
   projectCreate: 'project/create',
   projectUpdate: 'project/update',

@@ -3,7 +3,7 @@ import Icon from './icons'
 import { cx, IconBtn, Menu, StatusDot, type Task } from './ui'
 import type { ProjectMeta } from '../bridge'
 
-type Action = 'rename' | 'pin' | 'archive' | 'delete' | 'move'
+type Action = 'rename' | 'pin' | 'archive' | 'delete' | 'move' | 'fork'
 export default function SidebarContents({ tasks, projects, current, project, loading, busy, onOpen, onProject, onNewProject, onEditProject, onDeleteProject, onTask }: {
   tasks: Task[]; projects: ProjectMeta[]; current: string | null; project?: string; loading: boolean; busy: (id: string) => boolean
   onOpen: (id: string) => void; onProject: (id: string) => void; onNewProject: () => void; onEditProject: (id: string) => void; onDeleteProject: (id: string) => void
@@ -17,6 +17,7 @@ export default function SidebarContents({ tasks, projects, current, project, loa
     <div className="absolute right-1 top-1.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
       <Menu align="right" trigger={() => <IconBtn n="dots" label={'对话操作 ' + task.title} />} items={[
         { label: '重命名', icon: 'file', onClick: () => onTask(task.id, 'rename') },
+        { label: '创建分支', icon: 'branch', disabled: busy(task.id), onClick: () => onTask(task.id, 'fork') },
         { label: task.pinned ? '取消置顶' : '置顶', icon: 'pin', onClick: () => onTask(task.id, 'pin') },
         { label: '归档', icon: 'archive', disabled: busy(task.id), onClick: () => onTask(task.id, 'archive') },
         { label: '-' },

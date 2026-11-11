@@ -28,7 +28,7 @@ export interface CompactResult {
   history: ChatMessage[];
   summary?: string;
   reason?: string;
-  method?: 'model' | 'toolOutputs';
+  method?: 'model' | 'toolOutputs' | 'micro';
   beforeTokens?: number;
   afterTokens?: number;
 }
@@ -88,6 +88,40 @@ export class Compactor {
   }
   thresholdTokens(window = this.opts.contextWindow): number { return Math.floor(window * this.opts.threshold); }
 
+  /**
+   * Stage 1 Micro-Compaction: ages out bulky tool outputs older than `minAgeMessages`
+   * without invoking an LLM call, preserving recent messages verbatim and postponing
+   * full history replacement so Prefix Cache hits stay valid longer.
+   */
+  microCompact(history: ChatMessage[], minAgeMessages = 8, maxToolChars = 2800): CompactResult {
+    const beforeTokens = this.estimate(history);
+    const cutoff = history.length - minAgeMessages;
+    if (cutoff <= 0) return { compacted: false, history, beforeTokens, afterTokens: beforeTokens };
+    let changed = false;
+    const reduced = history.map((m, idx): ChatMessage => {
+      if (idx < cutoff && m.role === 'tool' && m.content.length > maxToolChars + 400 && !m.content.includes('[早期工具输出已微压缩')) {
+        changed = true;
+        return {
+          ...m,
+          content: budgetToolOutput(m.content, maxToolChars) + '\n[早期工具输出已微压缩；如需最新原文请按路径重新读取。]',
+        };
+      }
+      return m;
+    });
+    const afterTokens = changed ? this.estimate(reduced) : beforeTokens;
+    if (!changed || beforeTokens - afterTokens < 512) {
+      return { compacted: false, history, beforeTokens, afterTokens: beforeTokens };
+    }
+    return {
+      compacted: true,
+      history: reduced,
+      method: 'micro',
+      summary: '已自动微压缩早期长工具输出，完整保留对话指令与近期上下文。',
+      beforeTokens,
+      afterTokens,
+    };
+  }
+
   async compact(
     history: ChatMessage[],
     ref: ModelRef,
@@ -126,9 +160,11 @@ export class Compactor {
       return this.failed(history, cut, reason, contextWindow, requestTokens);
     }
 
+    const anchor = extractPinnedAnchor(old);
+    const fullSummary = anchor ? `${anchor}\n\n${summary}` : summary;
     const newHistory: ChatMessage[] = [
       ...system,
-      { role: 'user', content: `<conversation-summary>\n${summary}\n</conversation-summary>\n(earlier messages were compacted; continue from here)` },
+      { role: 'user', content: `<conversation-summary>\n${fullSummary}\n</conversation-summary>\n(earlier messages were compacted; continue from here)` },
       ...tail,
     ];
     const gain = this.estimate(history) - this.estimate(newHistory);
@@ -162,21 +198,17 @@ export class Compactor {
   }
 
   private async summarize(messages: ChatMessage[], ref: ModelRef, contextWindow: number, signal?: AbortSignal): Promise<string> {
-    let transcript = messages
-      .map((m) => {
-        if (m.role === 'system') return `[system] ${m.content}`;
-        if (m.role === 'user') return `[user] ${snippet(m)}`;
-        if (m.role === 'assistant') {
-          const tools = m.toolCalls?.map((tc) => `[tool ${tc.name}] ${tc.arguments}`).join(' ') ?? '';
-          return `[assistant] ${m.content ?? ''}${tools}`.trim();
-        }
-        return `[tool-result] ${budgetToolOutput(m.content, 1600)}`;
-      })
-      .join('\n');
+    const lines = messages.map((m) => {
+      if (m.role === 'system') return `[system] ${m.content}`;
+      if (m.role === 'user') return `[user] ${snippet(m)}`;
+      if (m.role === 'assistant') {
+        const tools = m.toolCalls?.map((tc) => `[tool ${tc.name}] ${tc.arguments}`).join(' ') ?? '';
+        return `[assistant] ${m.content ?? ''}${tools}`.trim();
+      }
+      return `[tool-result] ${budgetToolOutput(m.content, 1600)}`;
+    });
     const transcriptBudget = Math.max(128, Math.floor(contextWindow * .55) - estimateTokens(SUMMARY_PROMPT));
-    while (transcript.length > 60_000 || estimateTokens(transcript) > transcriptBudget) {
-      transcript = budgetToolOutput(transcript, Math.max(64, Math.floor(transcript.length * .7)));
-    }
+    let transcript = budgetTranscriptHeadTail(lines, Math.min(60_000, transcriptBudget * 4), transcriptBudget);
     const request: ChatMessage[] = [
         { role: 'system', content: SUMMARY_PROMPT },
         { role: 'user', content: transcript },
@@ -210,4 +242,59 @@ function snippet(m: Extract<ChatMessage, { role: 'user' }>): string {
     .map((p) => (p.type === 'text' ? p.text : '[image]'))
     .join(' ')
     .slice(0, 8000);
+}
+
+/** Preserves initial goal (head) and latest context (tail) when transcript exceeds budget. */
+function budgetTranscriptHeadTail(lines: string[], maxChars: number, maxTokens: number): string {
+  let joined = lines.join('\n');
+  if (joined.length <= maxChars && estimateTokens(joined) <= maxTokens) return joined;
+  // Allocate 30% to initial goal/context, 70% to most recent pre-cut work
+  while (joined.length > maxChars || estimateTokens(joined) > maxTokens) {
+    const targetChars = Math.max(64, Math.floor(Math.min(joined.length, maxChars) * 0.72));
+    const headChars = Math.floor(targetChars * 0.3);
+    const marker = '\n… [earlier intermediate steps omitted; initial goal and latest pre-cut steps preserved] …\n';
+    const tailChars = Math.max(16, targetChars - headChars - marker.length);
+    joined = joined.slice(0, headChars) + marker + joined.slice(-tailChars);
+    if (targetChars <= 64) break;
+  }
+  return joined;
+}
+
+/** Extracts the pinned initial user objective and latest plan checklist so multi-compactions never drift. */
+function extractPinnedAnchor(messages: ChatMessage[]): string {
+  let initialGoal = '';
+  let latestPlan = '';
+
+  for (const m of messages) {
+    if (!initialGoal && m.role === 'user') {
+      const raw = snippet(m);
+      const prevAnchor = /<pinned-task-anchor>\s*([\s\S]*?)\s*<\/pinned-task-anchor>/.exec(raw);
+      if (prevAnchor) {
+        const prevGoal = /^Initial Goal:\s*(.+)$/m.exec(prevAnchor[1]!);
+        if (prevGoal?.[1]) initialGoal = prevGoal[1].trim();
+      } else if (!raw.startsWith('<conversation-summary>')) {
+        initialGoal = raw.replace(/\s+/g, ' ').trim().slice(0, 360);
+      }
+    }
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      for (const tc of m.toolCalls) {
+        if (tc.name === 'plan') {
+          try {
+            const parsed = JSON.parse(tc.arguments) as { steps?: Array<{ content?: string; status?: string }> };
+            if (Array.isArray(parsed.steps) && parsed.steps.length) {
+              latestPlan = parsed.steps
+                .slice(0, 12)
+                .map((s) => `- [${s.status ?? 'pending'}] ${String(s.content ?? '').slice(0, 140)}`)
+                .join('\n');
+            }
+          } catch { /* ignore malformed args */ }
+        }
+      }
+    }
+  }
+
+  const parts: string[] = [];
+  if (initialGoal && initialGoal.length <= 360) parts.push(`Initial Goal: ${initialGoal}`);
+  if (latestPlan) parts.push(`Latest Plan:\n${latestPlan}`);
+  return parts.length ? `<pinned-task-anchor>\n${parts.join('\n')}\n</pinned-task-anchor>` : '';
 }

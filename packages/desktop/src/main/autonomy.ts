@@ -215,6 +215,35 @@ export class Autonomy {
     if(config.auto){if(!await this.options.consent('启用自动引用记忆',`${value.title}\n工作区：${value.cwd}\n项目：${value.projectId??'此工作区'}\n来源：${value.source.note}\n\n该内容会加入匹配范围的后续手动任务并发送给模型。定时任务只使用其明确选择的记忆，不自动加入。请勿保存密钥。\n\n${value.body.slice(0,3000)}`))throw new Error('已取消自动引用');this.recheck('memories',memoryId,revision);this.writable();this.vault.save(value.id,this.binding(value),{approved:true});}else this.vault.remove(value.id);
     this.save(data=>{data.memories=[...data.memories.filter(m=>m.id!==value.id),value];});return value;
   });}
+  /** Extracts reviewable durable project-convention candidates from explicit user rules in a thread (`U9b`). Never auto-persists without user action. */
+  suggestMemories(threadId: string): Array<{ itemId: string; title: string; body: string }> {
+    if (this.store.notice) return [];
+    const { meta, items } = this.options.kernel.threads.read(threadId);
+    const scopeCanonical = canonical(meta.cwd);
+    const existingBodies = new Set(
+      this.store.data.memories
+        .filter((m) => m.canonical === scopeCanonical)
+        .map((m) => m.body.trim().toLowerCase()),
+    );
+    const rulePattern = /(?:请记住|记住[：:]?|以后(?:都|一律|统一)|项目规范[：:]?|统一使用|禁止使用|不要使用|永远不要|默认使用|always\s+use|never\s+use|project\s+convention)/i;
+    const secretPattern = /(?:sk-[a-zA-Z0-9_-]{12,}|api[_-]?key|password|secret|token\s*[:=])/i;
+    const out: Array<{ itemId: string; title: string; body: string }> = [];
+    for (const item of [...items].reverse()) {
+      if (item.kind !== 'userMessage') continue;
+      const lines = item.text
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length >= 6 && l.length <= 400 && rulePattern.test(l) && !secretPattern.test(l));
+      if (!lines.length) continue;
+      const body = lines.join('\n').slice(0, 1200);
+      if (existingBodies.has(body.toLowerCase())) continue;
+      existingBodies.add(body.toLowerCase());
+      const title = lines[0]!.replace(/^(?:请记住|记住)[：:\s]*/i, '').slice(0, 36) || '项目开发约定';
+      out.push({ itemId: item.id, title, body });
+      if (out.length >= 2) break;
+    }
+    return out;
+  }
   async prepareMessage(threadId:string,input:string,references:Array<{path:string;label?:string}>=[],kind:'message'|'queued'|'managed'='message',runId?:string,automatic=true){
     const meta=this.options.kernel.threads.read(threadId).meta,scope={canonical:canonical(meta.cwd),projectId:meta.projectId};const selected:Memory[]=[];
     for(const reference of references.filter(ref=>ref.path.startsWith('memory:'))){const match=/^memory:(memory_[a-f0-9-]{36})@([a-f0-9]{64})$/.exec(reference.path);if(!match)throw new Error('记忆引用无效');const memory=this.memory(match[1]!,scope);if(memory.digest!==match[2])throw new Error('记忆已更新，请重新选择');if(!selected.some(m=>m.id===memory.id))selected.push(memory);}

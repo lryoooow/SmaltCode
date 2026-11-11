@@ -8,14 +8,14 @@
   <p><strong>从一句需求，到看得见、可核对的工作成果。</strong></p>
   <p>多模型 AI 编程与办公桌面助手 · 中文界面 · 本地保存 · 可控执行</p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.7%20preview-2F4FD0" alt="0.0.7 公开测试版" />
-    <img src="https://img.shields.io/badge/platform-Windows%20x64-5B6475" alt="Windows x64" />
+    <img src="https://img.shields.io/badge/version-0.0.8%20preview-2F4FD0" alt="0.0.8 公开测试版" />
+    <img src="https://img.shields.io/badge/platform-Windows%20x64%20%7C%20macOS%2013%2B-5B6475" alt="Windows x64 | macOS 13+" />
     <img src="https://img.shields.io/badge/license-Apache--2.0-23A075" alt="Apache-2.0" />
   </p>
-  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.7">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/releases/v0.0.7.md">本次更新</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a></p>
+  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.8">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/releases/v0.0.8.md">本次更新</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a></p>
 </div>
 
-> **0.0.7 是公开测试版本。** 本次新增验收卡、网页多点批注，以及支持逐文件核对和回查的恢复流程。欢迎体验、报告 Bug、提出交互与功能建议，也欢迎参与代码和文档改进。Office、远程主机及第三方模型的兼容性仍需更多真实场景验证。
+> **0.0.8 是公开测试版本。** 本次全面升级底层智能体引擎（Prefix Cache 命中率优化、OpenAI `/v1/responses` 协议、多级容错补丁与零执行静态诊断、有界子智能体委派、两阶段微压缩、对话分叉、`AGENTS.md` 自动发现与 `/init`、动态上下文 `@git:diff` / `@terminal`、交互式后台进程输入及技能渐进加载），同时支持 **Windows x64 安装包** 与 **macOS 13+（Apple Silicon / Intel）Ad-hoc 安装包** 构建。
 
 ![SmaltCode 0.0.5 首页](docs/images/v0.0.5/home.png)
 
@@ -49,7 +49,7 @@ SmaltCode 将对话、代码执行、文档编辑、终端和任务管理放在�
 | 跨设备 | 显式开启的 HTTPS 主机连接、配对、设备/会话撤销和手机查看/回答 |
 | 多模型 | 服务商模型发现、搜索和容量来源提示；上下文整理、错误检查与用量诊断 |
 
-内置 DeepSeek、智谱、Kimi、通义千问、OpenAI、Anthropic、OpenRouter 和 Ollama 配置。支持 OpenAI 兼容 Chat Completions 与 Anthropic Messages；实际可用性取决于服务地址、账户权限和模型的工具调用能力。
+内置 DeepSeek、智谱、Kimi、通义千问、OpenAI、Anthropic、OpenRouter 和 Ollama 配置。原生支持 OpenAI Chat Completions、OpenAI Responses API（`/v1/responses`）与 Anthropic Messages（含自动前缀缓存断点与可控思考深度）；实际可用性取决于服务地址、账户权限和模型的工具调用能力。
 
 ## 界面一览
 
@@ -68,21 +68,30 @@ SmaltCode 将对话、代码执行、文档编辑、终端和任务管理放在�
 
 ## 下载与安装
 
-**Windows x64 · v0.0.7 公开测试版 · 验收卡、网页批注与安全恢复**
+### Windows x64（v0.0.8 公开测试版）
 
-1. 下载 [SmaltCode-Setup-0.0.7-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.7/SmaltCode-Setup-0.0.7-SFox.exe)。
+1. 下载 [SmaltCode-Setup-0.0.8-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.8/SmaltCode-Setup-0.0.8-SFox.exe)。
 2. 升级前从系统托盘退出旧版，并备份已有工作资料；按向导选择安装目录。
 3. 从桌面或开始菜单打开 **SmaltCode**，配置模型即可开始对话。
 
-[Release 与更新说明](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.7) 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.7/SHA256SUMS.txt)。在 PowerShell 中核对：
+[Release 与更新说明](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.8) 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.8/SHA256SUMS.txt)。在 PowerShell 中核对：
 
 ```powershell
-Get-FileHash .\SmaltCode-Setup-0.0.7-SFox.exe -Algorithm SHA256
+Get-FileHash .\SmaltCode-Setup-0.0.8-SFox.exe -Algorithm SHA256
 ```
 
-当前安装包未做代码签名，Windows 可能显示未验证发布者。macOS、Linux 暂未提供经过桌面验收的安装包。
+当前安装包未做付费商业代码签名，Windows 首次打开可能提示 SmartScreen 未验证发布者（点击“更多信息 → 仍要运行”）。
 
-macOS 适配正在开发：计划提供 **macOS 13+、Apple Silicon / Intel 分架构 DMG 和 ZIP**，使用原生窗口按钮、菜单与 ⌘ 快捷键。公开分发前须完成 Developer ID 签名、Apple 公证及真实 Mac 验收；当前发布的 v0.0.7 仍只有 Windows 包。详见 [macOS 构建与验收](docs/macos.md)。
+### macOS 13+（Apple Silicon `arm64` / Intel `x64` · Ad-hoc 测试版）
+
+1. 根据芯片架构下载对应的 `SmaltCode-0.0.8-macOS-arm64-adhoc.dmg`（M1/M2/M3/M4 系列）或 `SmaltCode-0.0.8-macOS-x64-adhoc.dmg`（Intel Mac），打开后将 **SmaltCode** 拖入 `Applications`（应用程序）。
+2. 由于社区测试版采用 Ad-hoc 本地签名（未使用付费 Apple Developer ID 公证），首次通过浏览器下载打开时若 macOS Gatekeeper 提示“无法验证开发者”或“已损坏”，请在终端执行一次隔离属性清除命令即可正常打开：
+
+```sh
+xattr -cr /Applications/SmaltCode.app
+```
+
+详见 [macOS 构建、安装与验收说明](docs/macos.md)。
 
 ## 快速开始
 
@@ -125,15 +134,14 @@ DeepSeek Search / Fetch 使用 DeepSeek 开放平台 API Key，可自行填写�
 
 普通对话与 SSH / 容器对话均可使用独立的主机端搜索服务。托管或无人值守任务仍受各自工具白名单限制，全局启用搜索不会自动扩大其工具范围。
 
-## 本次更新
+## 本次更新（v0.0.8）
 
-- **可追溯的验收卡**。在执行结果中按需查看失败和跳过原因、退出码、原始命令输出及后续复查。
-- **网页多点批注**。连续点选网页元素，逐条说明，发送前核对截图和来源。支持键盘切换父子元素。
-- **恢复前预览**。逐文件核对恢复范围、冲突和差异。确认后再次校验内容，保留后续修改。最近一次恢复的逐项结果可以在原对话回查。
+- **底层模型与缓存效率升级**：新增 OpenAI `/v1/responses` 原生适配器（解锁 `gpt-5.3-codex` 等模型）、Anthropic 自动 `cache_control` 前缀断点、DeepSeek 跨轮 `reasoning_content` 清理与可控思考深度（`low` / `medium` / `high` / `max`），并在底栏实时展示前缀缓存命中率。
+- **高稳定工具与执行闭环**：`apply_patch` 四级渐进模糊寻址与自动缩进补偿、写入后毫秒级零执行语法/括号/冲突标记诊断、只读工具并发调度 + 死循环熔断器、流式 SSE 僵死看门狗与超长输出续写恢复。
+- **工程上下文、子智能体与分支体验**：自动层级发现 `AGENTS.md` / `CLAUDE.md` 并支持 `/init` 生成规范草稿；输入框支持 `@git:diff`、`@git:status`、`@terminal` 动态引用与 `/` 快捷指令；新增有界子智能体 `delegate_task`、技能按需渐进加载 `activate_skill`、后台进程标准输入 `process_write`、一键对话分叉（`Fork`）与项目约定记忆提取建议。
+- **Windows + macOS 双平台安装包支持**：本地构建 Windows NSIS 安装包，并提供支持 Apple Silicon (`arm64`) 与 Intel (`x64`) 的 macOS Ad-hoc DMG/ZIP 打包脚本及手动触发（`workflow_dispatch`）构建工作流。
 
-![恢复前逐文件检查与差异](docs/images/v0.0.7/restore-preview.png)
-
-详见 [0.0.7 Release 说明](docs/releases/v0.0.7.md)。此前的联网搜索和图标修复见 [0.0.6](docs/releases/v0.0.6.md)，工作区、SSH 和 Office 见 [0.0.5](docs/releases/v0.0.5.md)。更早版本见 [GitHub Releases](https://github.com/lryoooow/SmaltCode/releases)。
+详见 [0.0.8 Release 说明](docs/releases/v0.0.8.md)。此前的验收卡、网页批注和恢复预览见 [0.0.7](docs/releases/v0.0.7.md)，联网搜索见 [0.0.6](docs/releases/v0.0.6.md)，工作区、SSH 和 Office 见 [0.0.5](docs/releases/v0.0.5.md)。更早版本见 [GitHub Releases](https://github.com/lryoooow/SmaltCode/releases)。
 
 ## 权限与数据
 
@@ -174,7 +182,7 @@ npm run package:desktop
 
 打包流水线验证版本与全部图标、ASAR 文件一致性、文档解析、原生 PTY/SSH 工作线程、启动和托盘退出。设置 `SMALT_TEST_OFFICE_LIBRE` 与 `SMALT_TEST_OFFICE_PYTHON` 后，还会验证打包目录下真实 Office 保存链；组件需自行准备。
 
-**本仓库保持 GitHub Actions 关闭**，验证在本地完成。测试范围和实际结果见 [本次发布说明](docs/releases/v0.0.7.md) 及各版本 Release。
+日常代码提交不触发远程 CI，测试与 Windows 安装包验证均在本地完成；仅保留 `.github/workflows/package-macos.yml` 手动按需（`workflow_dispatch`）打包 macOS `arm64` / `x64` 安装包。测试范围和实际结果见 [本次发布说明](docs/releases/v0.0.8.md) 及各版本 Release。
 
 ```text
 packages/kernel/   智能体、模型、工具、权限和任务存储

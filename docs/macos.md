@@ -41,7 +41,39 @@ npm run preview:desktop
 
 预览生成于仓库 `.local-preview/runtime/`，数据位于 `.local-preview/data/`。不会修改共享 Electron 依赖或正式用户资料。修改后的本地应用需 ad-hoc 签名才能在 Apple Silicon 上运行；这不等同于 Developer ID 或公证。`--no-build` 仅适用于已构建的最新源码。
 
-## 正式候选包
+## 社区测试版（Ad-hoc 签名 DMG / ZIP）构建与安装
+
+当尚未配置付费 Apple Developer ID 证书时，可通过显式 `--adhoc`（或环境变量 `SMALT_MAC_ADHOC=1`）构建可在 Apple Silicon（`arm64`）与 Intel（`x64`）Mac 上直接运行的 Ad-hoc 签名 DMG 与 ZIP 安装包：
+
+### 方式一：在 Mac 本机执行 Ad-hoc 打包
+
+```sh
+# Apple Silicon Mac（Node 22 arm64）
+node scripts/build-desktop-mac.mjs --arch arm64 --adhoc
+
+# Intel Mac（Node 22 x64）
+node scripts/build-desktop-mac.mjs --arch x64 --adhoc
+```
+
+### 方式二：GitHub Actions 手动按需构建（`workflow_dispatch`）
+
+仓库提供纯手动触发工作流 `.github/workflows/package-macos.yml`（不会在 `push` 或 `pull_request` 时自动运行）：
+
+1. 打开仓库 GitHub 页面 → **Actions** → **Package macOS Desktop (Manual)** → 点击 **Run workflow**。
+2. 选择架构（`both` 同时构建 `arm64` 与 `x64`，或单选），可选填入已创建的 Release Tag（例如 `v0.0.8`）以自动附加安装包与 `SHA256SUMS`。
+3. 工作流在原生 `macos-15`（`arm64`）与 `macos-15-intel`（`x64`）环境完成类型检查、内核单测、Electron 打包、`codesign --verify`、启动冒烟测试与原生 `node-pty` ABI 验证后，上传 `SmaltCode-macOS-arm64-adhoc` 与 `SmaltCode-macOS-x64-adhoc` 产物。
+
+### macOS 用户首次安装打开说明
+
+由于 Ad-hoc 签名包未经过付费 Apple 公证，通过浏览器下载 `.dmg` / `.zip` 并将 `SmaltCode.app` 拖入 `/Applications` 后，首次双击可能被 macOS Gatekeeper 拦截提示“无法验证开发者”或“已损坏”。在终端执行一次以下命令清除下载隔离扩展属性即可正常启动：
+
+```sh
+xattr -cr /Applications/SmaltCode.app
+```
+
+---
+
+## 正式公证候选包（Developer ID + Notarization）
 
 需要真实 Mac、Apple Developer Program 的 Developer ID Application 证书、Apple 签名工具以及可用的公证凭据。证书和密钥留在维护者的 Mac 钥匙串，不发到对话或提交进仓库。
 

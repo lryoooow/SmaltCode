@@ -11,6 +11,8 @@ export type ToolEvent =
 export interface ToolRunContext {
   /** Search tools must check every file, not only the initial directory. Host-owned. */
   canReadPath?: (path: string) => boolean;
+  /** Optional pluggable execution backend (defaults to local workspace). */
+  backend?: import('./execution-backend.js').ExecutionBackend;
   policy?: import('../core/run-policy.js').ToolPolicy;
   cwd: string;
   threadId: string;

@@ -1,0 +1,31 @@
+# Ad-hoc signed macOS test/community distribution (no paid Apple Developer ID required).
+# Apple Silicon requires valid ad-hoc Mach-O code signatures (`identity: "-"`); first-launch
+# Gatekeeper quarantine on downloaded files is cleared with `xattr -cr /Applications/SmaltCode.app`.
+extends: ./electron-builder.yml
+afterPack: after-pack-mac.cjs
+forceCodeSigning: false
+directories:
+  output: release-mac
+  buildResources: build
+mac:
+  icon: assets/smalt.icns
+  category: public.app-category.developer-tools
+  minimumSystemVersion: '13.0'
+  darkModeSupport: true
+  identity: '-'
+  hardenedRuntime: false
+  notarize: false
+  target:
+    - dmg
+    - zip
+  artifactName: SmaltCode-${version}-macOS-${arch}-adhoc.${ext}
+dmg:
+  sign: false
+  contents:
+    - x: 140
+      y: 160
+      type: file
+    - x: 420
+      y: 160
+      type: link
+      path: /Applications

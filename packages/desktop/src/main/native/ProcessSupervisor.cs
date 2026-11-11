@@ -48,7 +48,8 @@ class ProcessSupervisor {
       double born=(parent.StartTime.ToUniversalTime()-new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;
       if(Math.Abs(born-config.parentStartedAt)>10000 || parent.HasExited) throw new Exception("Parent process identity changed");
       job=CreateJobObject(IntPtr.Zero,null);
-      var limits=new ExtendedLimits(); limits.Basic.Flags=0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; no breakaway.
+      // 0x2000 = KILL_ON_JOB_CLOSE, 0x0400 = DIE_ON_UNHANDLED_EXCEPTION, 0x0008 = ACTIVE_PROCESS limit (fork-bomb guard).
+      var limits=new ExtendedLimits(); limits.Basic.Flags=0x2408; limits.Basic.ActiveProcessLimit=64;
       if(job==IntPtr.Zero || !SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf(limits)) || !AssignProcessToJobObject(job,Process.GetCurrentProcess().Handle)) throw new Exception("Cannot establish process job: "+Marshal.GetLastWin32Error());
       IntPtr ownedJob=job;
       var monitor=new Thread(()=> { try { parent.WaitForExit(); } finally { TerminateJobObject(ownedJob,126); } });

@@ -168,9 +168,25 @@ function toAbs(p: string, cwd: string): string {
   return resolve(cwd, p);
 }
 
+type SeekMode = 'exact' | 'rstrip' | 'trim' | 'unicode';
+
+function normalizeUnicodePunctuation(s: string): string {
+  return s
+    .replace(/[\u00A0\u2000-\u200B\u3000]/g, ' ')
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2013\u2014\u2212]/g, '-')
+    .replace(/\u2026/g, '...');
+}
+
 /**
  * Find where the hunk's expected (non-add) lines occur in `lines` at or after
- * `from`, then build the replacement. Returns matchedAt = -1 on failure.
+ * `from`, using a 4-tier progressive seek sequence:
+ *   1. exact   — byte-for-byte match
+ *   2. rstrip  — trailing whitespace ignored
+ *   3. trim    — leading & trailing whitespace ignored (+ uniform indent shift)
+ *   4. unicode — typographic quotes/dashes/spaces normalized + trim
+ * Returns matchedAt = -1 on failure.
  */
 function applyHunkAt(
   lines: string[],
@@ -184,52 +200,107 @@ function applyHunkAt(
     return { matchedAt: endOfFile ? lines.length : from, consumed: 0, replaced: hunkLines.map((l) => l.text) };
   }
 
-  for (let pos = endOfFile ? Math.max(from, lines.length - expected.length) : from; pos <= lines.length - expected.length; pos++) {
-    if (seqMatches(lines, pos, expected, false)) {
-      return { matchedAt: pos, consumed: expected.length, replaced: buildReplacement(hunkLines, lines, pos, false) };
-    }
-  }
-  // fuzzy pass: ignore leading/trailing whitespace differences
-  for (let pos = endOfFile ? Math.max(from, lines.length - expected.length) : from; pos <= lines.length - expected.length; pos++) {
-    if (seqMatches(lines, pos, expected, true)) {
-      return { matchedAt: pos, consumed: expected.length, replaced: buildReplacement(hunkLines, lines, pos, true) };
+  const startPos = endOfFile ? Math.max(from, lines.length - expected.length) : from;
+  const modes: SeekMode[] = ['exact', 'rstrip', 'trim', 'unicode'];
+  for (const mode of modes) {
+    for (let pos = startPos; pos <= lines.length - expected.length; pos++) {
+      if (seqMatches(lines, pos, expected, mode)) {
+        return { matchedAt: pos, consumed: expected.length, replaced: buildReplacement(hunkLines, lines, pos, mode) };
+      }
     }
   }
   return { matchedAt: -1, consumed: 0, replaced: [] };
 }
 
-function seqMatches(lines: string[], pos: number, expected: string[], fuzzy: boolean): boolean {
+function seqMatches(lines: string[], pos: number, expected: string[], mode: SeekMode): boolean {
   for (let k = 0; k < expected.length; k++) {
     const actual = lines[pos + k] ?? '\0';
-    if (fuzzy) {
-      if (actual.trim() !== expected[k]!.trim()) return false;
-    } else if (actual !== expected[k]) {
-      return false;
+    const exp = expected[k]!;
+    if (mode === 'exact') {
+      if (actual !== exp) return false;
+    } else if (mode === 'rstrip') {
+      if (actual.trimEnd() !== exp.trimEnd()) return false;
+    } else if (mode === 'trim') {
+      if (actual.trim() !== exp.trim()) return false;
+    } else {
+      if (normalizeUnicodePunctuation(actual).trim() !== normalizeUnicodePunctuation(exp).trim()) return false;
     }
   }
   return true;
+}
+
+function leadingSpaces(s: string): number {
+  let count = 0;
+  while (count < s.length && s[count] === ' ') count++;
+  return count;
+}
+
+function computeUniformIndentDelta(hunkLines: PatchLine[], lines: string[], pos: number): number {
+  let k = pos;
+  let allDelta: number | null = null;
+  let allConsistent = true;
+  let removeDelta: number | null = null;
+  let removeConsistent = true;
+  const contextDeltas: number[] = [];
+
+  for (const hl of hunkLines) {
+    if (hl.kind === 'add') continue;
+    const actual = lines[k++] ?? '';
+    if (actual.trim() === '' || hl.text.trim() === '') continue;
+    if (actual.startsWith('\t') || hl.text.startsWith('\t')) return 0;
+    const d = leadingSpaces(actual) - leadingSpaces(hl.text);
+    if (allDelta === null) allDelta = d;
+    else if (allDelta !== d) allConsistent = false;
+
+    if (hl.kind === 'remove') {
+      if (removeDelta === null) removeDelta = d;
+      else if (removeDelta !== d) removeConsistent = false;
+    } else {
+      contextDeltas.push(d);
+    }
+  }
+
+  if (allConsistent && allDelta !== null) return allDelta;
+  // Models frequently omit or add 1 space on context lines relative to `-`/`+` lines;
+  // when all `-` lines agree on the exact indent shift and context lines are within ±1 space, honor removeDelta.
+  if (
+    removeConsistent &&
+    removeDelta !== null &&
+    contextDeltas.every((cd) => Math.abs(cd - removeDelta!) <= 1)
+  ) {
+    return removeDelta;
+  }
+  return 0;
+}
+
+function shiftIndentation(line: string, delta: number): string {
+  if (delta === 0 || line.trim() === '') return line;
+  if (delta > 0) return ' '.repeat(delta) + line;
+  const remove = Math.min(-delta, leadingSpaces(line));
+  return line.slice(remove);
 }
 
 function buildReplacement(
   hunkLines: PatchLine[],
   lines: string[],
   pos: number,
-  fuzzy: boolean,
+  mode: SeekMode,
 ): string[] {
   const out: string[] = [];
+  const indentDelta = mode === 'trim' || mode === 'unicode' ? computeUniformIndentDelta(hunkLines, lines, pos) : 0;
   let k = pos;
   for (const hl of hunkLines) {
     switch (hl.kind) {
       case 'context':
-        // keep the original line to preserve its exact whitespace
-        out.push(fuzzy ? (lines[k] ?? hl.text) : hl.text);
+        // keep the original line to preserve its exact whitespace/punctuation
+        out.push(mode === 'exact' ? hl.text : (lines[k] ?? hl.text));
         k++;
         break;
       case 'remove':
         k++; // dropped
         break;
       case 'add':
-        out.push(hl.text);
+        out.push(indentDelta !== 0 ? shiftIndentation(hl.text, indentDelta) : hl.text);
         break;
     }
   }

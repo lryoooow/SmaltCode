@@ -175,6 +175,16 @@ export class ProcessManager {
     if (typeof data !== 'string' || data.length > 16_384) throw new Error('终端输入过长或无效');
     entry.pty!.write(data);
   }
+  /** Write stdin ONLY to an owned background job (never to a user manual terminal). */
+  writeBackgroundInput(threadId: string, id: string, data: string): void {
+    const entry = this.owned(threadId, id);
+    if (entry.meta.kind === 'terminal') throw new Error('模型不能向手动交互终端输入');
+    if (this.closing || entry.meta.state !== 'running' || !entry.pty || !this.options.canInput(threadId)) {
+      throw new Error('后台进程未在运行，或当前任务权限不允许向进程发送输入');
+    }
+    if (typeof data !== 'string' || data.length > 4096 || data.includes('\0')) throw new Error('后台进程输入过长或包含非法字符');
+    entry.pty.write(data);
+  }
   resize(threadId: string, id: string, columns: number, rows: number): void {
     const entry = this.owned(threadId, id);
     if (!Number.isInteger(columns) || !Number.isInteger(rows) || columns < 20 || columns > 400 || rows < 5 || rows > 160) throw new Error('终端尺寸超出范围');

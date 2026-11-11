@@ -39,3 +39,62 @@ export function processTools(manager: ProcessManager): ToolDefinition[] {
     async *run(input, context) { try { await manager.stop(context.threadId, (input as { id: string }).id); yield { type: 'result', text: '该进程已停止；其他进程与对话继续运行。' }; } catch (error) { yield { type: 'result', text: error instanceof Error ? error.message : String(error), isError: true }; } },
   }];
 }
+
+export function processWriteTool(manager: ProcessManager): ToolDefinition {
+  return {
+    name: 'process_write',
+    description:
+      'Send stdin input to a running background process belonging to this conversation (e.g. answering an interactive CLI prompt or driving a REPL), then wait briefly and return newly produced output. Cannot write to manual user terminals.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 80, description: 'Owned background process ID (proc_...)' },
+        input: { type: 'string', maxLength: 4000, description: 'Text to send to process stdin' },
+        appendNewline: { type: 'boolean', description: 'Append Enter/newline after input (default: true)' },
+        waitMs: { type: 'integer', minimum: 50, maximum: 5000, description: 'Milliseconds to wait for fresh output (default: 600)' },
+      },
+      required: ['id', 'input'],
+      additionalProperties: false,
+    },
+    subject: (input) => {
+      const v = input as { id?: string; input?: string };
+      return `process_write ${v.id ?? ''} ${(v.input ?? '').slice(0, 60)}`.trim();
+    },
+    summarize: (input) => {
+      const v = input as { id?: string; input?: string };
+      return `向后台进程 ${v.id ?? ''} 发送输入：${(v.input ?? '').slice(0, 40)}`;
+    },
+    async *run(input, context) {
+      const { id, input: text, appendNewline = true, waitMs = 600 } = input as {
+        id: string;
+        input: string;
+        appendNewline?: boolean;
+        waitMs?: number;
+      };
+      try {
+        const before = manager.read(context.threadId, id);
+        const startOffset = before.output.end;
+        const payload = appendNewline ? `${text}${process.platform === 'win32' ? '\r' : '\n'}` : text;
+        manager.writeBackgroundInput(context.threadId, id, payload);
+        const delayMs = Math.max(50, Math.min(5000, waitMs));
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, delayMs);
+          context.signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+        });
+        const after = manager.read(context.threadId, id);
+        const deltaLen = Math.max(0, after.output.end - startOffset);
+        const recentOutput = deltaLen > 0 ? after.output.data.slice(-Math.min(after.output.data.length, deltaLen)) : '';
+        yield {
+          type: 'result',
+          text: JSON.stringify({
+            process: after.process,
+            recentOutput,
+            tailOutput: after.output.data.slice(-4000),
+          }),
+        };
+      } catch (error) {
+        yield { type: 'result', text: error instanceof Error ? error.message : String(error), isError: true };
+      }
+    },
+  };
+}

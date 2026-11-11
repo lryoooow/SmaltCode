@@ -33,6 +33,7 @@ import {
 import type { ThreadStore } from '../storage/thread-store.js';
 import type { ToolOrchestrator, ToolRunOutcome } from '../tools/orchestrator.js';
 import type { ToolRegistry } from '../tools/registry.js';
+import { isInsideWorkspace } from '../tools/workspace-guard.js';
 import { errorMessage, newId, nowIso } from '../util.js';
 import { assessTurn, displayCommand, itemAssessment, missingProgram, operationAssessments, verifiesSameCheck } from '../protocol/assessment.js';
 import { RunLimit, unattendedTools, type RunPolicy, type RunMetrics, type ToolPolicy } from './run-policy.js';
@@ -96,8 +97,10 @@ export class TurnRunner {
       signal: AbortSignal;
       onHistoryReplaced(history: ChatMessage[]): void;
       onContextNotice?(notice: ContextNotice): void;
-      addUsage(input: number, output: number): void;
+      addUsage(input: number, output: number, cached?: number): void;
       usageTotals(): { inputTokens: number; outputTokens: number };
+      cachedUsageTotals?(): { lastCachedInputTokens: number; totalCachedInputTokens: number };
+      reasoningEffort?(): import('../models/types.js').ReasoningEffort | undefined;
       contextWindow(): number;
     },
     prompt: import('../protocol/types.js').UserPrompt,
@@ -146,6 +149,9 @@ export class TurnRunner {
 
     let stopHookActive = false;
     let verificationReminderSent = false;
+    let lengthRecoveryCount = 0;
+    let lastFailKey = '';
+    let consecutiveIdenticalFailures = 0;
     // Continuous by default. Hosts can opt into a limit for unattended runs;
     // desktop tasks finish naturally or through the existing interrupt path.
     const requestedSteps = Number(process.env.SMALT_MAX_STEPS);
@@ -198,6 +204,19 @@ export class TurnRunner {
         this.contextOverhead = overhead;
         const window = runtime.contextWindow();
         this.emitUsage(runtime, reportedTokens, overhead);
+        if (!policy && this.deps.compactor.enabled && this.deps.compactor.needsCompaction(runtime.history, reportedTokens, window, overhead)) {
+          const micro = this.deps.compactor.microCompact(runtime.history);
+          if (micro.compacted) {
+            runtime.onHistoryReplaced(micro.history);
+            runtime.history = micro.history;
+            reportedTokens = 0;
+            this.deps.store.append(threadId, { t: 'compacted', summary: micro.summary ?? 'micro-compacted stale tool outputs', history: micro.history, at: nowIso() });
+            messages = await assemble();
+            overhead = Math.max(0, estimateHistoryTokens(messages) - estimateHistoryTokens(runtime.history)) + estimateTokens(JSON.stringify(specs));
+            this.contextOverhead = contextOverhead = overhead;
+            this.emitUsage(runtime, reportedTokens, overhead);
+          }
+        }
         while (this.deps.compactor.needsCompaction(runtime.history, reportedTokens, window, overhead)) {
           if (policy) throw new RunLimit('context', '托管任务上下文需要整理，已暂停；请减少引用或手动检查后继续');
           state.transition('COMPACT_STARTED');
@@ -252,7 +271,14 @@ export class TurnRunner {
         let streamError: unknown;
 
         let reserved = 0, excessUsage = 0;
-        const request: Omit<ModelRequest, 'model'> = { messages, tools: specs, signal: runtime.signal };
+        const reasoningEffort = runtime.reasoningEffort?.();
+        const request: Omit<ModelRequest, 'model'> = {
+          messages,
+          tools: specs,
+          signal: runtime.signal,
+          promptCacheKey: threadId,
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        };
         const beforeRequest = () => {
           if (!policy) return;
           if (runtime.signal.aborted || Date.now() >= policy.deadlineAt) throw new RunLimit('deadline', '已达到设定的运行时间或任务已停止');
@@ -290,7 +316,7 @@ export class TurnRunner {
               }
               case 'toolCallStart': {
                 toolCalls.push({ id: delta.id, name: delta.name, arguments: '' });
-                partialArgs.set(delta.id, '');
+                if (!partialArgs.has(delta.id)) partialArgs.set(delta.id, '');
                 break;
               }
               case 'toolCallDelta': {
@@ -302,7 +328,7 @@ export class TurnRunner {
                 reportedTokens = delta.inputTokens;
                 outcome.usage.inputTokens += delta.inputTokens;
                 outcome.usage.outputTokens += delta.outputTokens;
-                runtime.addUsage(delta.inputTokens, delta.outputTokens);
+                runtime.addUsage(delta.inputTokens, delta.outputTokens, delta.cachedInputTokens ?? 0);
                 break;
               }
               case 'done': {
@@ -347,14 +373,27 @@ export class TurnRunner {
           throw streamError;
         }
 
-        if (finish === 'length' || finish === 'contentFilter') {
+        if (finish === 'contentFilter') {
           if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
-          throw new Error(finish === 'length' ? '模型达到单次输出上限，回复尚未完成。可发送“继续”接着处理；未执行不完整的工具调用。' : '模型服务中止了这次回复，请检查提示与服务端限制后继续。');
+          throw new Error('模型服务中止了这次回复，请检查提示与服务端限制后继续。');
+        }
+        if (finish === 'length') {
+          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
+          if (!policy && lengthRecoveryCount < 1) {
+            lengthRecoveryCount++;
+            const reminder = toolCalls.length > 0
+              ? `<system-reminder>Your previous response hit maxOutputTokens and truncated ${toolCalls.length} tool call(s) (${toolCalls.map(t => t.name).join(', ')}) before completion, so none of them were executed. Retry by splitting large file writes or patches into smaller incremental steps.</system-reminder>`
+              : '<system-reminder>Your previous response hit maxOutputTokens mid-output. Continue seamlessly from the exact point where you stopped without repeating prior text.</system-reminder>';
+            runtime.history.push({ role: 'user', content: reminder });
+            this.deps.store.append(threadId, { t: 'verification-reminder', text: reminder, at: nowIso() });
+            continue;
+          }
+          throw new Error('模型达到单次输出上限，回复尚未完成。可发送“继续”接着处理；未执行不完整的工具调用。');
         }
         if (!toolCalls.length) {
           if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
           const currentItems = runtime.items.slice(firstItem);
-          const assessment = assessTurn(currentItems, input);
+          const assessment = assessTurn(currentItems, displayText ?? input);
           const results = operationAssessments(currentItems);
           const recoverable = [...results.values()].some(a => !a.recoveredBy && (a.code === 'commandUnavailable' || a.code === 'invalidInvocation' || a.code === 'exitCodeConflict' || a.code === 'shellStatusMasked'));
           // One opportunity to repair an incomplete verification, never an unbounded
@@ -398,15 +437,23 @@ export class TurnRunner {
           let title = tc.name; try { title = this.deps.tools.get(tc.name)?.summarize(input) ?? title; } catch { /* invalid calls are rejected individually */ }
           return { id: tc.id, tool: tc.name, input, title };
         }) };
-        try { for (const tc of toolCalls) {
-          if (runtime.signal.aborted) {
-            outcome.interrupted = true;
-            break;
+        const batches = partitionToolBatches(toolCalls, runtime.cwd);
+        let doomLoopTriggered = false;
+        const trackFailure = (tc: ToolCall, result: ToolRunOutcome) => {
+          const key = `${tc.name}:${canonicalJson(safeJsonParse(tc.arguments))}`;
+          if (result.isError && !result.denied) {
+            if (key === lastFailKey) consecutiveIdenticalFailures++;
+            else { lastFailKey = key; consecutiveIdenticalFailures = 1; }
+            if (consecutiveIdenticalFailures >= 3) {
+              consecutiveIdenticalFailures = 0;
+              doomLoopTriggered = true;
+            }
+          } else {
+            lastFailKey = '';
+            consecutiveIdenticalFailures = 0;
           }
-          if (policy && Date.now() >= policy.deadlineAt) { outcome.stopReason = 'deadline'; outcome.interrupted = true; break; }
-          if (policy && (metrics.toolCalls >= policy.maxTools || metrics.chargedTokens > policy.maxTokens)) { outcome.stopReason = metrics.toolCalls >= policy.maxTools ? 'tools' : 'tokens'; outcome.interrupted = true; break; }
-          state.transition('TOOL_STARTED');
-          toolCount++; metrics.toolCalls++;
+        };
+        const emitToolItemStarted = (tc: ToolCall) => {
           const parsed = safeJsonParse(tc.arguments) as Record<string, unknown>;
           const external = this.deps.tools.get(tc.name)?.external;
           if (external) this.deps.notify(Notifications.itemStarted, { item: { kind: 'mcpToolCall', id: tc.id, threadId, turnId, createdAt: nowIso(), status: 'inProgress', server: external.server, tool: external.tool, origin: external.origin, arguments: parsed, output: '' } });
@@ -414,10 +461,77 @@ export class TurnRunner {
             kind: 'commandExecution', id: tc.id, threadId, turnId, createdAt: nowIso(), status: 'inProgress',
             tool: tc.name, command: tc.name === 'shell' ? displayCommand(parsed) : `${tc.name} ${String(parsed.path ?? '')}`, output: '', exitCode: null,
           } });
-          const result = await this.executeToolCall(tc, { threadId, turnId, cwd: runtime.cwd, policy: toolPolicy, signal: runtime.signal, approvalBatch: { ...approvalBatch, operations: approvalBatch.operations.slice(toolCalls.indexOf(tc)) } });
-          this.recordToolResult(runtime, outcome, tc, result);
-          state.transition('TOOL_ENDED');
-        } } finally { this.deps.orchestrator.endBatch(approvalBatch.id); }
+        };
+        try {
+          for (const batch of batches) {
+            if (runtime.signal.aborted) { outcome.interrupted = true; break; }
+            if (policy && Date.now() >= policy.deadlineAt) { outcome.stopReason = 'deadline'; outcome.interrupted = true; break; }
+            if (policy && (metrics.toolCalls >= policy.maxTools || metrics.chargedTokens > policy.maxTokens)) {
+              outcome.stopReason = metrics.toolCalls >= policy.maxTools ? 'tools' : 'tokens';
+              outcome.interrupted = true;
+              break;
+            }
+
+            if (batch.parallel && batch.calls.length > 1) {
+              const allowedCount = policy ? Math.max(0, policy.maxTools - metrics.toolCalls) : batch.calls.length;
+              const runnable = batch.calls.slice(0, allowedCount);
+              if (!runnable.length) { outcome.stopReason = 'tools'; outcome.interrupted = true; break; }
+              state.transition('TOOL_STARTED');
+              toolCount += runnable.length;
+              metrics.toolCalls += runnable.length;
+              for (const tc of runnable) emitToolItemStarted(tc);
+              const results = await mapWithConcurrency(runnable, 6, (tc) =>
+                this.executeToolCall(tc, {
+                  threadId,
+                  turnId,
+                  cwd: runtime.cwd,
+                  policy: toolPolicy,
+                  signal: runtime.signal,
+                  approvalBatch: { ...approvalBatch, operations: approvalBatch.operations.slice(toolCalls.indexOf(tc)) },
+                }),
+              );
+              for (let i = 0; i < runnable.length; i++) {
+                this.recordToolResult(runtime, outcome, runnable[i]!, results[i]!);
+                trackFailure(runnable[i]!, results[i]!);
+              }
+              state.transition('TOOL_ENDED');
+              if (runnable.length < batch.calls.length) {
+                outcome.stopReason = 'tools';
+                outcome.interrupted = true;
+                break;
+              }
+            } else {
+              for (const tc of batch.calls) {
+                if (runtime.signal.aborted) { outcome.interrupted = true; break; }
+                if (policy && Date.now() >= policy.deadlineAt) { outcome.stopReason = 'deadline'; outcome.interrupted = true; break; }
+                if (policy && (metrics.toolCalls >= policy.maxTools || metrics.chargedTokens > policy.maxTokens)) {
+                  outcome.stopReason = metrics.toolCalls >= policy.maxTools ? 'tools' : 'tokens';
+                  outcome.interrupted = true;
+                  break;
+                }
+                state.transition('TOOL_STARTED');
+                toolCount++; metrics.toolCalls++;
+                emitToolItemStarted(tc);
+                const result = await this.executeToolCall(tc, {
+                  threadId,
+                  turnId,
+                  cwd: runtime.cwd,
+                  policy: toolPolicy,
+                  signal: runtime.signal,
+                  approvalBatch: { ...approvalBatch, operations: approvalBatch.operations.slice(toolCalls.indexOf(tc)) },
+                });
+                this.recordToolResult(runtime, outcome, tc, result);
+                trackFailure(tc, result);
+                state.transition('TOOL_ENDED');
+              }
+            }
+          }
+        } finally { this.deps.orchestrator.endBatch(approvalBatch.id); }
+        if (doomLoopTriggered && !outcome.interrupted) {
+          const doomReminder = '<system-reminder>Doom-loop detected: the same tool call failed 3 consecutive times with identical arguments. Do NOT repeat the exact same failing call again — inspect the error output carefully, read the current file/workspace state, or try a different approach.</system-reminder>';
+          runtime.history.push({ role: 'user', content: doomReminder });
+          this.deps.store.append(threadId, { t: 'verification-reminder', text: doomReminder, at: nowIso() });
+        }
         if (outcome.interrupted) {
           for (const tc of toolCalls) {
             if (runtime.history.some(m => m.role === 'tool' && m.toolCallId === tc.id)) continue;
@@ -451,7 +565,7 @@ export class TurnRunner {
         at: nowIso(),
       });
     }
-    const assessment = assessTurn(runtime.items.slice(firstItem), input, outcome.interrupted);
+    const assessment = assessTurn(runtime.items.slice(firstItem), displayText ?? input, outcome.interrupted);
     if (outcome.failed) assessment.status = 'needsAttention';
     const summary = { durationMs: Date.now() - startedAt, toolCount, fileCount: new Set(runtime.items.slice(firstItem).filter(i => i.kind === 'fileChange' && i.status === 'completed').map(i => (i as FileChangeItem).path)).size, usage: outcome.usage, assessment };
     outcome.summary = summary;
@@ -482,7 +596,10 @@ export class TurnRunner {
         const retryable = err instanceof ModelError ? err.status === undefined || err.status === 429 || err.status >= 500 : err instanceof TypeError;
         if (emitted || attempt >= 2 || !retryable || req.signal?.aborted) throw err;
         retrying();
-        await delay(500 * 2 ** attempt, undefined, { signal: req.signal });
+        const backoffMs = err instanceof ModelError && err.retryAfterMs !== undefined
+          ? Math.min(err.retryAfterMs, 30_000)
+          : Math.round(500 * 2 ** attempt * (0.75 + Math.random() * 0.5));
+        await delay(backoffMs, undefined, { signal: req.signal });
         requesting();
       }
     }
@@ -589,9 +706,20 @@ export class TurnRunner {
       this.deps.notify(Notifications.itemCompleted, { item: completed });
     }
     const recoveryId = (safeJsonParse(tc.arguments) as Record<string, unknown>).recoveryOf;
-    const prior = typeof recoveryId === 'string' ? runtime.items.find(i => i.id === recoveryId && i.turnId === outcome.turnId && i.status !== 'blocked') : undefined;
-    const priorAssessment = prior ? itemAssessment(prior) : undefined;
     const replacement = tc.name === 'grep' ? /\b(?:grep|findstr)\b/i : tc.name === 'read' ? /\b(?:head|tail|cat|type)\b/i : tc.name === 'glob' ? /\b(?:ls|find|dir)\b/i : undefined;
+    const prior = typeof recoveryId === 'string'
+      ? runtime.items.find(i => i.id === recoveryId && i.turnId === outcome.turnId && i.status !== 'blocked')
+      : !result.isError && !result.denied
+        ? runtime.items.find(i => {
+            if (i.id === tc.id || i.turnId !== outcome.turnId || i.status === 'blocked' || i.kind !== 'commandExecution') return false;
+            const pa = itemAssessment(i);
+            if (!pa || pa.recoveredBy) return false;
+            if (!pa.check && pa.code === 'commandUnavailable' && replacement?.test(missingProgram(i.output) ?? '')) return true;
+            if (item.kind === 'commandExecution' && item.assessment && verifiesSameCheck({ command: i.command, assessment: pa }, { command: item.command, assessment: item.assessment })) return true;
+            return false;
+          })
+        : undefined;
+    const priorAssessment = prior ? itemAssessment(prior) : undefined;
     const nativeAlternative = prior?.kind === 'commandExecution' && !priorAssessment?.check && priorAssessment?.code === 'commandUnavailable' && replacement?.test(missingProgram(prior.output) ?? '');
     const verifiedRetry = prior?.kind === 'commandExecution' && priorAssessment && item.kind === 'commandExecution' && item.assessment && verifiesSameCheck({ command: prior.command, assessment: priorAssessment }, { command: item.command, assessment: item.assessment });
     if (!result.isError && !result.denied && prior?.kind === 'commandExecution' && priorAssessment && (nativeAlternative || verifiedRetry)) {
@@ -619,20 +747,82 @@ export class TurnRunner {
     });
   }
 
-  private emitUsage(runtime: { threadId: string; usageTotals(): { inputTokens: number; outputTokens: number }; contextWindow(): number; history: ChatMessage[] }, reportedTokens = 0, overhead = 0): void {
+  private emitUsage(runtime: { threadId: string; usageTotals(): { inputTokens: number; outputTokens: number }; cachedUsageTotals?(): { lastCachedInputTokens: number; totalCachedInputTokens: number }; contextWindow(): number; history: ChatMessage[] }, reportedTokens = 0, overhead = 0): void {
     const totals = runtime.usageTotals();
+    const cached = runtime.cachedUsageTotals?.();
     const est = estimateHistoryTokens(runtime.history) + overhead;
     const usage: ThreadTokenUsage = {
       inputTokens: Math.max(reportedTokens, est),
       outputTokens: totals.outputTokens,
+      ...(cached && cached.lastCachedInputTokens > 0 ? { cachedInputTokens: cached.lastCachedInputTokens } : {}),
       totalInputTokens: totals.inputTokens,
       totalOutputTokens: totals.outputTokens,
+      ...(cached && cached.totalCachedInputTokens > 0 ? { totalCachedInputTokens: cached.totalCachedInputTokens } : {}),
       contextWindow: runtime.contextWindow(),
       thresholdTokens: this.deps.compactor.thresholdTokens(runtime.contextWindow()),
       contextUsage: Math.min(1, Math.max(reportedTokens, est) / runtime.contextWindow()),
     };
     this.deps.notify(Notifications.threadTokenUsage, { threadId: runtime.threadId, usage });
   }
+}
+
+const PARALLEL_SAFE_READ_TOOLS = new Set([
+  'read',
+  'glob',
+  'grep',
+  'web_search',
+  'web_fetch',
+  'activate_skill',
+]);
+
+function isParallelSafeCall(tc: ToolCall, cwd: string): boolean {
+  const parsed = safeJsonParse(tc.arguments) as Record<string, unknown>;
+  if (tc.name === 'delegate_task') {
+    return parsed?.role === 'explorer';
+  }
+  if (!PARALLEL_SAFE_READ_TOOLS.has(tc.name)) return false;
+  if (tc.name === 'read' || tc.name === 'glob' || tc.name === 'grep') {
+    const targetPath = typeof parsed?.path === 'string' && parsed.path ? parsed.path : '.';
+    if (!isInsideWorkspace(cwd, targetPath)) return false;
+    if (tc.name === 'glob' && typeof parsed?.pattern === 'string' && parsed.pattern.includes('..')) return false;
+  }
+  return true;
+}
+
+function partitionToolBatches(calls: ToolCall[], cwd: string): Array<{ parallel: boolean; calls: ToolCall[] }> {
+  const batches: Array<{ parallel: boolean; calls: ToolCall[] }> = [];
+  for (const tc of calls) {
+    const safe = isParallelSafeCall(tc, cwd);
+    const last = batches.at(-1);
+    if (safe && last?.parallel) {
+      last.calls.push(tc);
+    } else {
+      batches.push({ parallel: safe, calls: [tc] });
+    }
+  }
+  return batches;
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const idx = nextIndex++;
+      results[idx] = await fn(items[idx]!, idx);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function canonicalJson(val: unknown): string {
+  if (val === null || typeof val !== 'object') return JSON.stringify(val);
+  if (Array.isArray(val)) return `[${val.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(val as Record<string, unknown>)
+    .filter(([k]) => k !== 'recoveryOf')
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
 }
 
 function isAbort(err: unknown): boolean {

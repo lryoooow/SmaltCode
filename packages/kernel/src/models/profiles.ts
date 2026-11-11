@@ -7,6 +7,7 @@ export type ModelInfo = {
   publicDocs?: boolean; verifiedAt?: number;
   resolvedVersion?: string; canonicalId?: string; compatibilityNote?: string;
   reasoningEfforts?: string[]; defaultReasoningEffort?: string;
+  preferredWire?: 'responses';
 };
 export type ProviderKind = 'openai' | 'anthropic' | 'deepseek' | 'zhipu' | 'moonshot' | 'dashscope' | 'openrouter' | 'ollama' | 'custom';
 
@@ -37,18 +38,18 @@ function add(kind: ProviderKind, ids: string[], window: number, reference: strin
   (profiles[kind] ??= []).push(...ids.map(id => ({ id, name: id, contextWindow: window, tools: true, source: 'official' as const, reference, ...extra })));
 }
 const oa = 'https://developers.openai.com/api/docs/models/';
-for (const id of ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna']) add('openai', [id], 1_050_000, oa + id, { maxInputTokens: 922_000, maxOutputTokens: 128_000, vision: true, ...(id === 'gpt-6-astra' ? {} : { unavailableReason: id === 'gpt-6.1-sol' ? '该模型的智能体工具调用需要 Responses 协议；当前连接使用 Chat Completions' : '当前连接尚未适配此型号的工具调用模式' }) });
-add('openai', ['gpt-5.4'], 1_050_000, oa + 'gpt-5.4', { maxOutputTokens: 128_000, vision: true });
+for (const id of ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna']) add('openai', [id], 1_050_000, oa + id, { maxInputTokens: 922_000, maxOutputTokens: 128_000, vision: true, ...(id === 'gpt-6-astra' ? {} : id === 'gpt-6.1-sol' ? { preferredWire: 'responses', reasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'medium' } : { unavailableReason: '当前连接尚未适配此型号的工具调用模式' }) });
+add('openai', ['gpt-5.4'], 1_050_000, oa + 'gpt-5.4', { maxOutputTokens: 128_000, vision: true, reasoningEfforts: ['low', 'medium', 'high'] });
 add('openai', ['gpt-4.1'], 1_047_576, oa + 'gpt-4.1', { maxOutputTokens: 32_768, vision: true });
 add('openai', ['gpt-4o-mini'], 128_000, oa + 'gpt-4o-mini', { maxOutputTokens: 16_384, vision: true });
-for (const id of ['gpt-5.5']) add('openai', [id], 1_050_000, oa + id, { maxOutputTokens: 128_000, vision: true });
-for (const id of ['gpt-5.2', 'gpt-5.1']) add('openai', [id], 400_000, oa + id, { maxOutputTokens: 128_000, vision: true });
-for (const id of ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-5.4-mini']) add('openai', [id], 400_000, oa + id, { maxInputTokens: 272_000, maxOutputTokens: 128_000, vision: true });
+for (const id of ['gpt-5.5']) add('openai', [id], 1_050_000, oa + id, { maxOutputTokens: 128_000, vision: true, reasoningEfforts: ['low', 'medium', 'high'] });
+for (const id of ['gpt-5.2', 'gpt-5.1']) add('openai', [id], 400_000, oa + id, { maxOutputTokens: 128_000, vision: true, reasoningEfforts: ['low', 'medium', 'high'] });
+for (const id of ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-5.4-mini']) add('openai', [id], 400_000, oa + id, { maxInputTokens: 272_000, maxOutputTokens: 128_000, vision: true, reasoningEfforts: ['low', 'medium', 'high'] });
 for (const id of ['gpt-4.1-mini', 'gpt-4.1-nano']) add('openai', [id], 1_047_576, oa + id, { maxOutputTokens: 32_768, vision: true });
 add('openai', ['gpt-4o'], 128_000, oa + 'gpt-4o', { maxOutputTokens: 16_384, vision: true });
-for (const id of ['o3', 'o4-mini']) add('openai', [id], 200_000, oa + id, { maxOutputTokens: 100_000, vision: true });
-add('openai', ['gpt-5.3-codex'], 400_000, oa + 'gpt-5.3-codex', { maxInputTokens: 272_000, maxOutputTokens: 128_000, unavailableReason: '该模型需要 Responses 协议；当前连接使用 Chat Completions' });
-add('anthropic', ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'], 1_000_000, 'https://platform.claude.com/docs/en/models/overview', { maxOutputTokens: 128_000, vision: true });
+for (const id of ['o3', 'o4-mini']) add('openai', [id], 200_000, oa + id, { maxOutputTokens: 100_000, vision: true, reasoningEfforts: ['low', 'medium', 'high'] });
+add('openai', ['gpt-5.3-codex'], 400_000, oa + 'gpt-5.3-codex', { maxInputTokens: 272_000, maxOutputTokens: 128_000, preferredWire: 'responses', reasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'high' });
+add('anthropic', ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'], 1_000_000, 'https://platform.claude.com/docs/en/models/overview', { maxOutputTokens: 128_000, vision: true, reasoningEfforts: ['low', 'medium', 'high', 'max'] });
 const deepseekReference='https://api-docs.deepseek.com/quick_start/pricing/';
 add('deepseek',['deepseek-flash'],1_048_576,deepseekReference,{name:'DeepSeek V4.1 Flash · 1017',resolvedVersion:'DeepSeek-V4.1-Flash-1017',maxOutputTokens:393_216,vision:true,reasoningEfforts:['low','high','max'],defaultReasoningEffort:'high',verifiedAt:Date.UTC(2026,9,24)});
 add('deepseek',['deepseek-v4-pro'],1_048_576,deepseekReference,{name:'DeepSeek V4 Pro · 0813',resolvedVersion:'DeepSeek-V4-Pro-0813',maxOutputTokens:393_216,vision:false,reasoningEfforts:['low','high','max'],defaultReasoningEffort:'high',verifiedAt:Date.UTC(2026,9,24)});

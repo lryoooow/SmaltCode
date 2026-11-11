@@ -20,6 +20,8 @@ export class ThreadRuntime {
   abort: AbortController | null = null;
   executionPolicy?: import('./run-policy.js').RunPolicy;
   usage = { inputTokens: 0, outputTokens: 0 };
+  cachedInputTokens = 0;
+  lastCachedInputTokens = 0;
   /** Rebuilt after settings change; never shared with another thread. */
   runner?: import('./turn-runner.js').TurnRunner;
   permissions?: import('../permissions/service.js').PermissionService;
@@ -35,9 +37,11 @@ export class ThreadRuntime {
     this.history = history;
   }
 
-  addUsage(input: number, output: number): void {
+  addUsage(input: number, output: number, cached = 0): void {
     this.usage.inputTokens += input;
     this.usage.outputTokens += output;
+    this.lastCachedInputTokens = cached;
+    if (cached > 0) this.cachedInputTokens += cached;
   }
 
   snapshotUsage(): { inputTokens: number; outputTokens: number } {

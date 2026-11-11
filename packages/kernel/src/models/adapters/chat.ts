@@ -13,7 +13,7 @@
  * usage chunk AFTER the finish_reason chunk.
  */
 
-import { parseSse, readErrorBody } from '../sse.js';
+import { parseRetryAfterMs, parseSse, readErrorBody } from '../sse.js';
 import {
   ModelError,
   type ChatMessage,
@@ -38,13 +38,35 @@ export interface ChatAdapterOptions {
   fetchImpl?: typeof fetch;
   /** set false for backends that 400 on stream_options without retry */
   streamUsage?: boolean;
+  stallTimeoutMs?: number;
+}
+
+function extractChatUsage(raw: any): Extract<ModelDelta, { type: 'usage' }> {
+  const inputTokens = raw?.prompt_tokens ?? 0;
+  const outputTokens = raw?.completion_tokens ?? 0;
+  const cached = raw?.prompt_tokens_details?.cached_tokens ?? raw?.prompt_cache_hit_tokens;
+  const cacheWrite = raw?.prompt_cache_miss_tokens;
+  return {
+    type: 'usage',
+    inputTokens,
+    outputTokens,
+    ...(typeof cached === 'number' && cached > 0 ? { cachedInputTokens: cached } : {}),
+    ...(typeof cacheWrite === 'number' && cacheWrite > 0 ? { cacheWriteInputTokens: cacheWrite } : {}),
+  };
 }
 
 export function toChatWireMessages(messages: ChatMessage[]): unknown[] {
   const out: any[] = [];
   // some backends only accept a single system message — merge them
   const systemTexts: string[] = [];
-  for (const m of messages) {
+  // Keep reasoning_content only within the active user turn's tool chain (DeepSeek/OpenAI hygiene):
+  // assistant messages from completed prior user turns strip reasoning_content to save context and avoid 400s.
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === 'user') { lastUserIdx = i; break; }
+  }
+  for (let idx = 0; idx < messages.length; idx++) {
+    const m = messages[idx]!;
     if (m.role === 'system') {
       systemTexts.push(m.content);
       continue;
@@ -64,7 +86,7 @@ export function toChatWireMessages(messages: ChatMessage[]): unknown[] {
       out.push({ role: 'user', content });
     } else if (m.role === 'assistant') {
       const msg: any = { role: 'assistant', content: m.content ?? null };
-      if (m.reasoningContent) msg.reasoning_content = m.reasoningContent;
+      if (m.reasoningContent && idx > lastUserIdx) msg.reasoning_content = m.reasoningContent;
       if (m.toolCalls?.length) {
         msg.tool_calls = m.toolCalls.map((tc) => ({
           id: tc.id,
@@ -124,23 +146,31 @@ export class ChatCompletionsAdapter implements ModelAdapter {
       );
     }
 
-    // Some OpenAI-compatible backends reject unknown stream_options with 400.
-    if (res.status === 400 && 'stream_options' in body && /stream_options/i.test(await readErrorBody(res.clone()))) {
-      const retryBody = { ...body };
-      delete retryBody.stream_options;
-      void res.body?.cancel().catch(() => {});
-      try {
-        res = await doFetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(retryBody),
-          signal: req.signal,
-          redirect: 'error',
-        });
-      } catch (err) {
-        throw new ModelError(
-          `Request to ${this.opts.baseUrl} failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+    // Some OpenAI-compatible backends reject unknown stream_options / reasoning_effort / prompt_cache_key with 400.
+    if (res.status === 400 && ('stream_options' in body || 'reasoning_effort' in body || 'prompt_cache_key' in body)) {
+      const errBody = await readErrorBody(res.clone());
+      const stripStream = 'stream_options' in body && /stream_options/i.test(errBody);
+      const stripEffort = 'reasoning_effort' in body && /reasoning_effort/i.test(errBody);
+      const stripCacheKey = 'prompt_cache_key' in body && /prompt_cache_key/i.test(errBody);
+      if (stripStream || stripEffort || stripCacheKey) {
+        const retryBody = { ...body };
+        if (stripStream) delete retryBody.stream_options;
+        if (stripEffort) delete retryBody.reasoning_effort;
+        if (stripCacheKey) delete retryBody.prompt_cache_key;
+        void res.body?.cancel().catch(() => {});
+        try {
+          res = await doFetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(retryBody),
+            signal: req.signal,
+            redirect: 'error',
+          });
+        } catch (err) {
+          throw new ModelError(
+            `Request to ${this.opts.baseUrl} failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
 
@@ -149,6 +179,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
         `Model API error (HTTP ${res.status})`,
         res.status,
         await readErrorBody(res),
+        parseRetryAfterMs(res.headers),
       );
     }
     return res;
@@ -174,9 +205,16 @@ export class ChatCompletionsAdapter implements ModelAdapter {
       }));
     }
     if (req.temperature !== undefined) body.temperature = req.temperature;
+    const endpoint = (() => { try { return new URL(this.opts.baseUrl); } catch { return null; } })();
+    const isOpenAI = endpoint?.origin === 'https://api.openai.com' && /^\/(?:v1)\/?$/.test(endpoint.pathname);
+    if (req.reasoningEffort) {
+      body.reasoning_effort = req.reasoningEffort === 'max' && isOpenAI ? 'high' : req.reasoningEffort;
+    }
+    if (req.promptCacheKey && isOpenAI) {
+      body.prompt_cache_key = req.promptCacheKey;
+    }
     if (req.maxOutputTokens) {
-      const endpoint = new URL(this.opts.baseUrl);
-      const modernOpenAI = endpoint.origin === 'https://api.openai.com' && /^\/(?:v1)\/?$/.test(endpoint.pathname) && /^(?:gpt-[56](?:[.-]|$)|o[134](?:-|$))/.test(req.model);
+      const modernOpenAI = isOpenAI && /^(?:gpt-[56](?:[.-]|$)|o[134](?:-|$))/.test(req.model);
       body[modernOpenAI ? 'max_completion_tokens' : 'max_tokens'] = req.maxOutputTokens;
     }
 
@@ -188,9 +226,9 @@ export class ChatCompletionsAdapter implements ModelAdapter {
     const toolCallsByIndex = new Map<number, { id: string; name: string; args: string }>();
     let emittedToolCall = false;
     let finishReason: string | null = null;
-    let usage: { type: 'usage'; inputTokens: number; outputTokens: number } | null = null;
+    let usage: Extract<ModelDelta, { type: 'usage' }> | null = null;
 
-    for await (const data of parseSse(res.body, req.signal)) {
+    for await (const data of parseSse(res.body, req.signal, { stallTimeoutMs: this.opts.stallTimeoutMs })) {
       let chunk: any;
       try {
         chunk = JSON.parse(data);
@@ -201,11 +239,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
       if (!choice) {
         // usage-only chunk (arrives after finish_reason when include_usage)
         if (chunk.usage) {
-          usage = {
-            type: 'usage',
-            inputTokens: chunk.usage.prompt_tokens ?? 0,
-            outputTokens: chunk.usage.completion_tokens ?? 0,
-          };
+          usage = extractChatUsage(chunk.usage);
         }
         continue;
       }
@@ -261,12 +295,8 @@ export class ChatCompletionsAdapter implements ModelAdapter {
           }
         }
       }
-      if (choice.usage) {
-        usage = {
-          type: 'usage',
-          inputTokens: choice.usage.prompt_tokens ?? 0,
-          outputTokens: choice.usage.completion_tokens ?? 0,
-        };
+      if (choice.usage || chunk.usage) {
+        usage = extractChatUsage(choice.usage ?? chunk.usage);
       }
       if (choice.finish_reason && !finishReason) {
         finishReason = choice.finish_reason;

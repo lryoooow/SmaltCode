@@ -1,6 +1,8 @@
+import { resolve } from 'node:path';
 import { applyPatch } from './apply.js';
 import { parsePatch } from './parser.js';
 import type { ToolDefinition, ToolEvent } from '../../types.js';
+import { checkPostEditDiagnostics } from '../../diagnostics.js';
 import { budgetToolOutput, diffPreview } from '../../../util.js';
 
 /** every path a patch touches, including Move to targets */
@@ -53,21 +55,28 @@ Rules:
     const { patch } = input as { patch: string };
     try {
       const report = applyPatch(patch, ctx.cwd);
+      const diagnostics: string[] = [];
       for (const change of report.changes) {
         const moved = change.action === 'move' ? change.path.split(' → ') : null;
+        const finalPath = moved?.[1] ?? change.path;
         if (moved) await ctx.emitItem({ kind: 'fileChange', payload: { path: moved[0], changeKind: 'delete' } });
         await ctx.emitItem({ kind: 'fileChange', payload: {
-          path: moved?.[1] ?? change.path,
+          path: finalPath,
           changeKind: change.action === 'delete' ? 'delete' : change.action === 'add' || moved ? 'add' : 'update',
           diff: change.diff,
         } });
+        if (change.action !== 'delete') {
+          const diag = checkPostEditDiagnostics(resolve(ctx.cwd, finalPath), finalPath);
+          if (diag) diagnostics.push(diag);
+        }
       }
+      const diagSuffix = diagnostics.length ? `\n\n${diagnostics.join('\n')}` : '';
       yield {
         type: 'result',
         text: budgetToolOutput(`${report.summary}\n\n${report.changes
           .filter((c) => c.diff)
           .map((c) => diffPreview(c.diff!))
-          .join('\n\n')}`, 6000),
+          .join('\n\n')}${diagSuffix}`, 6500),
       };
     } catch (err) {
       yield {

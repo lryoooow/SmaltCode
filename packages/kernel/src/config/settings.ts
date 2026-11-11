@@ -13,7 +13,7 @@ import { validContextWindow } from '../models/context-window.js';
 
 export interface ProviderConfig {
   baseUrl: string;
-  wire: 'chat' | 'anthropic';
+  wire: 'chat' | 'anthropic' | 'responses';
   /** environment variable holding the API key (preferred over apiKey) */
   apiKeyEnv?: string;
   /** literal key from a local config file — never commit these */
@@ -207,7 +207,7 @@ function applyLayer(target: Settings, layer: Record<string, unknown>, project = 
       target.providers[name] = {
         ...existing,
         ...(typeof cfg.baseUrl === 'string' ? { baseUrl: cfg.baseUrl } : {}),
-        ...(typeof cfg.wire === 'string' && (cfg.wire === 'chat' || cfg.wire === 'anthropic') ? { wire: cfg.wire } : {}),
+        ...(typeof cfg.wire === 'string' && (cfg.wire === 'chat' || cfg.wire === 'anthropic' || cfg.wire === 'responses') ? { wire: cfg.wire } : {}),
         ...(typeof cfg.apiKeyEnv === 'string' ? { apiKeyEnv: cfg.apiKeyEnv } : {}),
         ...(typeof cfg.apiKey === 'string' ? { apiKey: cfg.apiKey } : {}),
         ...(!project && typeof cfg.apiKeyEnc === 'string' ? { apiKeyEnc: cfg.apiKeyEnc } : {}),

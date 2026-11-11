@@ -1,7 +1,6 @@
 import { spawn, execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { basename, resolve, delimiter, extname, isAbsolute } from 'node:path';
-import { join } from 'node:path';
+import { basename, dirname, resolve, delimiter, extname, isAbsolute, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { ToolDefinition, ToolEvent } from '../types.js';
 import { budgetToolOutput } from '../../util.js';
@@ -46,6 +45,43 @@ export function killAllToolProcesses(): void {
   liveChildren.clear();
 }
 
+let cachedGitBash: { bash?: string; dirs: string[] } | null = null;
+function findWindowsGitBash(): { bash?: string; dirs: string[] } {
+  if (cachedGitBash) return cachedGitBash;
+  if (process.platform !== 'win32') return (cachedGitBash = { dirs: [] });
+  const roots = new Set<string>();
+  try {
+    const gitPaths = execSync('where git.exe', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .split(/\r?\n/).map(p => p.trim()).filter(Boolean);
+    for (const p of gitPaths) {
+      const parent = dirname(p);
+      roots.add(resolve(parent, '..'));
+      roots.add(resolve(parent, '../..'));
+    }
+  } catch { /* ignore */ }
+  for (const candidate of [
+    process.env.ProgramFiles ? join(process.env.ProgramFiles, 'Git') : 'C:\\Program Files\\Git',
+    process.env['ProgramFiles(x86)'] ? join(process.env['ProgramFiles(x86)'], 'Git') : 'C:\\Program Files (x86)\\Git',
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'Git') : '',
+    'D:\\Git',
+    'D:\\Program Files\\Git',
+    'C:\\Git',
+  ]) {
+    if (candidate) roots.add(candidate);
+  }
+  let bash: string | undefined;
+  const dirs: string[] = [];
+  for (const root of roots) {
+    for (const sub of ['bin', join('usr', 'bin')]) {
+      const dir = join(root, sub);
+      if (existsSync(dir)) dirs.push(dir);
+      const exe = join(dir, 'bash.exe');
+      if (!bash && existsSync(exe) && !/[\\/]Windows[\\/]/i.test(exe)) bash = exe;
+    }
+  }
+  return (cachedGitBash = { bash, dirs });
+}
+
 /** bash when available (consistent cross-platform behaviour), else cmd on Windows. */
 export function detectShell(): { file: string; args: string[] } {
   if (cachedShell && cachedOverride === process.env.SMALT_SHELL) return cachedShell;
@@ -56,16 +92,21 @@ export function detectShell(): { file: string; args: string[] } {
     return cachedShell;
   }
   if (process.platform === 'win32') {
-    // Git Bash ships with Git for Windows and is almost always on PATH
+    // Git Bash ships with Git for Windows; check PATH first, then Git install roots
     try {
       const where = execSync('where bash.exe', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-        .split('\n').map(p => p.trim()).find(p => existsSync(p) && !/[\\/]Windows[\\/]/i.test(p));
+        .split(/\r?\n/).map(p => p.trim()).find(p => existsSync(p) && !/[\\/]Windows[\\/]/i.test(p));
       if (where && existsSync(where)) {
         cachedShell = { file: where, args: ['-c'] };
         return cachedShell;
       }
     } catch {
-      /* fall through to cmd */
+      /* check Git for Windows install roots next */
+    }
+    const gitBash = findWindowsGitBash().bash;
+    if (gitBash) {
+      cachedShell = { file: gitBash, args: ['-c'] };
+      return cachedShell;
     }
     cachedShell = { file: 'cmd.exe', args: ['/d', '/s', '/c'] };
     return cachedShell;
@@ -115,6 +156,14 @@ export const shellTool: ToolDefinition = {
     if (ctx.signal.aborted) { yield { type: 'result', text: 'Interrupted', isError: true }; return; }
     const shell = detectShell();
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)));
+    const gitDirs = process.platform === 'win32' ? findWindowsGitBash().dirs : [];
+    if (gitDirs.length) {
+      const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'Path';
+      const current = (env[pathKey] ?? '').split(delimiter).filter(Boolean);
+      const lower = new Set(current.map(p => p.toLowerCase()));
+      const extra = gitDirs.filter(d => !lower.has(d.toLowerCase()));
+      if (extra.length) env[pathKey] = [...current, ...extra].join(delimiter);
+    }
     let file = structured ? program! : shell.file;
     let argv = structured ? args : [...shell.args, command!];
     let windowsCmd = !structured && process.platform === 'win32' && /^cmd(?:\.exe)?$/i.test(basename(shell.file));
@@ -123,7 +172,7 @@ export const shellTool: ToolDefinition = {
       // Executable lookup uses the workspace/PATH, never a shell expression.
       if (process.platform === 'win32') {
         const extensions = extname(file) ? [''] : ['.exe', '.com', '.cmd', '.bat'];
-        const dirs = isAbsolute(file) || /[\\/]/.test(file) ? [''] : [cwd, ...(process.env.PATH ?? '').split(delimiter)];
+        const dirs = isAbsolute(file) || /[\\/]/.test(file) ? [''] : [cwd, ...(process.env.PATH ?? '').split(delimiter), ...gitDirs];
         const found = dirs.flatMap(dir => extensions.map(ext => resolve(dir || cwd, file + ext))).find(p => existsSync(p));
         file = found ?? file;
         if (/\.(?:cmd|bat)$/i.test(file)) {

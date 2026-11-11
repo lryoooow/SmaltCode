@@ -59,6 +59,7 @@ export {
 export { ModelGateway } from './models/gateway.js';
 export { ChatCompletionsAdapter, toChatWireMessages } from './models/adapters/chat.js';
 export { AnthropicAdapter } from './models/adapters/anthropic.js';
+export { ResponsesAdapter, toResponsesWire } from './models/adapters/responses.js';
 export {
   estimateTokens,
   estimateHistoryTokens,
@@ -68,6 +69,7 @@ export {
   type ModelAdapter,
   type ModelDelta,
   type ModelRequest,
+  type ReasoningEffort,
   type ToolCall,
   type ToolSpec,
   type WireApi,
@@ -89,6 +91,9 @@ export {
 export { HookBus, HOOK_EVENTS, type HookEvent, type HookDecision, type HookResult, type CommandHookConfig, type HookContext } from './hooks/bus.js';
 
 export { ToolRegistry, defaultTools } from './tools/registry.js';
+export { createSubagentTool, type SubagentRole, type SubagentToolDeps } from './tools/defs/subagent.js';
+export { LocalExecutionBackend, type ExecutionBackend, type BackendExecOptions, type BackendExecResult, type BackendFileStat } from './tools/execution-backend.js';
+export { checkPostEditDiagnostics } from './tools/diagnostics.js';
 export { killAllToolProcesses, waitForToolProcesses } from './tools/defs/shell.js';
 export { ToolOrchestrator, type OrchestratorDeps, type ToolRunOutcome } from './tools/orchestrator.js';
 export type { ToolDefinition, ToolEvent, ToolRunContext } from './tools/types.js';
@@ -96,7 +101,7 @@ export { validateInput } from './tools/types.js';
 export { parsePatch, PatchParseError, type PatchFile, type PatchHunk, type PatchLine } from './tools/defs/apply-patch/parser.js';
 export { applyPatch, ApplyError, type AppliedChange, type ApplyReport } from './tools/defs/apply-patch/apply.js';
 
-export { ContextPipeline, envInterceptor, systemInterceptor, type ContextInterceptor, type TurnContext } from './context/pipeline.js';
+export { ContextPipeline, discoverRepoInstructions, draftAgentsMd, envInterceptor, repoInstructionsInterceptor, systemInterceptor, type ContextInterceptor, type TurnContext } from './context/pipeline.js';
 export { isInsideWorkspace, isSensitivePath, sensitivePaths, realPathOf, isNetworkPath } from './tools/workspace-guard.js';
 export { ensureProjectTrust, isProjectTrusted, hasProjectSettings, trustProject, untrustProject } from './config/trust.js';
 export { Compactor, type CompactOptions, type CompactResult } from './compact/compactor.js';

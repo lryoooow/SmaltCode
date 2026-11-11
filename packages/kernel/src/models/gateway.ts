@@ -7,7 +7,8 @@ import { apiKeyFor, normalizeEndpoint, smaltHome, type ModelRef, type ProviderCo
 import { join } from 'node:path';
 import { AnthropicAdapter } from './adapters/anthropic.js';
 import { ChatCompletionsAdapter } from './adapters/chat.js';
-import { ModelError, type ModelAdapter, type ModelDelta, type ModelRequest } from './types.js';
+import { ResponsesAdapter } from './adapters/responses.js';
+import { ModelError, type ModelAdapter, type ModelDelta, type ModelRequest, type WireApi } from './types.js';
 import { resolveContextWindow } from './context-window.js';
 import { ModelCatalog } from './catalog.js';
 import { providerKind } from './profiles.js';
@@ -43,7 +44,9 @@ export class ModelGateway {
   overrideProvider(name: string, patch: Partial<ProviderConfig>): void {
     if (patch.apiKey !== undefined) patch = { ...patch, apiKeyEnv: '', apiKeyEndpoint: patch.apiKeyEndpoint ?? normalizeEndpoint(patch.baseUrl ?? this.settings.providers[name]?.baseUrl ?? '') };
     this.providerOverrides[name] = { ...(this.providerOverrides[name] ?? {}), ...patch };
-    this.adapters.delete(name);
+    for (const key of this.adapters.keys()) {
+      if (key === name || key.startsWith(`${name}:`)) this.adapters.delete(key);
+    }
   }
 
   providerConfig(name: string): ProviderConfig {
@@ -52,24 +55,32 @@ export class ModelGateway {
     return { ...base, ...(this.providerOverrides[name] ?? {}) };
   }
 
-  adapterFor(providerName: string): ModelAdapter {
-    const cached = this.adapters.get(providerName);
-    if (cached) return cached;
+  adapterFor(providerName: string, wireOverride?: WireApi): ModelAdapter {
     const cfg = this.providerConfig(providerName);
+    const effectiveWire = wireOverride ?? cfg.wire;
+    const cacheKey = `${providerName}:${effectiveWire}`;
+    const cached = this.adapters.get(cacheKey);
+    if (cached) return cached;
     if (cfg.apiKeyEndpoint && normalizeEndpoint(cfg.apiKeyEndpoint) !== normalizeEndpoint(cfg.baseUrl)) throw new ModelError('服务地址已更改，请重新输入该地址的 API Key，旧密钥不会发送到新地址。');
     const adapter: ModelAdapter =
-      cfg.wire === 'anthropic'
+      effectiveWire === 'anthropic'
         ? new AnthropicAdapter({
             baseUrl: cfg.baseUrl,
             apiKey: apiKeyFor(cfg) ?? '',
             contextWindow: cfg.contextWindow,
           })
-        : new ChatCompletionsAdapter({
-            baseUrl: cfg.baseUrl,
-            apiKey: apiKeyFor(cfg) ?? 'none',
-            contextWindow: cfg.contextWindow,
-          });
-    this.adapters.set(providerName, adapter);
+        : effectiveWire === 'responses'
+          ? new ResponsesAdapter({
+              baseUrl: cfg.baseUrl,
+              apiKey: apiKeyFor(cfg) ?? 'none',
+              contextWindow: cfg.contextWindow,
+            })
+          : new ChatCompletionsAdapter({
+              baseUrl: cfg.baseUrl,
+              apiKey: apiKeyFor(cfg) ?? 'none',
+              contextWindow: cfg.contextWindow,
+            });
+    this.adapters.set(cacheKey, adapter);
     return adapter;
   }
 
@@ -107,8 +118,12 @@ export class ModelGateway {
   }
   async *stream(ref: ModelRef, req: Omit<ModelRequest, 'model'>): AsyncIterable<ModelDelta> {
     this.validateRequest(ref, req);
+    const cfg = this.providerConfig(ref.provider);
     const model = this.modelsFor(ref.provider).models.find(m => m.id === ref.model);
-    const adapter = this.adapterFor(ref.provider);
+    const wireOverride = cfg.wire === 'chat' && providerKind(cfg) === 'openai' && (model?.preferredWire === 'responses' || /-codex(?:-|$)/i.test(ref.model))
+      ? 'responses'
+      : undefined;
+    const adapter = this.adapterFor(ref.provider, wireOverride);
     const requestedOutput = req.maxOutputTokens ?? (adapter.wire === 'anthropic' ? 8192 : undefined);
     const maxOutputTokens = model?.maxOutputTokens && requestedOutput ? Math.min(requestedOutput, model.maxOutputTokens) : req.maxOutputTokens;
     yield* adapter.stream({ ...req, ...(maxOutputTokens ? { maxOutputTokens } : {}), model: ref.model });

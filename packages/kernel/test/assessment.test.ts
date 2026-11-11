@@ -58,4 +58,19 @@ describe('evidence-based execution and completion', () => {
     expect(assessTurn([file], '修复')).toMatchObject({ status: 'unverified', verificationMissing: true });
     expect(assessTurn([{ ...file, path: 'README.md' }], '修改说明').status).toBe('completed');
   });
+  it('handles benign search probes, informational flags, skill-suffixed read-only prompts and same-turn probe/suite recovery', () => {
+    expect(executionAssessment('dir /b .venv\\Scripts 2>nul | findstr /i python', '', 1)).toMatchObject({ kind: 'success' });
+    expect(executionAssessment('where python 2>nul & where ruff 2>nul', 'C:\\Python314\\python.exe', 1)).toMatchObject({ kind: 'success' });
+    expect(executionAssessment('uv run --project backend ruff check --show-settings backend/app/core/config.py 2>&1 | findstr /I "line-length"', 'linter.line_length = 88', 0)).toMatchObject({ kind: 'success', check: undefined });
+    const skillPrompt = '检查代码，不的修改，检查完之后向我做简明汇报\n\n用户为本次任务选择的工作流程（请按这些步骤处理）：\n{"steps":["修改文件","验证修复"]}';
+    const fmt1 = cmd('fmt1', 'ruff format --check backend', 'Would reformat: a.py', 1);
+    const fmt2 = cmd('fmt2', 'ruff format --check backend', 'Would reformat: a.py', 1);
+    expect(assessTurn([fmt1, fmt2], skillPrompt)).toMatchObject({ status: 'findings', intent: 'inspect', recovered: 1, checks: { findings: 1 } });
+    const lsFail = cmd('ls', 'ls -la', "'ls' is not recognized as an internal or external command", 1);
+    const wslFail = cmd('wsl', 'bash -c "ls -la"', 'WSL (11 - Relay) ERROR: CreateProcessCommon:725: execvpe(/bin/bash) failed: No such file or directory', 1);
+    const globOk: Item = { kind: 'commandExecution', id: 'glob1', threadId: 't', turnId: 'turn', createdAt: '', command: 'glob *', output: 'README.md', exitCode: 0, status: 'completed', tool: 'glob' };
+    const narrowTest = cmd('narrow', 'pnpm --dir frontend test -- --run src/app/pages/Cover.test.tsx', '1 failed', 1);
+    const fullSuite = cmd('full', 'pnpm --dir frontend test', '41 passed', 0);
+    expect(assessTurn([lsFail, wslFail, globOk, narrowTest, fullSuite], '修复项目')).toMatchObject({ status: 'completed', recovered: 3, unresolved: [], checks: { passed: 1, findings: 0 } });
+  });
 });

@@ -1,4 +1,5 @@
 import type { ApprovalDecision, ApprovalRequest, Item, ThreadMeta, ProjectMeta, ThreadStatus, ThreadTokenUsage, UserInputRequest, ContextNotice } from '../../../../kernel/src/protocol/types'
+import type { ReasoningEffort } from '../../../../kernel/src/models/types'
 import { itemAssessment } from '../../../../kernel/src/protocol/assessment'
 
 function annotateResult(item: Item): Item {
@@ -7,10 +8,10 @@ function annotateResult(item: Item): Item {
   return assessment ? { ...item, assessment } : item
 }
 
-export type { ApprovalDecision, ApprovalRequest, Item, ThreadMeta, ProjectMeta, ThreadStatus, ThreadTokenUsage, UserInputRequest }
+export type { ApprovalDecision, ApprovalRequest, Item, ThreadMeta, ProjectMeta, ThreadStatus, ThreadTokenUsage, UserInputRequest, ReasoningEffort }
 export type SettingsData = {
   catalogs?: Record<string, import('../../../../kernel/src/models/catalog').CatalogResult>
-  providers: Record<string, { baseUrl: string; wire: 'chat' | 'anthropic'; apiKeyEnv?: string; hasKey: boolean; defaultModel?: string; contextWindow?: number; modelContextWindows?: Record<string, number | null> }>
+  providers: Record<string, { baseUrl: string; wire: 'chat' | 'anthropic' | 'responses'; apiKeyEnv?: string; hasKey: boolean; defaultModel?: string; contextWindow?: number; modelContextWindows?: Record<string, number | null> }>
   compactThreshold?: number
   effective: { defaultProvider: string; defaultModel: string; permissionMode: string }
   keyStorage: 'encrypted' | 'session'
@@ -309,11 +310,11 @@ export class DesktopStore {
     this.commit({ sessions: Object.fromEntries(Object.entries(this.state.sessions).map(([id, s]) => [id, { ...s, unread: false }])) })
   }
   busy(id: string) { const s = this.state.sessions[id]; return !!s && (!!s.sending || (!!s.status && s.status.lifecycle !== 'idle')) }
-  async send(id: string | null, text: string, cwd: string, model: string, permissionMode: string, projectId?: string, context?: { text: string; references: Array<{ path: string; label: string }>; images?: import('../../../../kernel/src/models/types').ImagePart[]; fileScope?: string }): Promise<string> {
+  async send(id: string | null, text: string, cwd: string, model: string, permissionMode: string, projectId?: string, context?: { text: string; references: Array<{ path: string; label: string }>; images?: import('../../../../kernel/src/models/types').ImagePart[]; fileScope?: string; reasoningEffort?: ReasoningEffort }): Promise<string> {
     if (!this.api || !this.state.connected) throw new Error('内核未连接')
     let threadId = id
     if (!threadId) {
-      const result = await this.api.call<{ meta: ThreadMeta; threadId: string }>('thread/start', { cwd, model, permissionMode, projectId, title: text.slice(0, 60), ...(context?.fileScope?{fileScope:context.fileScope}:{}) })
+      const result = await this.api.call<{ meta: ThreadMeta; threadId: string }>('thread/start', { cwd, model, permissionMode, projectId, title: text.slice(0, 60), ...(context?.fileScope?{fileScope:context.fileScope}:{}), ...(context?.reasoningEffort?{reasoningEffort:context.reasoningEffort}:{}) })
       this.upsert(result.meta); threadId = result.threadId
     }
     const input = text + (context?.text ?? ''), displayText = text, references = context?.references
@@ -322,9 +323,24 @@ export class DesktopStore {
       if (result.entry) this.updateSteering(threadId, result.entry)
     } else {
       this.update(threadId, s => ({ ...s, sending: true, error: undefined }))
-      void this.api.call('turn/start', { threadId, input, displayText, references, images: context?.images }).catch(err => this.update(threadId!, s => ({ ...s, sending: false, error: errorText(err) })))
+      void this.api.call('turn/start', { threadId, input, displayText, references, images: context?.images, ...(context?.reasoningEffort ? { reasoningEffort: context.reasoningEffort } : {}) }).catch(err => this.update(threadId!, s => ({ ...s, sending: false, error: errorText(err) })))
     }
     return threadId
+  }
+  async forkThread(threadId: string, upToItemId?: string, title?: string): Promise<string> {
+    if (!this.api || !this.state.connected) throw new Error('内核未连接')
+    const result = await this.api.call<{ threadId: string; meta: ThreadMeta }>('thread/fork', { threadId, ...(upToItemId ? { upToItemId } : {}), ...(title ? { title } : {}) })
+    this.upsert(result.meta)
+    await this.open(result.threadId)
+    return result.threadId
+  }
+  async initWorkspace(params: { threadId?: string; cwd?: string; overwrite?: boolean }) {
+    if (!this.api || !this.state.connected) throw new Error('内核未连接')
+    return this.api.call<{ path: string; written: boolean; exists: boolean; content: string }>('workspace/init', params)
+  }
+  async compactThread(threadId: string) {
+    if (!this.api || !this.state.connected) throw new Error('内核未连接')
+    return this.api.call<{ compacted: boolean; reason?: string }>('thread/compact/start', { threadId })
   }
   private mergeSteering(first: SteeringEntry[], second: SteeringEntry[]): SteeringEntry[] {
     const entries = new Map(first.map(entry => [entry.id, entry]));

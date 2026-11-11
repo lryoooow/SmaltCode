@@ -38,12 +38,20 @@ export type ChatMessage =
   | { role: 'assistant'; content: string | null; toolCalls?: ToolCall[]; reasoningContent?: string }
   | { role: 'tool'; toolCallId: string; content: string; isError?: boolean };
 
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+
 export type ModelDelta =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'toolCallStart'; id: string; name: string }
   | { type: 'toolCallDelta'; id: string; argsDelta: string }
-  | { type: 'usage'; inputTokens: number; outputTokens: number }
+  | {
+      type: 'usage';
+      inputTokens: number;
+      outputTokens: number;
+      cachedInputTokens?: number;
+      cacheWriteInputTokens?: number;
+    }
   | { type: 'done'; finishReason: 'stop' | 'toolCalls' | 'length' | 'contentFilter' | 'other' };
 
 export interface ModelRequest {
@@ -52,6 +60,8 @@ export interface ModelRequest {
   tools: ToolSpec[];
   temperature?: number;
   maxOutputTokens?: number;
+  reasoningEffort?: ReasoningEffort;
+  promptCacheKey?: string;
   signal?: AbortSignal;
 }
 
@@ -62,7 +72,7 @@ export interface ModelCapabilities {
   contextWindow: number;
 }
 
-export type WireApi = 'chat' | 'anthropic';
+export type WireApi = 'chat' | 'anthropic' | 'responses';
 
 export interface ModelAdapter {
   readonly wire: WireApi;
@@ -85,6 +95,7 @@ export class ModelError extends Error {
     message: string,
     readonly status?: number,
     readonly body?: string,
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'ModelError';

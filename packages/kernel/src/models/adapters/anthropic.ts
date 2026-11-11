@@ -5,7 +5,7 @@
  * thinking blocks and tool_use assembly.
  */
 
-import { parseSse, readErrorBody } from '../sse.js';
+import { parseRetryAfterMs, parseSse, readErrorBody } from '../sse.js';
 import {
   ModelError,
   type ChatMessage,
@@ -21,6 +21,8 @@ export interface AnthropicAdapterOptions {
   apiKey: string;
   contextWindow?: number;
   fetchImpl?: typeof fetch;
+  enablePromptCache?: boolean;
+  stallTimeoutMs?: number;
 }
 
 export function toAnthropicWire(messages: ChatMessage[]): { system?: string; messages: unknown[] } {
@@ -91,6 +93,21 @@ function safeParseJson(s: string): unknown {
   }
 }
 
+function applyAnthropicCacheBreakpoints(messages: any[]): any[] {
+  if (!messages.length) return messages;
+  const cloned = messages.map((m) => ({ ...m }));
+  const last = cloned[cloned.length - 1];
+  if (!last || last.role !== 'user') return cloned;
+  if (typeof last.content === 'string') {
+    last.content = [{ type: 'text', text: last.content, cache_control: { type: 'ephemeral' } }];
+  } else if (Array.isArray(last.content) && last.content.length > 0) {
+    const blocks = last.content.map((b: any) => ({ ...b }));
+    blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: 'ephemeral' } };
+    last.content = blocks;
+  }
+  return cloned;
+}
+
 export class AnthropicAdapter implements ModelAdapter {
   readonly wire = 'anthropic' as const;
 
@@ -107,32 +124,46 @@ export class AnthropicAdapter implements ModelAdapter {
 
   async *stream(req: ModelRequest): AsyncIterable<ModelDelta> {
     const wire = toAnthropicWire(req.messages);
+    const cacheEnabled = this.opts.enablePromptCache !== false;
+    const maxTokens = req.maxOutputTokens ?? 8192;
     const body: Record<string, unknown> = {
       model: req.model,
-      max_tokens: req.maxOutputTokens ?? 8192,
-      messages: wire.messages,
+      max_tokens: maxTokens,
+      messages: cacheEnabled ? applyAnthropicCacheBreakpoints(wire.messages as any[]) : wire.messages,
       stream: true,
     };
-    if (wire.system) body.system = wire.system;
+    if (wire.system) {
+      body.system = cacheEnabled
+        ? [{ type: 'text', text: wire.system, cache_control: { type: 'ephemeral' } }]
+        : wire.system;
+    }
     if (req.tools.length) {
-      body.tools = req.tools.map((t) => ({
+      body.tools = req.tools.map((t, idx) => ({
         name: t.name,
         description: t.description,
         input_schema: t.inputSchema,
+        ...(cacheEnabled && idx === req.tools.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}),
       }));
+    }
+    if (req.reasoningEffort && maxTokens >= 2048) {
+      const budgetMap = { low: 1024, medium: 4096, high: 8192, max: 16384 } as const;
+      const budget = Math.min(budgetMap[req.reasoningEffort], Math.max(1024, maxTokens - 1024));
+      body.thinking = { type: 'enabled', budget_tokens: budget };
     }
 
     const doFetch = this.opts.fetchImpl ?? fetch;
+    const url = `${this.opts.baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1/messages`;
+    const headers = {
+      'content-type': 'application/json',
+      'x-api-key': this.opts.apiKey,
+      'anthropic-version': '2023-06-01',
+    };
     let res: Response;
     try {
-      res = await doFetch(`${this.opts.baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1/messages`, {
+      res = await doFetch(url, {
         method: 'POST',
         redirect: 'error',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': this.opts.apiKey,
-          'anthropic-version': '2023-06-01',
-        },
+        headers,
         body: JSON.stringify(body),
         signal: req.signal,
       });
@@ -141,23 +172,51 @@ export class AnthropicAdapter implements ModelAdapter {
         `Request to ${this.opts.baseUrl} failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    // Graceful fallback if an Anthropic-compatible proxy rejects thinking or cache_control
+    if (res.status === 400 && ('thinking' in body || cacheEnabled)) {
+      const errBody = await readErrorBody(res.clone());
+      if (/thinking|cache_control/i.test(errBody)) {
+        const retryBody: Record<string, unknown> = { ...body };
+        if (/thinking/i.test(errBody)) delete retryBody.thinking;
+        if (/cache_control/i.test(errBody)) {
+          retryBody.messages = wire.messages;
+          if (wire.system) retryBody.system = wire.system;
+          if (req.tools.length) {
+            retryBody.tools = req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+          }
+        }
+        void res.body?.cancel().catch(() => {});
+        res = await doFetch(url, { method: 'POST', redirect: 'error', headers, body: JSON.stringify(retryBody), signal: req.signal });
+      }
+    }
     if (!res.ok || !res.body) {
       throw new ModelError(
         `Model API error (HTTP ${res.status})`,
         res.status,
         await readErrorBody(res),
+        parseRetryAfterMs(res.headers),
       );
     }
 
     let inputUsage = 0;
     let outputUsage = 0;
+    let cachedInputTokens = 0;
+    let cacheWriteInputTokens = 0;
     let finish: 'stop' | 'toolCalls' | 'length' | 'contentFilter' | 'other' = 'stop';
     let sawToolUse = false;
     /** index of the content block currently being assembled */
     let blockIndex = -1;
     const toolIdByBlock = new Map<number, string>();
 
-    for await (const data of parseSse(res.body, req.signal)) {
+    const buildUsageDelta = (): Extract<ModelDelta, { type: 'usage' }> => ({
+      type: 'usage',
+      inputTokens: inputUsage + cachedInputTokens + cacheWriteInputTokens,
+      outputTokens: outputUsage,
+      ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
+      ...(cacheWriteInputTokens > 0 ? { cacheWriteInputTokens } : {}),
+    });
+
+    for await (const data of parseSse(res.body, req.signal, { stallTimeoutMs: this.opts.stallTimeoutMs })) {
       let ev: any;
       try {
         ev = JSON.parse(data);
@@ -165,9 +224,13 @@ export class AnthropicAdapter implements ModelAdapter {
         continue;
       }
       switch (ev.type) {
-        case 'message_start':
-          inputUsage = ev.message?.usage?.input_tokens ?? 0;
+        case 'message_start': {
+          const u = ev.message?.usage;
+          inputUsage = u?.input_tokens ?? 0;
+          cachedInputTokens = u?.cache_read_input_tokens ?? 0;
+          cacheWriteInputTokens = u?.cache_creation_input_tokens ?? 0;
           break;
+        }
         case 'content_block_start': {
           blockIndex = ev.index ?? blockIndex + 1;
           const block = ev.content_block;
@@ -198,7 +261,7 @@ export class AnthropicAdapter implements ModelAdapter {
           break;
         }
         case 'message_stop': {
-          yield { type: 'usage', inputTokens: inputUsage, outputTokens: outputUsage };
+          yield buildUsageDelta();
           yield {
             type: 'done',
             finishReason: finish === 'stop' && sawToolUse ? 'toolCalls' : finish,
@@ -210,7 +273,7 @@ export class AnthropicAdapter implements ModelAdapter {
         }
       }
     }
-    yield { type: 'usage', inputTokens: inputUsage, outputTokens: outputUsage };
+    yield buildUsageDelta();
     yield { type: 'done', finishReason: sawToolUse ? 'toolCalls' : finish };
   }
 }

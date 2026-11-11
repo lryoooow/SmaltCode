@@ -48,6 +48,7 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
 export function toolClass(toolName: string): 'shell' | 'edit' | 'read' | 'other' {
   switch (toolName) {
     case 'shell':
+    case 'process_write':
     case 'container_exec':
     case 'container_process_stop':
     case 'ssh_exec':
@@ -60,6 +61,7 @@ export function toolClass(toolName: string): 'shell' | 'edit' | 'read' | 'other'
     case 'ssh_write':
     case 'apply_patch':
       return 'edit';
+    case 'activate_skill':
     case 'task_checkpoint':
     case 'process_read':
     case 'container_read':
@@ -221,15 +223,20 @@ function destructiveRoot(command: string): boolean {
  * Kept deliberately short and conservative; this is a backstop, not a sandbox.
  */
 const DANGEROUS_PATTERNS: ReadonlyArray<{ re: RegExp; why: string }> = [
-  { re: /\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*-(?:enc|encodedcommand)\b/i, why: 'encoded shell command' },
+  { re: /\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*-(?:e|ec|enc|encodedcommand)\b/i, why: 'encoded shell command' },
   { re: /\bmkfs(\.\w+)?\b/i, why: 'filesystem format' },
   { re: /\bdd\b[^|]*\bof=\/dev\//i, why: 'raw write to a device' },
   { re: /:\(\)\s*\{.*\};\s*:/, why: 'fork bomb' },
   { re: /\b(shutdown|reboot|halt)\b/i, why: 'system power control' },
   { re: /\bformat\s+[a-z]:/i, why: 'disk format' },
-  { re: /\breg\s+delete\s+(HKLM|HKEY_LOCAL_MACHINE)/i, why: 'machine registry delete' },
+  { re: /\breg\s+(?:delete|add)\s+(?:HKLM|HKEY_LOCAL_MACHINE)/i, why: 'machine registry modification' },
+  { re: /\breg\s+add\b[^\n]*\\CurrentVersion\\Run\b/i, why: 'autorun registry persistence' },
   { re: /\bbcdedit\b/i, why: 'boot configuration edit' },
-  { re: /\b(curl|wget|powershell|iwr|Invoke-WebRequest)\b[^|;&]*\|\s*(sudo\s+)?(ba)?sh\b/i, why: 'piping a remote script into a shell' },
+  { re: /\bvssadmin\b[^\n]*\bdelete\s+shadows\b/i, why: 'shadow copy deletion' },
+  { re: /\bsc(?:\.exe)?\s+(?:delete|stop)\b/i, why: 'system service disruption' },
+  { re: /\bStart-Process\b[^\n]*-Verb\s+RunAs\b/i, why: 'UAC privilege elevation' },
+  { re: /\b(curl|wget|powershell|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|;&]*\|\s*(sudo\s+)?(?:(?:ba)?sh|pwsh|powershell|iex|Invoke-Expression)\b/i, why: 'piping a remote script into a shell' },
+  { re: /\b(?:iex|Invoke-Expression)\s*\(\s*(?:New-Object\s+Net\.WebClient|\(?\s*(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b)/i, why: 'PowerShell download cradle execution' },
 ];
 
 /** Dangerous check runs on the whole command AND per segment: patterns that

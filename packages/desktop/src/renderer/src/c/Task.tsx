@@ -3,7 +3,7 @@ import { useId, useState, useMemo, useRef, useEffect, useCallback, useLayoutEffe
 import Icon from './icons'
 import Composer, { type ModelChoice } from './Composer'
 import { Btn, cx, Menu } from './ui'
-import { errorText, folderName, store, type Session, type Item, type ContextReference } from '../bridge'
+import { errorText, folderName, store, type Session, type Item, type ContextReference, type ReasoningEffort } from '../bridge'
 import Md from './Markdown'
 import { activityTimeline, activityProgress, latestPlan, type TimelineEntry } from './activity'
 import TaskProgress, { PlanHistory } from './TaskProgress'
@@ -60,7 +60,7 @@ function block(item: Item, assessment = itemAssessment(item)): Block {
 function operationTitle(tool: string, input: unknown, fallback: string) {
   const value = input as Record<string, unknown> | undefined
   if (tool === 'shell' && value) return '运行命令 · ' + displayCommand(value)
-  const labels: Record<string, string> = { write: '写入文件', apply_patch: '修改文件', shell: '运行命令', read: '读取文件', grep: '搜索内容', glob: '查找文件', web_search: '联网搜索', web_fetch: '读取网页' }
+  const labels: Record<string, string> = { write: '写入文件', apply_patch: '修改文件', shell: '运行命令', process_write: '向后台进程输入', activate_skill: '加载技能指令', delegate_task: '委派子智能体', read: '读取文件', grep: '搜索内容', glob: '查找文件', web_search: '联网搜索', web_fetch: '读取网页' }
   return (labels[tool] ?? fallback) + (typeof value?.path === 'string' ? ' · ' + value.path : '')
 }
 function approvalReason(reason?: string) {
@@ -75,8 +75,10 @@ function operationContent(input: unknown) {
   const value = input as Record<string, unknown> | undefined
   return String(value?.command ?? value?.patch ?? value?.content ?? JSON.stringify(input, null, 2))
 }
-export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, session, scrollPositions, onOpenFile, model, setModel, models, mode, setMode, draft, setDraft, onSend, onError, onSettings, references, onReferencesChange, planPinned, onPinPlan, onInspectIssue, onOpenProcesses, onOpenBrowser }: { onSsh?:()=>void;onRemote?: () => void; onCollaborations?: () => void; onManage?: () => void; onOpenBrowser: (tabId?: string) => void; onOpenProcesses: () => void; onInspectIssue: (id: string) => void;
+export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, session, scrollPositions, onOpenFile, model, setModel, models, reasoningEffort, onReasoningEffortChange, onFork, onSlashCommand, onToast, mode, setMode, draft, setDraft, onSend, onError, onSettings, references, onReferencesChange, planPinned, onPinPlan, onInspectIssue, onOpenProcesses, onOpenBrowser }: { onSsh?:()=>void;onRemote?: () => void; onCollaborations?: () => void; onManage?: () => void; onOpenBrowser: (tabId?: string) => void; onOpenProcesses: () => void; onInspectIssue: (id: string) => void;
   session: Session; onOpenFile: (file: FileItem) => void; model: string; setModel: (model: string) => void; models: ModelChoice[]
+  reasoningEffort?: ReasoningEffort; onReasoningEffortChange?: (effort?: ReasoningEffort) => void
+  onFork?: (upToItemId?: string) => void; onSlashCommand?: (cmd: string) => Promise<void> | void; onToast?: (msg: string) => void
   planPinned?: boolean; onPinPlan: () => void
   scrollPositions: ConversationScrollMemory
   mode: string; setMode: (mode: string) => void; draft: string; setDraft: (value: string) => void; onSend: (text: string) => Promise<void>
@@ -94,8 +96,41 @@ export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, s
   }, [session.meta.id])
   const running = store.busy(session.meta.id)
   const [managedLocked, setManagedLocked] = useState(false)
+  const [memoryCandidate, setMemoryCandidate] = useState<{ itemId: string; title: string; body: string }>()
+  const [dismissedMemories, setDismissedMemories] = useState<Set<string>>(() => new Set())
+  const [savingMemory, setSavingMemory] = useState(false)
   const lifecycle = session.status?.lifecycle
   const lastTurnId = session.items.at(-1)?.turnId
+  useEffect(() => {
+    if (running || !lastTurnId || session.meta.collaboration || session.meta.archived || !store.api?.autonomy) {
+      setMemoryCandidate(undefined)
+      return
+    }
+    let alive = true
+    void store.api.autonomy<{ candidates: Array<{ itemId: string; title: string; body: string }> }>('memory-suggest', { threadId: session.meta.id })
+      .then(res => { if (alive) setMemoryCandidate((res.candidates ?? []).find(c => !dismissedMemories.has(c.itemId))) })
+      .catch(() => { if (alive) setMemoryCandidate(undefined) })
+    return () => { alive = false }
+  }, [running, lastTurnId, session.meta.id, session.meta.collaboration, session.meta.archived, dismissedMemories])
+  const saveSuggestedMemory = async () => {
+    if (!memoryCandidate || !store.api?.autonomy || savingMemory) return
+    setSavingMemory(true)
+    try {
+      await store.api.autonomy('memory-save', {
+        config: {
+          cwd: session.meta.cwd,
+          ...(session.meta.projectId ? { projectId: session.meta.projectId } : {}),
+          title: memoryCandidate.title,
+          body: memoryCandidate.body,
+          auto: false,
+          source: { kind: 'conversation', note: '从对话提取的项目约定', threadId: session.meta.id, itemId: memoryCandidate.itemId },
+        },
+      })
+      setDismissedMemories(prev => new Set(prev).add(memoryCandidate.itemId))
+      setMemoryCandidate(undefined)
+      onToast?.('已保存为工作区记忆，可在“持续任务 · 记忆”中审阅或设为自动引用')
+    } catch (err) { onError(errorText(err)) } finally { setSavingMemory(false) }
+  }
   const timeline = useMemo(() => activityTimeline(session.items, lastTurnId), [session.items, lastTurnId])
   const [historyLimit, setHistoryLimit] = useState(() => scrollPositions.get(session.meta.id)?.historyLimit ?? 60)
   const [searchWindow, setSearchWindow] = useState<{ start: number; end: number } | undefined>(() => scrollPositions.get(session.meta.id)?.searchWindow)
@@ -173,7 +208,7 @@ export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, s
 
     {onCollaborations && <CollaborationBadge session={session} onManage={onCollaborations} />}
     {onManage && !session.meta.collaboration && <ManagedTaskBadge onLockChange={setManagedLocked} threadId={session.meta.id} onManage={onManage} onError={onError} />}
-    <div className="conversation-tools gap-3"><button className="status-action" aria-label="打开浏览与网页预览" onClick={() => onOpenBrowser()}><Icon n="eye" s={13} />浏览预览</button><button className="status-action" aria-label="打开终端与后台进程" onClick={onOpenProcesses}><Icon n="terminal" s={13} />终端与进程</button><button ref={searchButton} className="status-action" aria-label="搜索对话 (Ctrl+F)" onClick={() => setSearchOpen(value => !value)}><Icon n="search" s={13} />搜索对话</button></div>
+    <div className="conversation-tools gap-3"><button className="status-action" aria-label="打开浏览与网页预览" onClick={() => onOpenBrowser()}><Icon n="eye" s={13} />浏览预览</button><button className="status-action" aria-label="打开终端与后台进程" onClick={onOpenProcesses}><Icon n="terminal" s={13} />终端与进程</button>{onFork && !session.meta.collaboration && session.items.length > 0 && <button className="status-action" disabled={running} aria-label="创建对话分支" onClick={() => onFork()}><Icon n="branch" s={13} />创建分支</button>}<button ref={searchButton} className="status-action" aria-label="搜索对话 (Ctrl+F)" onClick={() => setSearchOpen(value => !value)}><Icon n="search" s={13} />搜索对话</button></div>
     {searchOpen && <ConversationSearch items={session.items} issues={searchIssues} onLocate={locate} onClose={() => { setSearchOpen(false); searchButton.current?.focus({ preventScroll: true }) }} />}
     <div ref={scroll.viewport} data-testid="conversation-scroll" role="region" aria-label="对话内容" tabIndex={0} onScroll={scroll.onScroll} onWheelCapture={scroll.onWheelCapture} onPointerDownCapture={scroll.onPointerDownCapture} onKeyDownCapture={scroll.onKeyDownCapture} className="flex-1 min-h-0 overflow-y-auto outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--line)]">
       <div ref={scroll.content} className="max-w-[760px] mx-auto px-5 lg:px-8 pt-6 pb-10 space-y-3">
@@ -182,7 +217,7 @@ export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, s
         {session.items.length === 0 && <div className="py-12 text-center text-[var(--muted)]">继续描述你希望完成的工作。</div>}
         {earlier > 0 && <button data-testid="load-earlier-history" onClick={loadEarlier} className="w-full py-2 text-[12px] text-accent rounded-lg hover:bg-[var(--hover)]">查看更早的记录（还有 {earlier} 条）</button>}
         {timeline.slice(earlier, visibleEnd).map(entry => entry.kind !== 'activity'
-          ? <div key={entry.item.id} data-search-item={entry.item.id} className={located?.id === entry.item.id ? 'search-located' : undefined} data-testid={'item-' + entry.item.kind}><BlockView b={block(entry.item)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} onOpenLink={openSource} /></div>
+          ? <div key={entry.item.id} data-search-item={entry.item.id} className={cx('group/item relative', located?.id === entry.item.id && 'search-located')} data-testid={'item-' + entry.item.kind}><BlockView b={block(entry.item)} onResolve={() => {}} onAnswer={() => {}} onOpenFile={onOpenFile} onOpenLink={openSource} />{onFork && !running && !session.meta.collaboration && (entry.item.kind === 'userMessage' || entry.item.kind === 'agentMessage') && <div className={cx('mt-1 opacity-0 group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity flex', entry.item.kind === 'userMessage' ? 'justify-end' : 'justify-start')}><button type="button" aria-label="从此处创建分支" title="保留至此消息的历史并创建独立对话分支" onClick={() => onFork(entry.item.id)} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] text-[var(--muted)] hover:text-accent hover:bg-[var(--hover)]"><Icon n="branch" s={11} />从此处分叉</button></div>}</div>
           : <ActivityGroup located={located} key={entry.id} entry={entry} allItems={session.items} assessments={assessments} memory={scrollPositions} threadId={session.meta.id} onOpenFile={onOpenFile} onInspect={inspect} />)}
         {visibleEnd < timeline.length && <button data-testid="load-newer-history" onClick={() => setSearchWindow(before => before ? { ...before, end: Math.min(timeline.length, before.end + 60) } : before)} className="w-full py-2 text-[12px] text-accent rounded-lg hover:bg-[var(--hover)]">查看较新的记录（还有 {timeline.length - visibleEnd} 条）</button>}
         {Object.values(session.approvals).map(req => <div key={req.itemId} data-testid="approval"><BlockView b={{ k: 'approval', external: req.external, id: req.itemId, risk: req.riskLevel ?? 'normal', title: req.batch ? '同组 ' + (req.categoryLabel ?? '操作') + ' · ' + req.batch.length + ' 项' : operationTitle(req.tool, req.input, req.title), detail: JSON.stringify(req.batch ?? req.input, null, 2), reason: approvalReason(req.detail), rule: req.suggestedRule ?? req.tool, category: req.category === 'other' ? undefined : req.categoryLabel, batch: req.batch?.length, operations: req.batch?.map(op => ({ ...op, title: operationTitle(op.tool, op.input, op.title) })) }} onResolve={(decision, reason) => respond(req.itemId, decision, reason)} onAnswer={() => {}} onOpenFile={onOpenFile} /></div>)}
@@ -190,13 +225,14 @@ export default function TaskView({ onSsh,onRemote, onCollaborations, onManage, s
         {(session.error || issues.length > 0) && <div ref={failures}><FailureSummary key={lastTurnId} issues={issues} error={session.error} onInspect={inspect} onContinue={() => setDraft('请继续完成上次任务，先检查失败原因和已有结果，避免重复操作。')} onSettings={onSettings} /></div>}
         {!session.error && session.contextNotice?.level === 'warning' && <div data-testid="context-notice" role="status" className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3 text-[12px] leading-relaxed"><p className="font-medium">{session.contextNotice.message}</p>{session.contextNotice.reason && <p className="mt-1 break-words text-[var(--muted)]">具体原因：{session.contextNotice.reason}</p>}<p className="mt-1 text-[var(--muted)]">原始记录与已有文件保持完整。</p></div>}
         {!running && lastTurnId && <div ref={delivery}><Delivery session={session} turnId={lastTurnId} assessment={latestAssessment} onOpenFile={onOpenFile} /></div>}
+        {memoryCandidate && !running && <div data-testid="memory-suggestion" className="rounded-xl border border-accent/20 bg-[var(--accent-soft)]/50 px-3.5 py-2.5 flex items-center gap-2.5 text-[12px]"><Icon n="spark" s={14} className="text-accent shrink-0" /><div className="flex-1 min-w-0"><span className="font-medium">检测到可复用的项目约定：</span><span className="text-[var(--muted)] ml-1 truncate">{memoryCandidate.body}</span></div><Btn v="soft" disabled={savingMemory} onClick={() => void saveSuggestedMemory()}>{savingMemory ? '保存中…' : '保存为工作区记忆'}</Btn><button type="button" aria-label="忽略记忆建议" onClick={() => { setDismissedMemories(prev => new Set(prev).add(memoryCandidate.itemId)); setMemoryCandidate(undefined) }} className="p-1 rounded text-[var(--muted)] hover:bg-[var(--hover)]"><Icon n="x" s={12} /></button></div>}
       </div>
     </div>
     <div className="relative max-w-[760px] w-full mx-auto px-5 lg:px-8 pb-4">
       {(!scroll.stick || searchWindow) && !planOpen && <button data-testid="scroll-to-latest" onClick={() => { setSearchWindow(undefined); setLocated(undefined); scroll.latest() }} className="absolute left-1/2 -translate-x-1/2 bottom-full mb-3 z-40 h-8 px-3 flex items-center gap-1.5 whitespace-nowrap rounded-full glass border border-[var(--line)] shadow-lg text-[12px]"><Icon n="arrowDown" s={13} />{Object.keys(session.approvals).length ? '需要确认 · 查看最新' : Object.keys(session.questions).length ? '需要回答 · 查看最新' : scroll.hasUpdates ? '有新内容 · 查看最新' : '回到底部'}</button>}
       {(running || plan || session.interrupted || session.error || issues.length > 0) && <TaskProgress planPinned={planPinned} onPinPlan={onPinPlan} onResults={() => delivery.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })} key={lastTurnId} plan={plan} progress={progress} running={running} lifecycle={lifecycle} interrupted={session.interrupted} error={session.error} idleLabel={assessmentLabels[latestAssessment.status]} issueLabel={issueOverview(issues)} onInspectIssues={() => failures.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} onOpenChange={onPlanOpenChange} />}
       <SteeringQueue threadId={session.meta.id} entries={session.steering ?? []} onError={onError} />
-      <Composer fileScope={session.meta.id} blockedHint={session.meta.collaboration ? "子任务由协作计划管理，请返回协作任务查看结果。" : undefined} submitBlocked={managedLocked || !!session.meta.collaboration} onPreview={ref => onOpenFile({ name: ref.label ?? folderName(ref.path), path: ref.path, kind: 'mod', add: 0, del: 0 })} references={references} onReferencesChange={onReferencesChange} approvedCategories={session.meta.approvedCategories} onResetPermissions={() => void store.updateThread(session.meta.id, {}, 'thread/permissions/reset').catch(e => onError(errorText(e)))} running={running} disabled={!!session.meta.archived || !!session.meta.collaboration} onSend={onSend} onStop={() => void stop()} value={draft} setValue={setDraft} mode={mode} setMode={setMode} model={model} setModel={setModel} models={models} ws={session.meta.cwd} workspaceLabel={workLocation(session.meta).label} workspaceTitle={workLocation(session.meta).detail} queued={session.steering?.length ? 0 : session.status?.queuedMessages} onError={onError} />
+      <Composer fileScope={session.meta.id} blockedHint={session.meta.collaboration ? "子任务由协作计划管理，请返回协作任务查看结果。" : undefined} submitBlocked={managedLocked || !!session.meta.collaboration} onPreview={ref => onOpenFile({ name: ref.label ?? folderName(ref.path), path: ref.path, kind: 'mod', add: 0, del: 0 })} references={references} onReferencesChange={onReferencesChange} approvedCategories={session.meta.approvedCategories} onResetPermissions={() => void store.updateThread(session.meta.id, {}, 'thread/permissions/reset').catch(e => onError(errorText(e)))} running={running} disabled={!!session.meta.archived || !!session.meta.collaboration} onSend={onSend} onStop={() => void stop()} value={draft} setValue={setDraft} mode={mode} setMode={setMode} model={model} setModel={setModel} models={models} reasoningEffort={reasoningEffort} onReasoningEffortChange={onReasoningEffortChange} onSlashCommand={onSlashCommand} ws={session.meta.cwd} workspaceLabel={workLocation(session.meta).label} workspaceTitle={workLocation(session.meta).detail} queued={session.steering?.length ? 0 : session.status?.queuedMessages} onError={onError} />
       <div className="text-center text-[11px] text-[var(--muted)]/80 mt-2">内容由 AI 生成，请核实重要信息</div>
     </div>
   </div>
@@ -350,7 +386,7 @@ function CmdBlock({ b, open = false, onToggle }: { b: Extract<Block, { k: 'cmd' 
         <span className="font-mono text-[12.5px] truncate">{b.cmd}</span>
         <span className="flex-1" />
         {!b.done ? <span className="text-[11.5px] text-accent flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-accent animate-pulse" />运行中</span>
-          : <span title={b.assessment?.recoveredBy ? `原退出码 ${b.code ?? '?'} · ${b.assessment.summary}` : b.assessment?.summary} className={cx('text-[11px] px-1.5 py-0.5 rounded shrink-0', b.assessment?.recoveredBy ? 'text-[var(--muted)] bg-[var(--sunken)]' : b.assessment?.kind === 'finding' || b.assessment?.kind === 'unverified' ? 'text-amber-700 dark:text-amber-300 bg-amber-500/10' : (b.external?.status === 'completed' || b.code === 0) ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10' : 'text-rose-500 bg-rose-500/10')}>{b.assessment?.recoveredBy ? b.assessment.recovery === 'alternative' ? '已改用其他工具' : '已有后续检查' : b.assessment?.kind === 'finding' ? '检查发现' : b.assessment?.kind === 'unverified' ? '待验证' : b.external ? b.external.status === 'completed' ? '已完成' : '调用失败' : b.code === undefined ? '已结束' : 'exit ' + b.code}</span>}
+          : <span title={b.assessment?.recoveredBy ? `原退出码 ${b.code ?? '?'} · ${b.assessment.summary}` : b.assessment?.summary} className={cx('text-[11px] px-1.5 py-0.5 rounded shrink-0', b.assessment?.recoveredBy ? 'text-[var(--muted)] bg-[var(--sunken)]' : b.assessment?.kind === 'finding' || b.assessment?.kind === 'unverified' ? 'text-amber-700 dark:text-amber-300 bg-amber-500/10' : (b.external?.status === 'completed' || b.assessment?.kind === 'success' || b.code === 0) ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10' : 'text-rose-500 bg-rose-500/10')}>{b.assessment?.recoveredBy ? b.assessment.recovery === 'alternative' ? '已改用其他工具' : '已有后续检查' : b.assessment?.kind === 'finding' ? '检查发现' : b.assessment?.kind === 'unverified' ? '待验证' : b.external ? b.external.status === 'completed' ? '已完成' : '调用失败' : b.code === undefined ? '已结束' : 'exit ' + b.code}</span>}
         <Icon n="chevron" s={13} className={cx('text-[var(--muted)] transition-transform', o && 'rotate-90')} />
       </button>
       {o && <div id={outputId} data-testid="command-output" className="bg-[#0d1017] text-[#c4cad6] font-mono text-[11.5px] leading-[1.7] px-3.5 py-2.5 max-h-44 overflow-auto">

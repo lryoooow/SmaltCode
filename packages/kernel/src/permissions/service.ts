@@ -197,7 +197,8 @@ export class PermissionService {
 
     // A live switch to plan mode immediately blocks future side effects,
     // including previously remembered approvals.
-    if (this.modeValue === 'plan' && cls !== 'read' && input.tool !== 'plan' && input.tool !== 'ask_user') {
+    const isExplorerDelegate = input.tool === 'delegate_task' && (input.input as { role?: string } | undefined)?.role === 'explorer';
+    if (this.modeValue === 'plan' && cls !== 'read' && !isExplorerDelegate && input.tool !== 'plan' && input.tool !== 'ask_user') {
       return { action: 'deny', reason: 'Plan mode is active — only read-only tools may run.' };
     }
     // Read-only/unattended modes cannot be relaxed by approving a dangerous call.
@@ -240,8 +241,13 @@ export class PermissionService {
 
     // Internal planning has no external side effects. ask_user already asks
     // the user directly; approving the question first would be redundant.
+    // Subagent delegation enforces parent permissions on every child tool call.
     if (input.tool === 'plan') return { action: 'allow', reason: 'internal task plan' };
     if (input.tool === 'ask_user' && this.modeValue !== 'dontAsk') return { action: 'allow', reason: 'direct user question' };
+    if (isExplorerDelegate) return { action: 'allow', reason: 'read-only explorer subagent' };
+    if (input.tool === 'delegate_task' && this.modeValue !== 'plan' && this.modeValue !== 'dontAsk') {
+      return { action: 'allow', reason: 'subagent inherits parent permission checks on all inner tool calls' };
+    }
 
     // 5. permission mode
     switch (this.modeValue) {
