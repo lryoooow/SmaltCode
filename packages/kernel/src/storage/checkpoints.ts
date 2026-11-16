@@ -53,6 +53,19 @@ export class CheckpointStore {
     if (after.ino !== stat.ino || after.dev !== stat.dev || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs || after.nlink !== stat.nlink) throw new Error('文件在核对期间发生变化');
     return { data: data.toString('base64'), mode: stat.mode & 0o777 };
   }
+  private async imageOptional(cwd: string, path: string): Promise<Image | 'untracked'> {
+    const target = this.check(cwd, path);
+    let stat;
+    try { stat = await lstat(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('检查点不支持目录或符号链接文件');
+    if (stat.nlink > 1 || stat.size > 2 * 1024 * 1024) return 'untracked';
+    const data = await readFile(target);
+    if (data.length > 2 * 1024 * 1024) return 'untracked';
+    this.check(cwd, path);
+    const after = await lstat(target);
+    if (after.ino !== stat.ino || after.dev !== stat.dev || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs || after.nlink !== stat.nlink) throw new Error('文件在核对期间发生变化');
+    return { data: data.toString('base64'), mode: stat.mode & 0o777 };
+  }
   private async save(record: RecordData) {
     const target = this.file(record.threadId, record.id);
     await mkdir(dirname(target), { recursive: true });
@@ -65,9 +78,10 @@ export class CheckpointStore {
     const files: Entry[] = [];
     let bytes = 0;
     for (const target of new Set(paths.map(path => relative(cwd, resolve(cwd, path)).replace(/\\/g, '/')))) {
-      const before = await this.image(cwd, target);
+      const before = await this.imageOptional(cwd, target);
+      if (before === 'untracked') continue;
       bytes += before?.data.length ?? 0;
-      if (bytes > 16 * 1024 * 1024) throw new Error('单次检查点超过 16 MB，请拆分操作');
+      if (bytes > 16 * 1024 * 1024) continue;
       files.push({ path: target, before });
     }
     const record = { id: newId('cp'), threadId, turnId, operationId, cwd, title: title.slice(0, 160), createdAt: new Date().toISOString(), complete: false, files };
@@ -75,11 +89,17 @@ export class CheckpointStore {
     return record;
   }
   async complete(record: RecordData) {
-    for (const entry of record.files) entry.after = await this.image(record.cwd, entry.path);
-    record.files = record.files.filter(entry => hash(entry.before) !== hash(entry.after));
+    const kept: Entry[] = [];
+    for (const entry of record.files) {
+      const after = await this.imageOptional(record.cwd, entry.path);
+      if (after === 'untracked') continue;
+      entry.after = after;
+      if (hash(entry.before) !== hash(entry.after)) kept.push(entry);
+    }
+    record.files = kept;
     record.complete = true;
     if (record.files.length) await this.save(record);
-    else await unlink(this.file(record.threadId, record.id));
+    else await unlink(this.file(record.threadId, record.id)).catch(() => {});
   }
   async exclusive<T>(cwd: string, run: () => Promise<T>): Promise<T> {
     const key = realPathOf(cwd);

@@ -36,7 +36,9 @@ export function applyPatch(patchText: string, cwd: string): ApplyReport {
   const staged = new Map<string, string | null>();
   const dirty = new Set<string>();
   const physical = new Map<string, string>();
-  const keyOf = (path: string) => { const key = process.platform === 'win32' ? path.toLowerCase() : path; if (!physical.has(key)) physical.set(key, path); return key; };
+  const caseRenames = new Map<string, { from: string; to: string }>();
+  const isCaseInsensitiveFs = process.platform === 'win32' || process.platform === 'darwin';
+  const keyOf = (path: string) => { const key = isCaseInsensitiveFs ? path.toLowerCase() : path; if (!physical.has(key)) physical.set(key, path); return key; };
   const get = (path: string): string | null => {
     const key = keyOf(path);
     if (!staged.has(key)) {
@@ -50,12 +52,32 @@ export function applyPatch(patchText: string, cwd: string): ApplyReport {
     read: path => { const value = get(path); if (value === null) throw new ApplyError(`Missing file: ${path}`); return value; },
     write: (path, text) => { get(path); const key = keyOf(path); staged.set(key, text); dirty.add(key); },
     remove: path => { get(path); const key = keyOf(path); staged.set(key, null); dirty.add(key); },
-    move: (from, to) => { if (get(to) !== null) throw new ApplyError(`Move destination already exists: ${to}`); const value = get(from); const source = keyOf(from), target = keyOf(to); staged.set(target, value); staged.set(source, null); dirty.add(source); dirty.add(target); },
+    move: (from, to) => {
+      const source = keyOf(from), target = keyOf(to);
+      if (source === target) {
+        if (from !== to) {
+          if (get(from) === null) throw new ApplyError(`Missing file: ${from}`);
+          physical.set(target, to);
+          caseRenames.set(target, { from, to });
+          dirty.add(target);
+        }
+        return;
+      }
+      if (get(to) !== null) throw new ApplyError(`Move destination already exists: ${to}`);
+      const value = get(from);
+      physical.set(target, to);
+      staged.set(target, value);
+      staged.set(source, null);
+      dirty.add(source);
+      dirty.add(target);
+    },
   };
   // Validate and compute every change in memory before touching any file.
   for (const file of files) changes.push(applyOne(file, cwd, filesystem));
   try {
     for (const key of dirty) {
+      const renameOp = caseRenames.get(key);
+      if (renameOp && existsSync(renameOp.from)) renameSync(renameOp.from, renameOp.to);
       const path = physical.get(key)!;
       const text = staged.get(key)!;
       if (text === null) { if (existsSync(path)) rmSync(path); }
@@ -63,7 +85,9 @@ export function applyPatch(patchText: string, cwd: string): ApplyReport {
     }
   } catch (error) {
     for (const key of dirty) {
-      const path = physical.get(key)!;
+      const renameOp = caseRenames.get(key);
+      if (renameOp && existsSync(renameOp.to)) { try { renameSync(renameOp.to, renameOp.from); } catch { /* best-effort rollback */ } }
+      const path = renameOp ? renameOp.from : physical.get(key)!;
       const bytes = original.get(key);
       if (bytes === null) { if (existsSync(path)) rmSync(path); }
       else if (bytes) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); }
@@ -90,10 +114,11 @@ function applyOne(file: PatchFile, cwd: string, fs: PatchFilesystem): AppliedCha
         throw new ApplyError(`Add File target already exists: ${file.path}`);
       }
       fs.write(abs, file.lines.join('\n') + (file.lines.length ? '\n' : ''));
+      const header = file.lines.length ? `@@ -0,0 +1,${file.lines.length} @@` : '@@ -0,0 +0,0 @@';
       return {
         path: file.path,
         action: 'add',
-        diff: ['--- /dev/null', `+++ b/${file.path}`, '@@ -0,0 +1,N @@', ...file.lines.map((l) => `+${l}`)].join('\n'),
+        diff: ['--- /dev/null', `+++ b/${file.path}`, header, ...file.lines.map((l) => `+${l}`)].join('\n'),
       };
     }
 
@@ -120,7 +145,7 @@ function applyOne(file: PatchFile, cwd: string, fs: PatchFilesystem): AppliedCha
       let applied = 0;
 
       for (const hunk of file.hunks) {
-        const { matchedAt, consumed, replaced } = applyHunkAt(beforeLines, hunk.lines, cursor, hunk.endOfFile);
+        const { matchedAt, consumed, replaced } = applyHunkAt(beforeLines, hunk.lines, cursor, hunk.endOfFile, hunk.anchor);
         if (matchedAt < 0) {
           const expected = hunk.lines
             .filter((l) => l.kind !== 'add')
@@ -188,20 +213,46 @@ function normalizeUnicodePunctuation(s: string): string {
  *   4. unicode — typographic quotes/dashes/spaces normalized + trim
  * Returns matchedAt = -1 on failure.
  */
+function findAnchorIndex(lines: string[], anchor: string | undefined, from: number): number {
+  const clean = anchor?.trim();
+  if (!clean) return -1;
+  for (let i = from; i < lines.length; i++) {
+    if (lines[i]!.trim() === clean) return i;
+  }
+  if (clean.length >= 3) {
+    for (let i = from; i < lines.length; i++) {
+      if (lines[i]!.includes(clean)) return i;
+    }
+  }
+  return -1;
+}
+
 function applyHunkAt(
   lines: string[],
   hunkLines: PatchLine[],
   from: number,
   endOfFile = false,
+  anchor?: string,
 ): { matchedAt: number; consumed: number; replaced: string[] } {
   const expected = hunkLines.filter((l) => l.kind !== 'add').map((l) => l.text);
+  const anchorPos = findAnchorIndex(lines, anchor, from);
   if (!expected.length) {
-    // pure insertion with no context — insert at cursor
-    return { matchedAt: endOfFile ? lines.length : from, consumed: 0, replaced: hunkLines.map((l) => l.text) };
+    // pure insertion with no context — insert after matched @@ anchor if present, else at cursor / EOF
+    const insertAt = endOfFile ? lines.length : anchorPos >= 0 ? anchorPos + 1 : from;
+    return { matchedAt: insertAt, consumed: 0, replaced: hunkLines.map((l) => l.text) };
   }
 
   const startPos = endOfFile ? Math.max(from, lines.length - expected.length) : from;
   const modes: SeekMode[] = ['exact', 'rstrip', 'trim', 'unicode'];
+  if (!endOfFile && anchorPos > startPos) {
+    for (const mode of modes) {
+      for (let pos = anchorPos; pos <= lines.length - expected.length; pos++) {
+        if (seqMatches(lines, pos, expected, mode)) {
+          return { matchedAt: pos, consumed: expected.length, replaced: buildReplacement(hunkLines, lines, pos, mode) };
+        }
+      }
+    }
+  }
   for (const mode of modes) {
     for (let pos = startPos; pos <= lines.length - expected.length; pos++) {
       if (seqMatches(lines, pos, expected, mode)) {

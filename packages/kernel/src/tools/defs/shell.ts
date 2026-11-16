@@ -1,5 +1,5 @@
-import { spawn, execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { spawn, spawnSync, execSync } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
 import { basename, dirname, resolve, delimiter, extname, isAbsolute, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { ToolDefinition, ToolEvent } from '../types.js';
@@ -34,9 +34,9 @@ export function killAllToolProcesses(): void {
     if (!Number.isInteger(pid) || pid <= 0) continue;
     try {
       if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        spawnSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/taskkill.exe'), ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 3000 });
       } else {
-        process.kill(pid, 'SIGKILL');
+        try { process.kill(-pid, 'SIGKILL'); } catch { process.kill(pid, 'SIGKILL'); }
       }
     } catch {
       /* already gone */
@@ -171,22 +171,30 @@ export const shellTool: ToolDefinition = {
       if (isNetworkPath(file) || /^(?:cmd|powershell|pwsh|bash|sh|zsh|fish|wscript|cscript)(?:\.exe)?$/i.test(basename(file))) { yield invalid('Shell interpreters require command mode; program mode runs a single executable.'); return; }
       // Executable lookup uses the workspace/PATH, never a shell expression.
       if (process.platform === 'win32') {
-        const extensions = extname(file) ? [''] : ['.exe', '.com', '.cmd', '.bat'];
-        const dirs = isAbsolute(file) || /[\\/]/.test(file) ? [''] : [cwd, ...(process.env.PATH ?? '').split(delimiter), ...gitDirs];
-        const found = dirs.flatMap(dir => extensions.map(ext => resolve(dir || cwd, file + ext))).find(p => existsSync(p));
+        const hasWinExeExt = /\.(?:exe|com|cmd|bat)$/i.test(file);
+        const extensions = hasWinExeExt ? [''] : extname(file) ? ['', '.exe', '.com', '.cmd', '.bat'] : ['.exe', '.com', '.cmd', '.bat'];
+        const dirs = isAbsolute(file) || /[\\/]/.test(file) ? [''] : [cwd, ...(process.env.PATH ?? '').split(delimiter).filter(Boolean), ...gitDirs];
+        const isRegularFile = (p: string) => { try { return statSync(p).isFile(); } catch { return false; } };
+        const found = dirs.flatMap(dir => extensions.map(ext => resolve(dir || cwd, file + ext))).find(isRegularFile);
         file = found ?? file;
         if (/\.(?:cmd|bat)$/i.test(file)) {
           // Node cannot spawn batch wrappers directly. Only a single conservatively quoted
           // invocation is allowed; complex literals belong in a native node/python executable.
-          if (/["%!\r\n&|<>^()]/.test(file) || args.some(a => /["%!\r\n&|<>^()]/.test(a))) { yield invalid('Batch wrapper arguments contain shell syntax. Use a native executable for these literals.'); return; }
-          argv = ['/d', '/s', '/c', `"${[file, ...args].map(a => `"${a}"`).join(' ')}"`];
+          if (/["%!\r\n&|<>^]/.test(file) || args.some(a => /["%!\r\n&|<>^()]/.test(a))) { yield invalid('Batch wrapper arguments contain shell syntax. Use a native executable for these literals.'); return; }
+          argv = ['/V:OFF', '/d', '/s', '/c', `"${[file, ...args].map(a => `"${a}"`).join(' ')}"`];
           file = process.env.ComSpec ?? 'cmd.exe'; windowsCmd = true;
         }
       }
     }
     // cmd /s strips the outer pair. Node's normal argv escaping would insert
     // backslashes before inner quotes, corrupting e.g. python -c "...".
-    if (windowsCmd && !structured) argv = [...shell.args, `"chcp 65001 >nul & ${command}"`];
+    if (windowsCmd && !structured) {
+      if (/[\r\n]/.test(command!.trim())) {
+        yield invalid('Windows cmd.exe mode cannot execute multi-line commands (lines after the first are dropped by cmd /c). Chain with && or run a script file.');
+        return;
+      }
+      argv = [...shell.args, `"chcp 65001 >nul & ${command}"`];
+    }
     const child = spawn(file, argv, {
       cwd,
       env: { ...env, SMALT: '1', PYTHONIOENCODING: 'utf-8' },
@@ -200,7 +208,9 @@ export const shellTool: ToolDefinition = {
     child.on('close', () => liveChildren.delete(child.pid ?? -1));
     child.on('error', () => liveChildren.delete(child.pid ?? -1));
 
+    let headOutput = '';
     let output = '';
+    let overflowed = false;
     let diagnosticTail = '';
     const diagnostics = new Set<string>();
     const chunks: string[] = [];
@@ -210,6 +220,7 @@ export const shellTool: ToolDefinition = {
     const push = (chunk: Buffer | string) => {
       const text = typeof chunk === 'string' ? chunk : stdoutDecoder.write(chunk);
       if (ctx.signal.aborted) return;
+      if (headOutput.length < 12_000) headOutput += text.slice(0, 12_000 - headOutput.length);
       output += text;
       const lines = (diagnosticTail + text).split(/\r?\n/);
       diagnosticTail = lines.pop()!.slice(-4000);
@@ -218,8 +229,11 @@ export const shellTool: ToolDefinition = {
       }
       chunks.push(text);
       wake?.();
-      // stream a rolling window; final result carries the tail
-      if (output.length > MAX_OUTPUT * 4) output = output.slice(-MAX_OUTPUT * 2);
+      // stream a rolling window; preserve headOutput separately so initial errors survive
+      if (output.length > MAX_OUTPUT * 4) {
+        overflowed = true;
+        output = output.slice(-MAX_OUTPUT * 2);
+      }
     };
     child.stdout.on('data', push);
     child.stderr.on('data', (chunk: Buffer) => push(stderrDecoder.write(chunk)));
@@ -268,7 +282,8 @@ export const shellTool: ToolDefinition = {
       if (!closed) killTree();
     }
 
-    const trimmed = output.replace(/\r\n/g, '\n').trimEnd();
+    const combined = overflowed ? `${headOutput}\n… [middle output omitted] …\n${output}` : output;
+    const trimmed = combined.replace(/\r\n/g, '\n').trimEnd();
     const body = trimmed ? `\n${budgetToolOutput(trimmed, MAX_OUTPUT)}` : '';
     const assessment = executionAssessment(commandText, `${killedByTimeout ? '[timed out]' : ctx.signal.aborted ? '[interrupted]' : ''}\n${[...diagnostics].join('\n')}\n${trimmed}`, exitCode, structured ? 'process' : 'shell', cwd);
     yield {

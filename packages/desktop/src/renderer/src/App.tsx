@@ -94,6 +94,8 @@ export default function App() {
   const [spaceError, setSpaceError] = useState('')
   const managedDrafts = useRef(new Map<string, Promise<string>>())
   const pendingNewDrafts = useRef(new Set<string>())
+  const isolatedSpaceOverrides = useRef(new Set<string>())
+  const autoPrimaryByScope = useRef(new Map<string, string>())
   const currentDraftId = useRef(draftId); currentDraftId.current = draftId
   const ensureLocalSpace = (id: string) => {
     let pending = managedDrafts.current.get(id)
@@ -172,7 +174,26 @@ export default function App() {
   const retryLocalSpace = () => { const id = draftId; managedDrafts.current.delete(id); setSpaceError(''); void ensureLocalSpace(id).then(cwd => { if (currentDraftId.current === id) setManagedWorkspace(cwd) }).catch(error => { if (currentDraftId.current === id) setSpaceError(errorText(error)) }) }
   const showResources=()=>{setResources(v=>({...v,[cur??'home']:true}));if(cur)setPanel(true);else setHomeLayout(v=>({...v,open:true}))}
   const pickFolder = async () => { setPage('tasks');showResources() }
-  useEffect(()=>{if(cur||!managedWorkspace||!store.api?.fileContext)return;let alive=true;const scope=managedWorkspace;void store.api.fileContext<FileContextView & {projectDefault?:string}>('apply-project',{scope,projectId:selectedProject}).then(v=>{if(alive){setFileView(v);setSpaceError('')}}).catch(e=>{if(alive)setSpaceError(errorText(e))});return()=>{alive=false}},[managedWorkspace,selectedProject,cur,projectResourcesRevision])
+  const syncDraftProjectContext = useCallback(async (scope: string, projectId: string | undefined) => {
+    if (!store.api?.fileContext) return undefined
+    let v = await store.api.fileContext<FileContextView & { projectDefault?: string }>('apply-project', { scope, projectId })
+    const prevAuto = autoPrimaryByScope.current.get(scope)
+    if (v.primary && prevAuto && v.primary === prevAuto && v.primary !== v.projectDefault) {
+      const nextDefault = v.projectDefault
+      v = await store.api.fileContext<FileContextView & { projectDefault?: string }>('primary', { scope, rootId: undefined })
+      v = await store.api.fileContext<FileContextView & { projectDefault?: string }>('apply-project', { scope, projectId })
+      v = { ...v, projectDefault: v.projectDefault ?? nextDefault }
+      autoPrimaryByScope.current.delete(scope)
+    }
+    if (projectId && v.projectDefault && !v.primary && !isolatedSpaceOverrides.current.has(scope)) {
+      const targetRoot = v.projectDefault
+      v = await store.api.fileContext<FileContextView & { projectDefault?: string }>('primary', { scope, rootId: targetRoot })
+      v = { ...v, projectDefault: v.projectDefault ?? targetRoot }
+      autoPrimaryByScope.current.set(scope, targetRoot)
+    }
+    return v
+  }, [])
+  useEffect(()=>{if(cur||!managedWorkspace||!store.api?.fileContext)return;let alive=true;const scope=managedWorkspace;void syncDraftProjectContext(scope,selectedProject).then(v=>{if(alive&&v){setFileView(v);setSpaceError('')}}).catch(e=>{if(alive)setSpaceError(errorText(e))});return()=>{alive=false}},[managedWorkspace,selectedProject,cur,projectResourcesRevision,syncDraftProjectContext])
   useEffect(() => { store.select(page === 'tasks' ? cur : null); savePreference('notifications', notifications); void store.api?.activity?.(page === 'tasks' ? cur : null, notifications).catch(() => {}) }, [cur, page, notifications])
   useEffect(() => store.api?.onNavigate?.(id => { void open(id, true) }), [])
   const send = async (text: string) => {
@@ -183,7 +204,10 @@ export default function App() {
     if (!threadId) pendingNewDrafts.current.add(draftId)
     try {
     const fileScope = threadId ?? await ensureLocalSpace(draftId)
-    const environment = !threadId && store.api!.fileContext ? await store.api!.fileContext<FileContextView>('get',{scope:fileScope}) : undefined
+    const environment = !threadId && store.api!.fileContext
+      ? await syncDraftProjectContext(fileScope, activeProject?.id)
+      : undefined
+    if (!threadId && environment && currentDraftId.current === draftId) setFileView(environment)
     const scope = threadId ? session!.meta.cwd : environment?.cwd ?? fileScope
     const context = sentRefs.length ? await store.api!.resolveContext(scope, sentRefs,threadId??undefined,fileScope) : { text: '', references: [], images: [] }
     const documentSelection = sentRefs.some(ref => (ref.start !== undefined || ref.path.startsWith('feedback:')) && /\.(?:pdf|docx|xlsx)(?:$|:| ·)/i.test(ref.label ?? ref.path))
@@ -236,7 +260,7 @@ export default function App() {
       if (res.written) {
         flash('已生成项目说明 AGENTS.md，可打开检查并按需调整')
         if (session) { setResources(v => ({ ...v, [session.meta.id]: false })); setSel({ name: 'AGENTS.md', path: res.path, kind: 'new', add: res.content.split('\n').length, del: 0 }); setPanel(true) }
-      } else if (res.exists) {
+      } else if (res.existed || res.exists) {
         flash('工作区已存在 AGENTS.md（输入 /init --force 可重新生成覆盖）')
         if (session) { setResources(v => ({ ...v, [session.meta.id]: false })); setSel({ name: 'AGENTS.md', path: res.path, kind: 'mod', add: 0, del: 0 }); setPanel(true) }
       }
@@ -340,7 +364,7 @@ export default function App() {
             <div className="mt-6 flex justify-center gap-1">{SCENES.map(s => <button key={s} onClick={() => setScene(s)} className={cx('h-7 px-3 rounded-full text-[12px] transition', scene === s ? 'bg-[var(--text)] text-[var(--bg)]' : 'text-[var(--muted)] hover:bg-[var(--hover)]')}>{s}</button>)}</div>
             <div className="mt-4"><Composer fileScope={managedWorkspace} key={homeDraftKey + ':' + navigation.current} ws={workspace} references={referenceDrafts[homeDraftKey] ?? []} onReferencesChange={refs => setReferenceDrafts(previous => ({ ...previous, [homeDraftKey]: refs }))} big disabled={!state.connected} submitBlocked={!!spaceError} blockedHint={spaceError ? "本地存储暂不可用，可在下方重试" : undefined} value={drafts[homeDraftKey] ?? ''} setValue={value => setDrafts(d => ({ ...d, [homeDraftKey]: value }))} onSend={send} mode={homeMode} setMode={mode => void changeMode(mode)} model={homeModel} setModel={model => void changeModel(model)} models={models} reasoningEffort={homeEffort} onReasoningEffortChange={effort => void changeEffort(effort)} onSlashCommand={handleSlashCommand} onError={flash} />
               {spaceError && <div role="alert" data-testid="local-storage-error" className="mt-2 rounded-lg bg-rose-500/5 px-3 py-2 text-[12px] text-rose-600"><p className="break-words">{spaceError}</p><Btn onClick={retryLocalSpace}>重试本地存储</Btn></div>}
-              <div className="mt-2 flex flex-wrap items-center gap-2 px-1"><NewChatContext projects={state.projects} project={draftProject} disabled={!state.connected} onProject={id => id ? selectProject(id) : clearProject()} onEditProject={() => draftProject && setProjectDialog(draftProject.id)} /><button type="button" className="text-[12px] text-[var(--muted)] hover:text-accent" onClick={showResources}>资料与产物</button><span data-testid="context-location" className="text-[11px] text-[var(--muted)]">{linkedWorkspace?'执行于 '+folderName(linkedWorkspace):'本地自动保存'}</span>{fileView?.projectDefault&&!fileView.primary&&<Btn onClick={()=>void store.api!.fileContext!<FileContextView>('primary',{scope:managedWorkspace,rootId:fileView.projectDefault}).then(setFileView).catch(e=>flash(errorText(e)))}>使用项目默认目录</Btn>}</div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 px-1"><NewChatContext projects={state.projects} project={draftProject} disabled={!state.connected} onProject={id => id ? selectProject(id) : clearProject()} onEditProject={() => draftProject && setProjectDialog(draftProject.id)} /><button type="button" className="text-[12px] text-[var(--muted)] hover:text-accent" onClick={showResources}>资料与产物</button><span data-testid="context-location" className="text-[11px] text-[var(--muted)]">{linkedWorkspace?'执行于 '+folderName(linkedWorkspace):'本地自动保存'}</span>{fileView?.projectDefault&&!fileView.primary&&<Btn onClick={()=>{isolatedSpaceOverrides.current.delete(managedWorkspace);void store.api!.fileContext!<FileContextView>('primary',{scope:managedWorkspace,rootId:fileView.projectDefault}).then(v=>{autoPrimaryByScope.current.set(managedWorkspace,fileView.projectDefault!);setFileView({...v,projectDefault:fileView.projectDefault})}).catch(e=>flash(errorText(e)))}}>使用项目默认目录</Btn>}{fileView?.primary&&<Btn onClick={()=>{isolatedSpaceOverrides.current.add(managedWorkspace);autoPrimaryByScope.current.delete(managedWorkspace);void store.api!.fileContext!<FileContextView>('primary',{scope:managedWorkspace,rootId:undefined}).then(v=>setFileView({...v,projectDefault:fileView.projectDefault})).catch(e=>flash(errorText(e)))}}>改用独立本地空间</Btn>}</div>
 
             </div>
             <div className="mt-8 grid grid-cols-2 gap-2.5">{EXAMPLES.filter(e => scene === '全部' || e[2] === scene).slice(0, 4).map(([icon, text, category]) => <button key={text} onClick={() => setDrafts(d => ({ ...d, [homeDraftKey]: text }))} className="group p-3.5 rounded-xl border border-[var(--line)] bg-[var(--surface-solid)]/70 text-left hover:bg-[var(--surface-solid)] hover:border-accent/30 hover:-translate-y-0.5 hover:shadow-md transition"><div className="flex items-center justify-between"><span className="size-7 rounded-lg bg-[var(--accent-soft)] text-accent grid place-items-center"><Icon n={icon} s={15} /></span><span className="text-[11px] text-[var(--muted)]">{category}</span></div><div className="mt-2.5 leading-snug">{text}</div></button>)}</div>
@@ -350,7 +374,7 @@ export default function App() {
     </div>
     <footer className="relative z-10 h-[24px] shrink-0 flex items-center gap-4 px-3 text-[11px] text-[var(--muted)] border-t border-[var(--line)] bg-[var(--surface-solid)]/70"><span className="flex items-center gap-1.5"><span className={cx('size-1.5 rounded-full', state.connected ? 'bg-emerald-500' : state.loading ? 'bg-amber-500' : 'bg-rose-500')} />{state.connected ? '内核已连接' : state.loading ? '连接中…' : '内核未连接'}</span><span className="flex items-center gap-1 min-w-0"><Icon n="cpu" s={11} /><span className="truncate max-w-52">{currentModel.split('/').slice(1).join('/') || '—'}</span></span>{session?.usage && <span data-testid="context-usage" title={`当前估算 ${session.usage.inputTokens.toLocaleString()} / ${session.usage.contextWindow.toLocaleString()} Token；约 ${(session.usage.thresholdTokens ?? session.usage.contextWindow * .8).toLocaleString()} Token 时整理。${session.usage.cachedInputTokens ? `本轮前缀缓存命中 ${session.usage.cachedInputTokens.toLocaleString()} Token。` : ''}包含已知系统与工具开销；服务商实际计数可能不同。`}>上下文 {Math.round(session.usage.contextUsage * 100)}% · {session.usage.contextWindow.toLocaleString()} Token{session.usage.cachedInputTokens && session.usage.inputTokens > 0 ? ` · 缓存命中 ${Math.min(100, Math.round((session.usage.cachedInputTokens / Math.max(session.usage.inputTokens, session.usage.cachedInputTokens)) * 100))}%` : ''}</span>}<span className="flex-1" />{tasks.some(t => t.status === 'running') && <span className="text-accent">{tasks.filter(t => t.status === 'running').length} 个任务运行中</span>}{pending > 0 && <span className="text-amber-600 dark:text-amber-400">{pending} 项待处理</span>}</footer>
     {toast && <div role="status" className="fixed top-14 left-1/2 -translate-x-1/2 z-[95] max-w-[80vw] px-4 py-2 flex items-center gap-2 rounded-xl bg-[var(--text)] text-[var(--bg)] shadow-xl text-[12px]"><Icon n="info" s={14} /><span className="break-words">{toast}</span><button aria-label="关闭提示" onClick={() => setToast(undefined)}><Icon n="x" s={12} /></button></div>}
-    {palette && <Palette tasks={tasks} onClose={() => setPalette(false)} onPick={id => void open(id)} actions={[{ label: '新建任务', icon: 'plus', k: 'Ctrl N', run: newTask }, ...(session ? [{ label: '创建对话分支 (/fork)', icon: 'branch', k: '', run: () => void forkSession(session.meta.id) }, { label: '压缩当前对话上下文 (/compact)', icon: 'refresh', k: '', run: () => void handleSlashCommand('/compact') }] : []), { label: '生成项目说明 (/init)', icon: 'file', k: '', run: () => void handleSlashCommand('/init') }, { label: '打开任务中心', icon: 'list', k: '', run: () => setPage('activity') }, { label: '打开设置', icon: 'gear', k: 'Ctrl ,', run: () => setSettings(true) }, { label: '切换深色模式', icon: 'moon', k: '', run: () => setDark(d => !d) }, { label: '打开资料与产物', icon: 'folder', k: '', run: () => void pickFolder() }]} />}
+    {palette && <Palette tasks={tasks} onClose={() => setPalette(false)} onPick={id => void open(id)} actions={[{ label: '新建任务', icon: 'plus', k: 'Ctrl N', run: newTask }, ...(session ? [{ label: '创建对话分支 (/fork)', icon: 'branch', k: '', run: () => void forkSession(session.meta.id) }, { label: '压缩当前对话上下文 (/compact)', icon: 'refresh', k: '', run: () => void handleSlashCommand('/compact').catch(err => flash(errorText(err))) }] : []), { label: '生成项目说明 (/init)', icon: 'file', k: '', run: () => void handleSlashCommand('/init').catch(err => flash(errorText(err))) }, { label: '打开任务中心', icon: 'list', k: '', run: () => setPage('activity') }, { label: '打开设置', icon: 'gear', k: 'Ctrl ,', run: () => setSettings(true) }, { label: '切换深色模式', icon: 'moon', k: '', run: () => setDark(d => !d) }, { label: '打开资料与产物', icon: 'folder', k: '', run: () => void pickFolder() }]} />}
     {onboarding && state.connected && <Onboarding onDone={doneOnboarding} onSettings={() => setSettings(true)} onPickFolder={pickFolder} workspace={linkedWorkspace} configured={!!state.settings?.providers[state.settings.effective.defaultProvider]?.hasKey} />}
     {settings && state.settings && <Settings settings={state.settings} onClose={() => setSettings(false)} dark={dark} setDark={setDark} />}
     {projectDialog && <ProjectDialog project={state.projects.find(p => p.id === projectDialog)} onClose={() => setProjectDialog(undefined)} onSaved={p => { setProjectDialog(undefined); setProjectResourcesRevision(n=>n+1); beginProject(p) }} onError={flash} />}

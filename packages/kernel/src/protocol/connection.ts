@@ -30,16 +30,24 @@ export interface Transport {
 export class StdioTransport implements Transport {
   private closed = false;
   private readonly output: Writable;
+  private readonly rl: readline.Interface;
 
   constructor(
     input: Readable,
     output: Writable,
     onLine: (line: string) => void,
+    onClose?: () => void,
   ) {
     this.output = output;
-    const rl = readline.createInterface({ input, crlfDelay: Infinity });
-    rl.on('line', (line) => {
+    this.rl = readline.createInterface({ input, crlfDelay: Infinity });
+    this.rl.on('line', (line) => {
       if (!this.closed) onLine(line);
+    });
+    this.rl.on('close', () => {
+      if (!this.closed) {
+        this.closed = true;
+        onClose?.();
+      }
     });
   }
 
@@ -51,6 +59,7 @@ export class StdioTransport implements Transport {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.rl.close();
     this.output.end();
   }
 }
@@ -224,8 +233,14 @@ export class Peer extends EventEmitter {
 
 /** Peer wired to this process's stdin/stdout. */
 export function createStdioPeer(): Peer {
-  const peer = new Peer(
-    new StdioTransport(process.stdin, process.stdout, (line) => peer.handleLine(line)),
+  let peer!: Peer;
+  peer = new Peer(
+    new StdioTransport(
+      process.stdin,
+      process.stdout,
+      (line) => peer.handleLine(line),
+      () => peer.close(),
+    ),
   );
   return peer;
 }

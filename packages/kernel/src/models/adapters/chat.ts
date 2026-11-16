@@ -55,7 +55,7 @@ function extractChatUsage(raw: any): Extract<ModelDelta, { type: 'usage' }> {
   };
 }
 
-export function toChatWireMessages(messages: ChatMessage[]): unknown[] {
+export function toChatWireMessages(messages: ChatMessage[], includeActiveEmptyReasoning = false): unknown[] {
   const out: any[] = [];
   // some backends only accept a single system message — merge them
   const systemTexts: string[] = [];
@@ -86,7 +86,9 @@ export function toChatWireMessages(messages: ChatMessage[]): unknown[] {
       out.push({ role: 'user', content });
     } else if (m.role === 'assistant') {
       const msg: any = { role: 'assistant', content: m.content ?? null };
-      if (m.reasoningContent && idx > lastUserIdx) msg.reasoning_content = m.reasoningContent;
+      if (idx > lastUserIdx && (m.reasoningContent || (includeActiveEmptyReasoning && m.toolCalls?.length))) {
+        msg.reasoning_content = m.reasoningContent ?? '';
+      }
       if (m.toolCalls?.length) {
         msg.tool_calls = m.toolCalls.map((tc) => ({
           id: tc.id,
@@ -141,6 +143,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
         redirect: 'error',
       });
     } catch (err) {
+      if ((err as { name?: string })?.name === 'AbortError' || req.signal?.aborted) throw err;
       throw new ModelError(
         `Request to ${this.opts.baseUrl} failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -188,7 +191,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
   async *stream(req: ModelRequest): AsyncIterable<ModelDelta> {
     const body: Record<string, unknown> = {
       model: req.model,
-      messages: toChatWireMessages(req.messages),
+      messages: toChatWireMessages(req.messages, Boolean(req.reasoningEffort)),
       stream: true,
     };
     if (this.opts.streamUsage !== false) {
@@ -223,7 +226,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
       throw new ModelError('Model API returned an empty body');
     }
 
-    const toolCallsByIndex = new Map<number, { id: string; name: string; args: string }>();
+    const toolCallsByIndex = new Map<number, { id: string; syntheticId: boolean; emittedStart: boolean; name: string; args: string }>();
     let emittedToolCall = false;
     let finishReason: string | null = null;
     let usage: Extract<ModelDelta, { type: 'usage' }> | null = null;
@@ -255,25 +258,34 @@ export class ChatCompletionsAdapter implements ModelAdapter {
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls as ChatToolCallDelta[]) {
+          const rawId = typeof tc.id === 'string' && tc.id.length > 0 ? tc.id : undefined;
           // Providers omitting index must identify parallel calls by ID. A
           // lone ID-less continuation is safe only when exactly one call exists.
           let index = tc.index;
           if (index === undefined) {
-            const identified = tc.id ? [...toolCallsByIndex].find(([, call]) => call.id === tc.id) : undefined;
+            const identified = rawId ? [...toolCallsByIndex].find(([, call]) => call.id === rawId) : undefined;
             if (identified) index = identified[0];
-            else if (tc.id) { index = 0; while (toolCallsByIndex.has(index)) index++; }
+            else if (rawId) { index = 0; while (toolCallsByIndex.has(index)) index++; }
             else if (toolCallsByIndex.size === 1) index = toolCallsByIndex.keys().next().value!;
             else if (toolCallsByIndex.size === 0 && delta.tool_calls.length === 1) index = 0;
             else throw new ModelError('Ambiguous tool-call stream: parallel calls require index or id');
           }
           if (!Number.isSafeInteger(index) || index < 0) throw new ModelError('Invalid tool-call index');
           const existing = toolCallsByIndex.get(index);
-          if (existing && tc.id && existing.id !== tc.id) throw new ModelError('Tool-call identity changed during streaming');
+          if (existing && rawId && existing.id !== rawId) {
+            if (existing.syntheticId && !existing.emittedStart) {
+              existing.id = rawId;
+              existing.syntheticId = false;
+            } else if (!existing.syntheticId) {
+              throw new ModelError('Tool-call identity changed during streaming');
+            }
+          }
           if (!existing) {
-            const id = tc.id ?? `call_${index}`;
+            const id = rawId ?? `call_${index}`;
             const name = tc.function?.name ?? '';
             const args = tc.function?.arguments ?? '';
-            toolCallsByIndex.set(index, { id, name, args });
+            const emittedStart = Boolean(name);
+            toolCallsByIndex.set(index, { id, syntheticId: !rawId, emittedStart, name, args });
             if (name) {
               yield { type: 'toolCallStart', id, name };
               emittedToolCall = true;
@@ -285,6 +297,7 @@ export class ChatCompletionsAdapter implements ModelAdapter {
           } else {
             if (tc.function?.name && !existing.name) {
               existing.name = tc.function.name;
+              existing.emittedStart = true;
               yield { type: 'toolCallStart', id: existing.id, name: existing.name };
               emittedToolCall = true;
             }

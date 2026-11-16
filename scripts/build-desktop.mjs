@@ -13,7 +13,7 @@ import { execSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const root = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..'));
 const appDir = join(root, 'packages', 'desktop');
 const stage = join(appDir, '.build-stage');
 const releaseDir = join(appDir, 'release');

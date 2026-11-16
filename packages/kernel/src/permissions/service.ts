@@ -13,10 +13,12 @@
  */
 
 import { resolve } from 'node:path';
+import { realPathOf } from '../tools/workspace-guard.js';
 import {
   commandAllowedBy,
   commandMatchesAny,
   dangerousCommandCheck,
+  hasAmbiguousShellSyntax,
   hasInjection,
   hasRedirection,
   segmentMatches,
@@ -51,19 +53,32 @@ function ruleMatchesTool(rule: PermissionRule, toolName: string): boolean {
 
 function ruleMatchesSubject(rule: PermissionRule, input: PermissionCheckInput, subject: string, allowSemantics: boolean): boolean {
   if (!rule.pattern || rule.pattern === '*') return true;
-  if (input.tool === 'shell' || rule.tool === 'shell') {
+  if (toolClass(input.tool) === 'shell' || rule.tool === 'shell') {
     return allowSemantics
       ? commandAllowedBy(rule.pattern, subject)
       : commandMatchesAny(rule.pattern, subject);
   }
-  // file-ish rule: normalize both sides against cwd before comparing,
-  // so `.env` rules, `..\`-style and absolute-path subjects all line up
-  const subjectAbs = normalizePath(input.cwd, subject);
-  const patternAbs = normalizePath(input.cwd, rule.pattern);
+  const subjectLex = normalizePath(input.cwd, subject);
+  const patternLex = normalizePath(input.cwd, rule.pattern);
+  const subjectReal = normalizeRealPath(input.cwd, subject);
+  const patternReal = normalizeRealPath(input.cwd, rule.pattern);
+  if (allowSemantics) {
+    // Allow rules NEVER match against raw unnormalized `..` strings (`src/../package.json`),
+    // and anchor relative patterns to workspace root instead of matching arbitrary subdirectories.
+    return (
+      globMatchAnchored(patternReal, subjectReal) ||
+      globMatchAnchored(stripDrive(patternReal), stripDrive(subjectReal))
+    );
+  }
+  // Deny/ask rules check BOTH lexical path and resolved symlink target so neither side evades a block.
+  const collapsedSubject = subject.replace(/\\/g, '/');
   return (
-    globMatch(rule.pattern, subject) ||
-    globMatch(patternAbs, subjectAbs) ||
-    globMatch(stripDrive(patternAbs), stripDrive(subjectAbs))
+    (!collapsedSubject.split('/').includes('..') && globMatch(rule.pattern, collapsedSubject)) ||
+    globMatchAnchored(patternLex, subjectLex) ||
+    globMatchAnchored(stripDrive(patternLex), stripDrive(subjectLex)) ||
+    globMatchAnchored(patternReal, subjectReal) ||
+    globMatchAnchored(stripDrive(patternReal), stripDrive(subjectReal)) ||
+    (!rule.pattern.includes('/') && !rule.pattern.includes('\\') && (globMatch(rule.pattern, subjectLex) || globMatch(rule.pattern, subjectReal)))
   );
 }
 
@@ -72,17 +87,34 @@ function normalizePath(cwd: string, p: string): string {
   return resolve(cwd, p).replace(/\\/g, '/');
 }
 
+function normalizeRealPath(cwd: string, p: string): string {
+  // Preserve glob wildcards by resolving the static directory prefix with realPathOf.
+  const slash = p.replace(/\\/g, '/');
+  const wildIdx = slash.search(/[*?]/);
+  if (wildIdx === -1) return realPathOf(resolve(cwd, p)).replace(/\\/g, '/');
+  const prefixEnd = slash.lastIndexOf('/', wildIdx);
+  const staticPart = prefixEnd > 0 ? slash.slice(0, prefixEnd) : prefixEnd === 0 ? '/' : '.';
+  const rest = prefixEnd >= 0 ? slash.slice(prefixEnd + 1) : slash;
+  const resolvedBase = realPathOf(resolve(cwd, staticPart)).replace(/\\/g, '/').replace(/\/+$/, '');
+  return `${resolvedBase}/${rest}`;
+}
+
 function stripDrive(p: string): string {
   return p.replace(/^[a-zA-Z]:/, '');
 }
 
 /** Minimal glob: `**` crosses separators, `*`/`?` do not. */
 export function globMatch(pattern: string, path: string): boolean {
-  const re = globToRegExp(pattern);
+  const re = globToRegExp(pattern, false);
   return re.test(path);
 }
 
-function globToRegExp(pattern: string): RegExp {
+function globMatchAnchored(pattern: string, path: string): boolean {
+  const re = globToRegExp(pattern, true);
+  return re.test(path);
+}
+
+function globToRegExp(pattern: string, fullAnchor = false): RegExp {
   const p = pattern.replace(/\\/g, '/').replace(/^\.\//, '');
   let out = '';
   let anchored = false;
@@ -90,9 +122,13 @@ function globToRegExp(pattern: string): RegExp {
     const ch = p[i]!;
     if (ch === '*') {
       if (p[i + 1] === '*') {
-        out += anchored ? '.*' : '(?:.*/)?';
-        i++;
-        if (p[i + 1] === '/') i++;
+        if (p[i + 2] === '/') {
+          out += '(?:.*/)?';
+          i += 2;
+        } else {
+          out += anchored ? '.*' : '(?:.*/)?';
+          i++;
+        }
       } else {
         out += '[^/]*';
       }
@@ -105,7 +141,7 @@ function globToRegExp(pattern: string): RegExp {
     }
     anchored = true;
   }
-  return new RegExp(`(?:^|/)${out}$`, 'i');
+  return new RegExp(`${fullAnchor ? '^' : '(?:^|/)'}${out}$`, 'i');
 }
 
 export class PermissionService {
@@ -169,16 +205,16 @@ export class PermissionService {
    * allow rule. A single rule never vouches for a whole compound command
    * unless it covers every segment itself.
    */
-  private shellFullyCovered(rules: PermissionRule[], command: string): boolean {
-    if (hasInjection(command)) return false;
+  private shellFullyCovered(rules: PermissionRule[], command: string, toolName = 'shell'): boolean {
+    if (hasInjection(command) || hasAmbiguousShellSyntax(command)) return false;
     const segments = splitCommand(command);
     if (!segments.length) return false;
     if (segments.some((seg) => hasRedirection(seg))) return false;
     const patterns = rules
-      .filter((r) => r.tool === 'shell' || r.tool === '*')
+      .filter((r) => ruleMatchesTool(r, toolName))
       .map((r) => r.pattern ?? '*');
     if (!patterns.length) return false;
-    return segments.every((seg) => patterns.some((p) => segmentMatches(p, seg)));
+    return segments.every((seg) => patterns.some((p) => segmentMatches(p, seg, false)));
   }
 
   check(input: PermissionCheckInput): PermissionDecision {
@@ -217,7 +253,7 @@ export class PermissionService {
     const allAllow = [...this.allowRules, ...this.sessionRules];
     if (cls === 'shell') {
       const shellRules = allAllow.filter((r) => ruleMatchesTool(r, input.tool));
-      if (shellRules.length && this.shellFullyCovered(shellRules, input.subject)) {
+      if (shellRules.length && subjects.every((subj) => this.shellFullyCovered(shellRules, subj, input.tool))) {
         return { action: 'allow', reason: 'allowed by rules' };
       }
     } else {
@@ -263,8 +299,8 @@ export class PermissionService {
         return { action: 'ask', reason: 'acceptEdits mode' };
       case 'bypassPermissions':
         if (cls === 'shell') {
-          const danger = dangerousCommandCheck(input.subject);
-          if (danger.dangerous) {
+          const danger = subjects.map(dangerousCommandCheck).find((d) => d.dangerous);
+          if (danger) {
             return { action: 'ask', reason: `bypassPermissions mode still asks for dangerous commands (${danger.why})` };
           }
         }

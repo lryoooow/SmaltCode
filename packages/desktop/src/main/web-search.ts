@@ -194,10 +194,31 @@ export class WebSearchManager {
           if (signal.aborted) aborted(signal);
           const body = provider === 'tavily' ? { urls: [url.href], format: 'text', extract_depth: 'basic' } : { url: url.href };
           const raw = await manager.request(provider, 'fetch', body, signal, key);
-          const page = provider === 'tavily' ? Array.isArray(raw.results) ? raw.results.find((value: any) => value && value.url === url.href) : undefined : raw;
+          const canonUrl = (u: string) => { try { const parsed = webSearchURL(u); parsed.hash = ''; return parsed.href.replace(/\/+$/, ''); } catch { return ''; } };
+          let page: any;
+          let resolvedHref = url.href;
+          if (provider === 'tavily') {
+            if (Array.isArray(raw.results)) {
+              const targetCanon = canonUrl(url.href);
+              page = raw.results.find((value: any) => value && typeof value.url === 'string' && canonUrl(value.url) === targetCanon);
+              if (!page && raw.results.length === 1 && raw.results[0]?.url && typeof raw.results[0].url === 'string') {
+                const redirected = webSearchURL(raw.results[0].url);
+                if (manager.vault.redact(redirected.href) !== redirected.href) throw new Error('重定向地址包含凭据，已阻止读取');
+                const rHost = redirected.hostname.replace(/^\[|\]$/g, '');
+                if (rHost !== host) {
+                  const rAddrs = isIP(rHost) ? [{ address: rHost, family: isIP(rHost) }] : await abortable(lookup(rHost, { all: true, verbatim: true }), signal);
+                  if (!rAddrs.length || rAddrs.some(a => !publicAddress(a.address))) throw new Error('网页重定向到了私网或保留地址，已停止读取');
+                }
+                page = raw.results[0];
+                resolvedHref = redirected.href;
+              }
+            }
+          } else {
+            page = raw;
+          }
           const content = manager.clean(provider === 'tavily' ? page?.raw_content : page?.content, 22000);
           if (!content.trim()) throw new Error('当前服务未能读取该网页的正文，可换用其他来源；未自动切换付费服务');
-          return { provider, sources: [{ title: manager.clean(page.title, 240) || url.hostname, url: url.href, snippet: '' }], content };
+          return { provider, sources: [{ title: manager.clean(page?.title, 240) || url.hostname, url: resolvedHref, snippet: '' }], content };
         });
         yield { type: 'result', text: manager.format(result) };
       } catch (error) { yield { type: 'result', isError: true, text: manager.clean(error instanceof Error ? error.message : '网页读取失败', 1000) }; }

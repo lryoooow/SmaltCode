@@ -2,7 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readBounded } from './read-bounded.js';
-import { extname, relative, resolve } from 'node:path';
+import { basename, extname, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isInsideWorkspace, isSensitivePath } from '@smalt/kernel';
 import { isValidWorkspace } from './workspace.js';
@@ -11,7 +11,54 @@ import type { ImagePart } from '../../../kernel/src/models/types.js';
 
 import type { ContextReference } from '../shared/context.js';
 export type { ContextReference } from '../shared/context.js';
-const ignored = new Set(['.git', '.smalt', 'node_modules', 'dist', 'release', '.build-stage', '.qa-work', '.qa-python', 'coverage', '.venv', '__pycache__']);
+const ignored = new Set([
+  '.git', '.smalt', 'node_modules', 'dist', 'release', '.build-stage', '.qa-work', '.qa-python',
+  'coverage', '.venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
+  'target', 'build', 'out', '.next', '.nuxt', '.turbo', 'vendor',
+]);
+
+function globPatternToRegExp(glob: string): RegExp {
+  let out = '^';
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i]!;
+    if (ch === '*') {
+      if (glob[i + 1] === '*') {
+        if (glob[i + 2] === '/') { out += '(?:.*/)?'; i += 2; }
+        else { out += '.*'; i++; }
+      } else {
+        out += '[^/]*';
+      }
+    } else if (ch === '?') {
+      out += '[^/]';
+    } else if (ch === '{') {
+      const close = glob.indexOf('}', i + 1);
+      if (close > i + 1) {
+        const alts = glob.slice(i + 1, close).split(',').map(s => s.replace(/[.+^$|()[\]\\]/g, '\\$&'));
+        out += `(?:${alts.join('|')})`;
+        i = close;
+      } else {
+        out += '\\{';
+      }
+    } else if (/[.+^$|()[\]\\]/.test(ch)) {
+      out += '\\' + ch;
+    } else {
+      out += ch;
+    }
+  }
+  return new RegExp(out + '$', 'i');
+}
+
+function compileFileSearchMatcher(rawQuery: string): (relPath: string) => boolean {
+  const q = rawQuery.trim().replace(/\\/g, '/');
+  if (!q || q === '*' || q === '**' || q === '**/*') return () => true;
+  const lower = q.toLocaleLowerCase();
+  if (/[*?{}]/.test(q)) {
+    const re = globPatternToRegExp(q);
+    const matchBasename = !q.includes('/');
+    return (relPath: string) => re.test(relPath) || (matchBasename && re.test(basename(relPath))) || relPath.toLocaleLowerCase().includes(lower);
+  }
+  return (relPath: string) => relPath.toLocaleLowerCase().includes(lower);
+}
 export const textDigest = (text: string) => createHash('sha256').update(text).digest('hex');
 export type DocumentLoader = (name: string, bytes: Uint8Array) => Promise<DocumentContent>;
 export async function readContextFile(cwd: string, path: string, reader?: DocumentLoader): Promise<DocumentPreview> {
@@ -37,26 +84,27 @@ export async function readContextFile(cwd: string, path: string, reader?: Docume
 }
 export async function searchContextFiles(cwd: string, query: string) {
   const valid = isValidWorkspace(cwd); if (!valid.ok) throw new Error(valid.reason);
+  const matches = compileFileSearchMatcher(query);
   const queue = [cwd], files: string[] = [];
   let visited = 0;
-  while (queue.length && visited < 10000 && files.length < 1000) {
+  while (queue.length && visited < 50000 && files.length < 1000) {
     const dir = queue.shift()!;
     if (!isInsideWorkspace(cwd, dir) || isSensitivePath(cwd, dir)) continue;
     let entries; try { entries = await readdir(dir, { withFileTypes: true }); } catch { continue; }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (++visited > 10000) break;
+      if (++visited > 50000) break;
       if (entry.isSymbolicLink() || ignored.has(entry.name) || /^\.env(?:\.|$)/i.test(entry.name)) continue;
       const path = resolve(dir, entry.name);
-      if (entry.isDirectory()) { if (queue.length < 200) queue.push(path); }
+      if (entry.isDirectory()) { if (queue.length < 5000) queue.push(path); }
       else if (entry.isFile()) {
         const name = relative(cwd, path).replace(/\\/g, '/');
-        if (name.toLocaleLowerCase().includes(query.toLocaleLowerCase())) files.push(name);
+        if (matches(name)) files.push(name);
         if (files.length >= 1000) break;
       }
     }
   }
-  return { files: files.sort().slice(0, 50), truncated: queue.length > 0 || files.length > 50 || visited >= 10000 };
+  return { files: files.sort().slice(0, 50), truncated: queue.length > 0 || files.length > 50 || visited >= 50000 };
 }
 export async function resolveContext(cwd: string, references: ContextReference[], reader?: DocumentLoader) {
   const valid = isValidWorkspace(cwd); if (!valid.ok) throw new Error(valid.reason);
@@ -115,7 +163,16 @@ export async function readVirtualContext(
   }
   if (path === '@git:diff') {
     try {
-      const { stdout } = await execFileAsync('git', ['diff', 'HEAD', '--no-ext-diff'], { cwd, timeout: 5000, maxBuffer: 2 * 1024 * 1024, windowsHide: true });
+      let stdout = '';
+      try {
+        ({ stdout } = await execFileAsync('git', ['diff', 'HEAD', '--no-ext-diff'], { cwd, timeout: 5000, maxBuffer: 2 * 1024 * 1024, windowsHide: true }));
+      } catch {
+        const [unstaged, staged] = await Promise.all([
+          execFileAsync('git', ['diff', '--no-ext-diff'], { cwd, timeout: 5000, maxBuffer: 1024 * 1024, windowsHide: true }),
+          execFileAsync('git', ['diff', '--cached', '--no-ext-diff'], { cwd, timeout: 5000, maxBuffer: 1024 * 1024, windowsHide: true }),
+        ]);
+        stdout = [staged.stdout.trim(), unstaged.stdout.trim()].filter(Boolean).join('\n');
+      }
       const raw = stdout.trim() || '(当前没有未提交的 Git 改动)';
       const text = raw.length > 24_000 ? raw.slice(0, 24_000) + '\n… [git diff 已截断至前 24000 字符]' : raw;
       return { text, digest: textDigest(text), label: 'Git 改动 (@git:diff)' };

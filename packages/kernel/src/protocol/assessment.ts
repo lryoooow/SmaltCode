@@ -150,7 +150,9 @@ export function itemAssessment(item: Item): ExecutionAssessment | undefined {
   return executionAssessment(item.command, item.output, item.exitCode);
 }
 
-/** True when a failed fileChange or native read/glob/grep was succeeded by a completed one in the same turn. */
+const NATIVE_INSPECT_TOOLS = new Set(['read', 'glob', 'grep', 'resource_read', 'resource_search', 'ssh_read', 'container_read']);
+
+/** True when a failed fileChange or native read/glob/grep/resource inspect was succeeded by a completed one in the same turn. */
 export function isSupersededOperation(item: Item, items: Item[]): boolean {
   if (item.status !== 'failed') return false;
   const idx = items.indexOf(item);
@@ -159,7 +161,7 @@ export function isSupersededOperation(item: Item, items: Item[]): boolean {
     const later = items[i]!;
     if (later.turnId !== item.turnId || later.status !== 'completed') continue;
     if (item.kind === 'fileChange' && later.kind === 'fileChange' && (!item.path || later.path === item.path)) return true;
-    if (item.kind === 'commandExecution' && (item.tool === 'read' || item.tool === 'glob' || item.tool === 'grep') && later.kind === 'commandExecution' && (later.tool === 'read' || later.tool === 'glob' || later.tool === 'grep')) return true;
+    if (item.kind === 'commandExecution' && item.tool && NATIVE_INSPECT_TOOLS.has(item.tool) && later.kind === 'commandExecution' && later.tool && NATIVE_INSPECT_TOOLS.has(later.tool)) return true;
   }
   return false;
 }
@@ -174,7 +176,7 @@ export function operationAssessments(items: Item[]): Map<string, ExecutionAssess
     const a = itemAssessment(item);
     if (a) results.set(item.id, { ...a });
     if (item.kind === 'commandExecution' && item.status === 'completed' && (!a || a.kind === 'success' || a.kind === 'finding' || a.kind === 'unverified')) {
-      const isNativeInspect = item.tool === 'read' || item.tool === 'glob' || item.tool === 'grep';
+      const isNativeInspect = Boolean(item.tool && NATIVE_INSPECT_TOOLS.has(item.tool));
       for (const [priorId, prior] of results) {
         if (priorId === item.id || prior.recoveredBy) continue;
         const priorItem = itemById.get(priorId);

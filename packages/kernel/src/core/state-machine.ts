@@ -107,6 +107,8 @@ const LIFECYCLE_OF: Record<RunState, ThreadRunLifecycle> = {
 export class SessionRunStateMachine {
   private state: RunState = 'idle';
   private lastIdleEvent: RunEvent | null = null;
+  private pendingPermissionCount = 0;
+  private pendingUserCount = 0;
   onChange?: () => void;
 
   get current(): RunState {
@@ -133,11 +135,29 @@ export class SessionRunStateMachine {
    * RULES table encodes this by not listing `cancelling` elsewhere.
    */
   transition(event: RunEvent): boolean {
+    if (event === 'WAITING_FOR_PERMISSION' && (this.state === 'tool_executing' || this.state === 'waiting_for_permission')) {
+      this.pendingPermissionCount++;
+      if (this.state === 'waiting_for_permission') return false;
+    } else if (event === 'PERMISSION_RESOLVED') {
+      if (this.pendingPermissionCount > 0) this.pendingPermissionCount--;
+      if (this.state === 'waiting_for_permission' && this.pendingPermissionCount > 0) return false;
+    } else if (event === 'WAITING_FOR_USER' && (this.state === 'model_done' || this.state === 'tool_executing' || this.state === 'waiting_for_user')) {
+      this.pendingUserCount++;
+      if (this.state === 'waiting_for_user') return false;
+    } else if (event === 'USER_INPUT_RESOLVED') {
+      if (this.pendingUserCount > 0) this.pendingUserCount--;
+      if (this.state === 'waiting_for_user' && this.pendingUserCount > 0) return false;
+    }
+
     const rule = RULES[event];
     if (!rule.from.includes(this.state)) {
       return false;
     }
     this.state = rule.to;
+    if (this.state === 'idle' || this.state === 'cancelling' || event === 'TOOL_ENDED') {
+      this.pendingPermissionCount = 0;
+      this.pendingUserCount = 0;
+    }
     if (this.state === 'idle') this.lastIdleEvent = event;
     this.onChange?.();
     return true;

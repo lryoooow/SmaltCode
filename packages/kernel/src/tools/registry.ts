@@ -15,6 +15,10 @@ export class ToolRegistry {
   checkInput(name:string,input:unknown,context:{cwd:string;threadId:string}):string|undefined { return this.inputGuard?.(name,input,context); }
   /** Host-owned execution target gate; also applies to tools registered later by connectors. */
   setScopeFilter(filter:(name:string,context:{cwd:string;threadId:string})=>boolean):void { this.scopeFilter=filter;for(const tool of this.list())this.register(tool); }
+  cloneGuardsFrom(other: ToolRegistry): void {
+    this.inputGuard = other.inputGuard;
+    if (other.scopeFilter) this.setScopeFilter(other.scopeFilter);
+  }
 
   constructor(initial?: ToolDefinition[]) {
     for (const tool of initial ?? defaultTools()) this.register(tool);

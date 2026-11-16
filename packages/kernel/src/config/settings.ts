@@ -5,7 +5,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { PERMISSION_MODES, parseRule, type PermissionMode, type PermissionRule } from '../permissions/rules.js';
 import { isProjectTrusted } from './trust.js';
 import type { CommandHookConfig, HookEvent } from '../hooks/bus.js';
@@ -151,7 +151,6 @@ export function loadSettings(cwd: string, overrides?: { permissionMode?: Permiss
     }
   }
 
-  if (overrides?.permissionMode) settings.permissions.mode = overrides.permissionMode;
   const projectFile = join(cwd, '.smalt', 'settings.json');
   if (includeProject && existsSync(projectFile)) {
     try {
@@ -170,6 +169,13 @@ export function loadSettings(cwd: string, overrides?: { permissionMode?: Permiss
         `[smalt] ignoring invalid project settings ${projectFile}: ${err instanceof Error ? err.message : err}\n`,
       );
     }
+  }
+  if (overrides?.permissionMode) {
+    // Explicit per-thread or CLI permissionMode overrides trusted project defaults,
+    // while untrusted restrictive project modes still clamp via stricterMode.
+    settings.permissions.mode = includeProject && existsSync(projectFile) && !isProjectTrusted(cwd)
+      ? stricterMode(overrides.permissionMode, settings.permissions.mode)
+      : overrides.permissionMode;
   }
   return settings;
 }
@@ -246,7 +252,9 @@ function applyLayer(target: Settings, layer: Record<string, unknown>, project = 
           });
         }
       }
-      if (configs.length) target.hooks[event as HookEvent] = configs;
+      if (configs.length) {
+        target.hooks[event as HookEvent] = [...(target.hooks[event as HookEvent] ?? []), ...configs];
+      }
     }
   }
 
@@ -273,9 +281,22 @@ export function resolveModelRef(ref: string | undefined, settings: Settings): Mo
     const slash = ref.indexOf('/');
     const provider = ref.slice(0, slash);
     const model = ref.slice(slash + 1);
-    if (settings.providers[provider]) return { provider, model: model || defaultModelOf(settings, provider) };
-    // OpenRouter-style refs ("openai/gpt-4o") with a provider that is itself a
-    // path: try the longest provider prefix match
+    if (settings.providers[provider]) {
+      // Multi-segment IDs like "openrouter/anthropic/claude-sonnet-5-5" explicitly name the provider first.
+      if (provider === settings.defaultProvider || model.includes('/')) {
+        return { provider, model: model || defaultModelOf(settings, provider) };
+      }
+      // When defaultProvider is an aggregator like openrouter (or custom gateway) and ref is "openai/gpt-4o-mini"
+      // where the vendor provider has no configured key while defaultProvider does (or matches defaultModel),
+      // keep routing through defaultProvider instead of hijacking to an unconfigured builtin vendor.
+      const targetCfg = settings.providers[provider]!;
+      const defaultCfg = settings.providers[settings.defaultProvider];
+      const aggregator = settings.defaultProvider === 'openrouter' || (defaultCfg && !BUILTIN_PROVIDERS[settings.defaultProvider]);
+      if (aggregator && (!apiKeyFor(targetCfg) || settings.defaultModel === ref || defaultCfg?.defaultModel === ref)) {
+        return { provider: settings.defaultProvider, model: ref };
+      }
+      return { provider, model: model || defaultModelOf(settings, provider) };
+    }
     return { provider: settings.defaultProvider, model: ref };
   }
   if (ref) return { provider: settings.defaultProvider, model: ref };
@@ -340,7 +361,5 @@ function deepMerge(target: Record<string, unknown>, patch: Record<string, unknow
 }
 
 export function resolveWorkspacePath(cwd: string, inputPath: string): string {
-  const normalized = inputPath.replace(/\\/g, '/');
-  const abs = isAbsolute(normalized) ? normalized : join(cwd.replace(/\\/g, '/'), normalized);
-  return abs;
+  return resolve(cwd, inputPath);
 }

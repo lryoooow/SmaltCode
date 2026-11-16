@@ -341,7 +341,7 @@ function BlockView({ b, commandOpen, onCommandToggle, onResolve, onOpenFile, onA
         <button onClick={() => b.done && onOpenFile(b.f)} className="anim-rise w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-[var(--line)] bg-[var(--surface-solid)] hover:border-accent/40 hover:shadow-[0_4px_16px_-8px_rgba(47,79,208,.4)] transition-all text-left group">
           <FileIcon name={b.f.name} />
           <div className="flex-1 min-w-0"><div className="font-medium truncate">{b.f.name}</div><div className="text-[11.5px] text-[var(--muted)] font-mono truncate">{b.f.path}</div></div>
-          <span className={cx('text-[11px] px-1.5 py-0.5 rounded', b.f.kind === 'new' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-sky-500/10 text-sky-600 dark:text-sky-400')}>{b.f.kind === 'new' ? '新建' : '修改'}</span>
+          <span className={cx('text-[11px] px-1.5 py-0.5 rounded', b.f.kind === 'new' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : b.f.kind === 'del' ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400' : 'bg-sky-500/10 text-sky-600 dark:text-sky-400')}>{b.f.kind === 'new' ? '新建' : b.f.kind === 'del' ? '删除' : '修改'}</span>
           {b.done ? <span className="font-mono text-[12px]"><span className="text-emerald-600 dark:text-emerald-400">+{b.f.add}</span> <span className="text-rose-500">−{b.f.del}</span></span> : <span className="size-3.5 rounded-full border-[1.5px] border-accent border-t-transparent spin" />}
           <Icon n="chevron" s={14} className="text-[var(--muted)] group-hover:translate-x-0.5 transition" />
         </button>

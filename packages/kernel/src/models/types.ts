@@ -32,10 +32,14 @@ export interface ToolCall {
   arguments: string;
 }
 
+export type ThinkingBlock =
+  | { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'redacted_thinking'; data: string };
+
 export type ChatMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | ContentPart[] }
-  | { role: 'assistant'; content: string | null; toolCalls?: ToolCall[]; reasoningContent?: string }
+  | { role: 'assistant'; content: string | null; toolCalls?: ToolCall[]; reasoningContent?: string; thinkingBlocks?: ThinkingBlock[] }
   | { role: 'tool'; toolCallId: string; content: string; isError?: boolean };
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max';
@@ -43,6 +47,7 @@ export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max';
 export type ModelDelta =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
+  | { type: 'thinkingBlock'; block: ThinkingBlock }
   | { type: 'toolCallStart'; id: string; name: string }
   | { type: 'toolCallDelta'; id: string; argsDelta: string }
   | {

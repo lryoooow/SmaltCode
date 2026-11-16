@@ -123,13 +123,17 @@ function validateMessage(value: unknown): JsonRpcMessage {
       }
       return { jsonrpc: '2.0', id: m.id, result: m.result };
     }
-    const err = m.error as { code?: unknown; message?: unknown };
+    if (typeof m.error !== 'object' || m.error === null) {
+      throw new RpcError(RpcErrorCode.InvalidRequest, 'error must be an object');
+    }
+    const err = m.error as { code?: unknown; message?: unknown; data?: unknown };
     return {
       jsonrpc: '2.0',
       id: m.id,
       error: {
         code: typeof err.code === 'number' ? err.code : RpcErrorCode.InternalError,
         message: typeof err.message === 'string' ? err.message : 'Internal error',
+        ...('data' in err ? { data: err.data } : {}),
       },
     };
   }

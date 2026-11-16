@@ -9,15 +9,18 @@ export async function browserFetch(request: Request, origin: string, sources: st
   if (!browserRequestAllowed(request.url, origin) || !['GET', 'HEAD'].includes(request.method)) return new Response('此预览仅允许已授权站点的 GET / HEAD 请求', { status: 403 });
   const url = new URL(request.url), host = url.hostname.replace(/^\[|\]$/g, '');
   const local = ['127.0.0.1', '::1', 'localhost'].includes(host);
-  const addresses = local ? [{ address: host === 'localhost' ? '127.0.0.1' : host, family: host === '::1' ? 6 : 4 }] : await lookup(host, { all: true, verbatim: true });
-  if (!addresses.length || !local && addresses.some(value => !publicAddress(value.address))) throw new Error('网页解析到了私网或保留地址，已阻止访问');
-  const pinned = addresses[0]!;
+  const candidates = local
+    ? host === 'localhost'
+      ? [{ address: '127.0.0.1', family: 4 }, { address: '::1', family: 6 }]
+      : [{ address: host, family: host === '::1' ? 6 : 4 }]
+    : await lookup(host, { all: true, verbatim: true });
+  if (!candidates.length || !local && candidates.some(value => !publicAddress(value.address))) throw new Error('网页解析到了私网或保留地址，已阻止访问');
   const headers: Record<string, string> = { accept: request.headers.get('accept') ?? '*/*', 'accept-encoding': 'identity', 'user-agent': 'SmaltCode-Preview/0.0.4' };
   // Chromium owns this forbidden request header. Preserve it for development
   // servers that return a specific Access-Control-Allow-Origin, without cookies.
   const pageOrigin = request.headers.get('origin');
   if (pageOrigin && pageOrigin.length <= 1024 && !/[\x00-\x20\x7f]/.test(pageOrigin)) headers.origin = pageOrigin;
-  return new Promise((resolve, reject) => {
+  const attemptFetch = (pinned: { address: string; family: number }) => new Promise<Response>((resolve, reject) => {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20_000);
     const abort = () => controller.abort(); request.signal.addEventListener('abort', abort, { once: true });
     const done = () => { clearTimeout(timer); request.signal.removeEventListener('abort', abort); };
@@ -41,4 +44,12 @@ export async function browserFetch(request: Request, origin: string, sources: st
     });
     req.on('error', error => { done(); reject(error); }); req.end();
   });
+  try {
+    return await attemptFetch(candidates[0]!);
+  } catch (err) {
+    if (host === 'localhost' && candidates[1] && (err as NodeJS.ErrnoException)?.code === 'ECONNREFUSED' && !request.signal.aborted) {
+      return attemptFetch(candidates[1]);
+    }
+    throw err;
+  }
 }

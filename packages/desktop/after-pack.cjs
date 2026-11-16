@@ -12,7 +12,8 @@ module.exports = async context => {
   const groups = Resource.IconGroupEntry.fromEntries(resources.entries);
   for (const group of groups.length ? groups : [{ id: 1, lang: 1033 }]) Resource.IconGroupEntry.replaceIconsForResource(resources.entries, group.id, group.lang, icon.icons.map(i => i.data));
   for (const version of Resource.VersionInfo.fromEntries(resources.entries)) {
-    const [major, minor, patch] = context.packager.appInfo.version.split('.').map(Number);
+    const coreVersion = String(context.packager.appInfo.version).split('-')[0].split('+')[0];
+    const [major = 0, minor = 0, patch = 0] = coreVersion.split('.').map(n => Number.parseInt(n, 10) || 0);
     version.setFileVersion(major, minor, patch, 0, 1033);
     version.setProductVersion(major, minor, patch, 0, 1033);
     version.setStringValues({ lang: 1033, codepage: 1200 }, {

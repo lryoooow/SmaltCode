@@ -81,6 +81,7 @@ export function parsePatch(patch: string): PatchFile[] {
       let moveTo: string | undefined;
       if (lines[i]?.startsWith('*** Move to:')) {
         moveTo = lines[i]!.slice('*** Move to:'.length).trim();
+        if (!moveTo) throw new PatchParseError('Move to requires a destination path', i + 1);
         i++;
       }
       const hunks: PatchHunk[] = [];
@@ -141,9 +142,9 @@ function parseHunk(lines: string[], start: number): { hunk: PatchHunk; next: num
   while (i < lines.length) {
     const l = lines[i]!;
     if (l === '*** End of File') { endOfFile = true; i++; break; }
-    if (l.startsWith('***')) break;
+    if (l.startsWith('*** ')) break;
     if (i > start && l.startsWith('@@')) break; // a new hunk begins
-    if (l === '' && /^(?:\*\*\*|@@)/.test(lines.slice(i + 1).find(line => line !== '') ?? '***')) break;
+    if (l === '' && /^(?:\*\*\* |@@)/.test(lines.slice(i + 1).find(line => line !== '') ?? '*** ')) break;
     if (l.startsWith('+')) {
       out.push({ kind: 'add', text: l.slice(1) });
     } else if (l.startsWith('-')) {

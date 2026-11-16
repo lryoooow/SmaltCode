@@ -1,6 +1,6 @@
 {
   "name": "@smalt/desktop",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "SmaltCode — 多模型 AI 编程与办公桌面助手",
   "license": "Apache-2.0",
   "private": true,

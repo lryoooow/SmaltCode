@@ -20,7 +20,7 @@ export type StoreEvent =
   | { t: 'tool-recovered'; id: string; recoveredBy: string; recovery?: 'retry' | 'alternative'; at: string }
   | { t: 'user-msg'; id: string; text: string; displayText?: string; references?: import('../protocol/types.js').UserReference[]; images?: import('../models/types.js').ImagePart[]; steeringId?: string; at: string }
   | { t: 'agent-msg'; id: string; text: string; at: string; status?: import('../protocol/types.js').ItemStatus }
-  | { t: 'reasoning'; id: string; text: string; at: string; status?: import('../protocol/types.js').ItemStatus }
+  | { t: 'reasoning'; id: string; text: string; thinkingBlocks?: import('../models/types.js').ThinkingBlock[]; at: string; status?: import('../protocol/types.js').ItemStatus }
   | { t: 'tool-call'; id: string; tool: string; input: unknown; at: string }
   | { t: 'tool-result'; id: string; tool: string; output: string; isError: boolean; at: string; items?: import('../protocol/types.js').Item[] }
   | { t: 'plan'; id?: string; steps: PlanStep[]; at: string }
@@ -52,18 +52,39 @@ export function replayEvents(events: StoreEvent[]): Pick<ReplayedThread, 'histor
   const history: ChatMessage[] = [];
   let lastUsage = { inputTokens: 0, outputTokens: 0 };
   let reasoning: string | undefined;
+  let thinkingBlocks: import('../models/types.js').ThinkingBlock[] | undefined;
 
   for (const ev of events) {
     switch (ev.t) {
-      case 'verification-reminder': history.push({ role: 'user', content: ev.text }); break;
+      case 'turn-started':
+      case 'turn-ended':
+        reasoning = undefined;
+        thinkingBlocks = undefined;
+        break;
+      case 'verification-reminder':
+        reasoning = undefined;
+        thinkingBlocks = undefined;
+        history.push({ role: 'user', content: ev.text });
+        break;
       case 'user-msg':
+        reasoning = undefined;
+        thinkingBlocks = undefined;
         history.push({ role: 'user', content: ev.images?.length ? [{ type: 'text', text: ev.text }, ...ev.images] : ev.text });
         break;
       case 'agent-msg':
-        history.push({ role: 'assistant', content: ev.text, reasoningContent: reasoning });
+        history.push({
+          role: 'assistant',
+          content: ev.text,
+          reasoningContent: reasoning,
+          ...(thinkingBlocks?.length ? { thinkingBlocks } : {}),
+        });
         reasoning = undefined;
+        thinkingBlocks = undefined;
         break;
-      case 'reasoning': reasoning = ev.text; break;
+      case 'reasoning':
+        reasoning = ev.text || undefined;
+        thinkingBlocks = ev.thinkingBlocks;
+        break;
       case 'tool-call': {
         const last = history.at(-1);
         const call = { id: ev.id, name: ev.tool, arguments: safeStringify(ev.input) } as ToolCall;
@@ -74,14 +95,18 @@ export function replayEvents(events: StoreEvent[]): Pick<ReplayedThread, 'histor
           content: null,
           toolCalls: [call],
           reasoningContent: reasoning,
+          ...(thinkingBlocks?.length ? { thinkingBlocks } : {}),
         });
         reasoning = undefined;
+        thinkingBlocks = undefined;
         break;
       }
       case 'tool-result':
         history.push({ role: 'tool', toolCallId: ev.id, content: ev.output, isError: ev.isError });
         break;
       case 'compacted':
+        reasoning = undefined;
+        thinkingBlocks = undefined;
         history.length = 0;
         if (ev.history) { history.push(...ev.history); break; }
         history.push({

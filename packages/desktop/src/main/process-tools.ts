@@ -60,6 +60,10 @@ export function processWriteTool(manager: ProcessManager): ToolDefinition {
       const v = input as { id?: string; input?: string };
       return `process_write ${v.id ?? ''} ${(v.input ?? '').slice(0, 60)}`.trim();
     },
+    subjects: (input) => {
+      const v = input as { input?: string };
+      return typeof v?.input === 'string' && v.input.trim() ? [v.input] : [];
+    },
     summarize: (input) => {
       const v = input as { id?: string; input?: string };
       return `向后台进程 ${v.id ?? ''} 发送输入：${(v.input ?? '').slice(0, 40)}`;

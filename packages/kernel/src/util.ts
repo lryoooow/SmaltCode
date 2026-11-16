@@ -13,16 +13,21 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** Replace lone UTF-16 surrogates produced by `.slice()` across astral code points so JSON/API payloads stay valid UTF-8. */
+export function wellFormedUtf16(s: string): string {
+  return s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+}
+
 export function truncate(s: string, max: number, suffix = '\n… [truncated]'): string {
   if (s.length <= max) return s;
-  return s.slice(0, max) + suffix;
+  return wellFormedUtf16(s.slice(0, max)) + suffix;
 }
 
 /** Keep diagnostics from both ends; never feed unbounded tool output to a model. */
 export function budgetToolOutput(text: string, limit = 24000): string {
   if (text.length <= limit) return text;
   const head = Math.floor(limit / 3), marker = '\n… [中间输出已省略，请按范围读取详情] …\n';
-  return text.slice(0, head) + marker + text.slice(-(limit - head - marker.length));
+  return wellFormedUtf16(text.slice(0, head)) + marker + wellFormedUtf16(text.slice(-(limit - head - marker.length)));
 }
 
 export function diffPreview(diff: string): string { return budgetToolOutput(diff.split('\n').slice(0, 24).join('\n'), 3000) + (diff.split('\n').length > 24 ? '\n[完整差异请在文件审查中查看]' : ''); }

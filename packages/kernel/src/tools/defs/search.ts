@@ -174,6 +174,7 @@ async function walkAsync(
 }
 
 async function runRipgrep(args: string[], cwd: string, signal?: AbortSignal, maxBytes = 4 * 1024 * 1024): Promise<{ ok: true; stdout: string; exitCode: number } | { ok: false }> {
+  if (signal?.aborted) return { ok: true, stdout: '', exitCode: 130 };
   if (rgAvailable === false) return { ok: false };
   return new Promise((resolvePromise) => {
     let child;
@@ -234,9 +235,8 @@ async function runRipgrep(args: string[], cwd: string, signal?: AbortSignal, max
   });
 }
 
-function globToRegExp(pattern: string): RegExp {
-  const p = pattern.replace(/\\/g, '/').replace(/^\.\//, '');
-  let out = '^';
+function globSegmentToRegex(p: string): string {
+  let out = '';
   for (let i = 0; i < p.length; i++) {
     const ch = p[i]!;
     if (ch === '*') {
@@ -249,13 +249,27 @@ function globToRegExp(pattern: string): RegExp {
       }
     } else if (ch === '?') {
       out += '[^/]';
+    } else if (ch === '{') {
+      const close = p.indexOf('}', i + 1);
+      if (close > i + 1) {
+        const alts = p.slice(i + 1, close).split(',').map((s) => globSegmentToRegex(s));
+        out += `(?:${alts.join('|')})`;
+        i = close;
+      } else {
+        out += '\\{';
+      }
     } else if ('\\^$.|+()[]{}'.includes(ch)) {
       out += `\\${ch}`;
     } else {
       out += ch;
     }
   }
-  return new RegExp(`${out}$`, 'i');
+  return out;
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const p = pattern.replace(/\\/g, '/').replace(/^\.\//, '');
+  return new RegExp(`^${globSegmentToRegex(p)}$`, 'i');
 }
 
 function baseDirOfPattern(pattern: string): { dir: string; rest: string } {
@@ -263,7 +277,7 @@ function baseDirOfPattern(pattern: string): { dir: string; rest: string } {
   const parts = norm.split('/');
   const staticParts: string[] = [];
   for (const part of parts) {
-    if (part.includes('*') || part.includes('?') || part === '') break;
+    if (part.includes('*') || part.includes('?') || part.includes('{') || part.includes('[') || part === '') break;
     staticParts.push(part);
   }
   if (!staticParts.length) return { dir: '', rest: norm };
@@ -313,14 +327,22 @@ export const globTool: ToolDefinition = {
       return;
     }
 
+    if (ctx.signal?.aborted) {
+      yield { type: 'result', text: 'Interrupted', isError: true };
+      return;
+    }
     let files: string[] | null = null;
     const rootSt = await stat(root).catch(() => null);
     if (rootSt?.isDirectory()) {
       const rg = await runRipgrep(
-        ['--files', '--no-config', '--hidden', '--glob', '!.git', '--glob', '!node_modules', '--color', 'never'],
+        ['--files', '--no-config', '--hidden', '--glob', '!.git', '--glob', '!node_modules', '--glob', effective, '--color', 'never'],
         root,
         ctx.signal,
       );
+      if (rg.ok && (rg.exitCode === 130 || rg.exitCode === 124)) {
+        yield { type: 'result', text: rg.exitCode === 130 ? 'Interrupted' : 'Error: glob timed out', isError: true };
+        return;
+      }
       if (rg.ok && (rg.exitCode === 0 || rg.exitCode === 1)) {
         files = rg.stdout
           .split(/\r?\n/)
@@ -431,6 +453,10 @@ export const grepTool: ToolDefinition = {
       if (literal) rgArgs.push('-F');
       rgArgs.push('--', pattern, '.');
       const rg = await runRipgrep(rgArgs, searchRoot, ctx.signal);
+      if (rg.ok && (rg.exitCode === 130 || rg.exitCode === 124)) {
+        yield { type: 'result', text: rg.exitCode === 130 ? 'Interrupted' : 'Error: grep timed out', isError: true };
+        return;
+      }
       if (rg.ok && (rg.exitCode === 0 || rg.exitCode === 1)) {
         const results: string[] = [];
         for (const rawLine of rg.stdout.split(/\r?\n/)) {
@@ -469,6 +495,7 @@ export const grepTool: ToolDefinition = {
     }
 
     const includeRe = include ? globToRegExp(include) : null;
+    const includeHasSlash = Boolean(include && include.replace(/\\/g, '/').includes('/'));
     const results: string[] = [];
     let fileIdx = 0;
 
@@ -476,7 +503,11 @@ export const grepTool: ToolDefinition = {
       if (ctx.signal?.aborted) break;
       if (++fileIdx % 40 === 0) await yieldEventLoop();
       if (isSensitivePath(ctx.cwd, file) || !isInsideWorkspace(ctx.cwd, file) || !(ctx.canReadPath?.(file) ?? true)) continue;
-      if (includeRe && !includeRe.test(file.replace(/\\/g, '/').split('/').pop() ?? '')) continue;
+      if (includeRe) {
+        const relPath = relative(root0, file).replace(/\\/g, '/');
+        const baseName = file.replace(/\\/g, '/').split('/').pop() ?? '';
+        if (includeHasSlash ? !includeRe.test(relPath) : (!includeRe.test(baseName) && !includeRe.test(relPath))) continue;
+      }
       let content: string;
       try {
         const st = await stat(file);

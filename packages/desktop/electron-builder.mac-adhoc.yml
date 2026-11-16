@@ -12,7 +12,7 @@ mac:
   category: public.app-category.developer-tools
   minimumSystemVersion: '13.0'
   darkModeSupport: true
-  identity: '-'
+  sign: sign-mac-adhoc.cjs
   hardenedRuntime: false
   notarize: false
   target:

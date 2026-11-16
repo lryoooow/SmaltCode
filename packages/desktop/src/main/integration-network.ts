@@ -14,13 +14,16 @@ export function integrationFetch(allow: (url: URL, request: Request) => Promise<
     const body = request.body ? Buffer.from(await request.arrayBuffer()) : undefined;
     if (body && body.length > 256 * 1024) throw new Error('连接器请求超过 256 KB');
     const host = url.hostname.replace(/^\[|\]$/g, ''), local = ['localhost', '127.0.0.1', '::1'].includes(host);
-    const addresses = local ? [{ address: host === 'localhost' ? '127.0.0.1' : host, family: host === '::1' ? 6 : 4 }] : await lookup(host, { all: true, verbatim: true });
-    if (!addresses.length || !local && addresses.some(value => !publicAddress(value.address))) throw new Error('连接器地址解析到私网或保留地址，已拒绝连接');
+    const candidates = local
+      ? host === 'localhost'
+        ? [{ address: '127.0.0.1', family: 4 }, { address: '::1', family: 6 }]
+        : [{ address: host, family: host === '::1' ? 6 : 4 }]
+      : await lookup(host, { all: true, verbatim: true });
+    if (!candidates.length || !local && candidates.some(value => !publicAddress(value.address))) throw new Error('连接器地址解析到私网或保留地址，已拒绝连接');
     if (request.signal.aborted) throw new Error('连接器操作已取消');
-    const pinned = addresses[0]!;
     const headers = Object.fromEntries([...request.headers].filter(([key]) => !['host', 'cookie', 'referer', 'proxy-authorization', 'connection', 'content-length', 'accept-encoding'].includes(key)));
     headers['accept-encoding'] = 'identity'; if (body) headers['content-length'] = String(body.length);
-    return new Promise<Response>((resolve, reject) => {
+    const attemptRequest = (pinned: { address: string; family: number }) => new Promise<Response>((resolve, reject) => {
       const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 65_000);
       const abort = () => controller.abort(); request.signal.addEventListener('abort', abort, { once: true });
       const done = () => { clearTimeout(timer); request.signal.removeEventListener('abort', abort); };
@@ -45,5 +48,13 @@ export function integrationFetch(allow: (url: URL, request: Request) => Promise<
       });
       req.on('error', error => { done(); reject(error); }); if (body) req.write(body); req.end();
     });
+    try {
+      return await attemptRequest(candidates[0]!);
+    } catch (err) {
+      if (host === 'localhost' && candidates[1] && (err as NodeJS.ErrnoException)?.code === 'ECONNREFUSED' && !request.signal.aborted) {
+        return attemptRequest(candidates[1]);
+      }
+      throw err;
+    }
   };
 }

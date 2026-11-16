@@ -260,6 +260,7 @@ export class TurnRunner {
         state.transition('MODEL_REQUEST_STARTED');
         let text = '';
         let reasoningText = '';
+        const thinkingBlocks: import('../models/types.js').ThinkingBlock[] = [];
         const toolCalls: ToolCall[] = [];
         const partialArgs = new Map<string, string>();
         let sawFirstDelta = false;
@@ -269,8 +270,9 @@ export class TurnRunner {
         let agentStarted = false;
         let reasoningStarted = false;
         let streamError: unknown;
+        let streamedOutputTokens = 0;
 
-        let reserved = 0, excessUsage = 0;
+        let reserved = 0, stepCharged = 0, maxReportedTotal = 0, stepInputCost = 0, unspentRetryOutput = 0;
         const reasoningEffort = runtime.reasoningEffort?.();
         const request: Omit<ModelRequest, 'model'> = {
           messages,
@@ -281,11 +283,20 @@ export class TurnRunner {
         };
         const beforeRequest = () => {
           if (!policy) return;
+          if (unspentRetryOutput > 0) {
+            metrics.chargedTokens = Math.max(0, metrics.chargedTokens - unspentRetryOutput);
+            unspentRetryOutput = 0;
+          }
           if (runtime.signal.aborted || Date.now() >= policy.deadlineAt) throw new RunLimit('deadline', '已达到设定的运行时间或任务已停止');
           if (metrics.requests >= policy.maxRequests) throw new RunLimit('requests', '已达到设定的模型请求预算');
           const inputCost = estimateHistoryTokens(messages) + estimateTokens(JSON.stringify(specs)), left = policy.maxTokens - metrics.chargedTokens;
           if (left < inputCost + 64) throw new RunLimit('tokens', '剩余 Token 预算不足以发送下一次请求');
-          request.maxOutputTokens = Math.min(8192, left - inputCost); reserved = inputCost + request.maxOutputTokens; excessUsage = 0;
+          request.maxOutputTokens = Math.min(8192, left - inputCost);
+          stepInputCost = inputCost;
+          reserved = inputCost + request.maxOutputTokens;
+          stepCharged = reserved;
+          maxReportedTotal = 0;
+          unspentRetryOutput = request.maxOutputTokens;
           metrics.requests++; metrics.chargedTokens += reserved;
         };
         try {
@@ -294,27 +305,42 @@ export class TurnRunner {
               sawFirstDelta = true;
               state.transition('MODEL_STREAM_STARTED');
             }
-            if (policy && (delta.type === 'text' || delta.type === 'reasoning' || delta.type === 'toolCallDelta') && estimateTokens(text + reasoningText + [...partialArgs.values()].join('') + (delta.type === 'toolCallDelta' ? delta.argsDelta : delta.text)) > (request.maxOutputTokens ?? 2048) + 128) throw new RunLimit('tokens', '模型输出超过本次预留 Token，已暂停');
+            if (delta.type === 'text' || delta.type === 'reasoning' || delta.type === 'toolCallDelta') {
+              unspentRetryOutput = 0;
+              streamedOutputTokens += estimateTokens(delta.type === 'toolCallDelta' ? delta.argsDelta : delta.text);
+              if (policy && streamedOutputTokens > (request.maxOutputTokens ?? 2048) + 128) {
+                throw new RunLimit('tokens', '模型输出超过本次预留 Token，已暂停');
+              }
+            }
             switch (delta.type) {
               case 'reasoning': {
-                if (!reasoningStarted) {
+                reasoningText += delta.text;
+                if (!reasoningStarted && reasoningText.trim()) {
                   reasoningStarted = true;
                   this.deps.notify(Notifications.itemStarted, { item: { kind: 'reasoning', id: rid, threadId, turnId, createdAt: nowIso(), status: 'inProgress', text: '' } });
+                  this.deps.notify(Notifications.reasoningDelta, { threadId, turnId, itemId: rid, delta: reasoningText });
+                } else if (reasoningStarted) {
+                  this.deps.notify(Notifications.reasoningDelta, { threadId, turnId, itemId: rid, delta: delta.text });
                 }
-                reasoningText += delta.text;
-                this.deps.notify(Notifications.reasoningDelta, { threadId, turnId, itemId: rid, delta: delta.text });
+                break;
+              }
+              case 'thinkingBlock': {
+                thinkingBlocks.push(delta.block);
                 break;
               }
               case 'text': {
-                if (!agentStarted) {
+                text += delta.text;
+                if (!agentStarted && text.trim()) {
                   agentStarted = true;
                   this.deps.notify(Notifications.itemStarted, { item: { kind: 'agentMessage', id: aid, threadId, turnId, createdAt: nowIso(), status: 'inProgress', text: '' } });
+                  this.deps.notify(Notifications.agentMessageDelta, { threadId, turnId, itemId: aid, delta: text });
+                } else if (agentStarted) {
+                  this.deps.notify(Notifications.agentMessageDelta, { threadId, turnId, itemId: aid, delta: delta.text });
                 }
-                text += delta.text;
-                this.deps.notify(Notifications.agentMessageDelta, { threadId, turnId, itemId: aid, delta: delta.text });
                 break;
               }
               case 'toolCallStart': {
+                unspentRetryOutput = 0;
                 toolCalls.push({ id: delta.id, name: delta.name, arguments: '' });
                 if (!partialArgs.has(delta.id)) partialArgs.set(delta.id, '');
                 break;
@@ -324,7 +350,15 @@ export class TurnRunner {
                 break;
               }
               case 'usage': {
-                if (policy) { const excess = Math.max(excessUsage, delta.inputTokens + delta.outputTokens - reserved); metrics.chargedTokens += excess - excessUsage; excessUsage = excess; }
+                unspentRetryOutput = 0;
+                if (policy) {
+                  const actualTotal = delta.inputTokens + delta.outputTokens;
+                  if (actualTotal > 0) {
+                    maxReportedTotal = Math.max(maxReportedTotal, actualTotal);
+                    metrics.chargedTokens = Math.max(0, metrics.chargedTokens + (maxReportedTotal - stepCharged));
+                    stepCharged = maxReportedTotal;
+                  }
+                }
                 reportedTokens = delta.inputTokens;
                 outcome.usage.inputTokens += delta.inputTokens;
                 outcome.usage.outputTokens += delta.outputTokens;
@@ -337,6 +371,11 @@ export class TurnRunner {
               }
             }
           }
+          if (policy && sawFirstDelta && maxReportedTotal === 0 && stepCharged > 0) {
+            const estimatedActual = stepInputCost + streamedOutputTokens;
+            metrics.chargedTokens = Math.max(0, metrics.chargedTokens + (estimatedActual - stepCharged));
+            stepCharged = estimatedActual;
+          }
         } catch (err) {
           if (isAbort(err) || runtime.signal.aborted) {
             outcome.interrupted = true;
@@ -348,12 +387,19 @@ export class TurnRunner {
         }
         state.transition('MODEL_RESPONSE_DONE');
 
+        const assistantThinkingFields = {
+          reasoningContent: reasoningText || undefined,
+          ...(thinkingBlocks.length ? { thinkingBlocks } : {}),
+        };
+
         // persist assistant output
         if (reasoningText.trim()) {
           const item: Item = { kind: 'reasoning', id: rid, threadId, turnId, createdAt: nowIso(), status: outcome.interrupted || streamError ? 'failed' : 'completed', text: reasoningText };
           runtime.items.push(item);
-          this.deps.store.append(threadId, { t: 'reasoning', id: rid, text: reasoningText, status: item.status, at: nowIso() });
+          this.deps.store.append(threadId, { t: 'reasoning', id: rid, text: reasoningText, ...(thinkingBlocks.length ? { thinkingBlocks } : {}), status: item.status, at: nowIso() });
           this.deps.notify(Notifications.itemCompleted, { item });
+        } else if (thinkingBlocks.length) {
+          this.deps.store.append(threadId, { t: 'reasoning', id: rid, text: '', thinkingBlocks, status: outcome.interrupted || streamError ? 'failed' : 'completed', at: nowIso() });
         }
         if (text.trim()) {
           const item: AgentMessageItem = { kind: 'agentMessage', id: aid, threadId, turnId, createdAt: nowIso(), status: outcome.interrupted || streamError ? 'failed' : 'completed', text };
@@ -364,21 +410,21 @@ export class TurnRunner {
         }
 
         if (runtime.signal.aborted) {
-          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
+          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, ...assistantThinkingFields });
           outcome.interrupted = true;
           break;
         }
         if (streamError) {
-          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
+          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, ...assistantThinkingFields });
           throw streamError;
         }
 
         if (finish === 'contentFilter') {
-          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
+          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, ...assistantThinkingFields });
           throw new Error('模型服务中止了这次回复，请检查提示与服务端限制后继续。');
         }
         if (finish === 'length') {
-          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
+          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, ...assistantThinkingFields });
           if (!policy && lengthRecoveryCount < 1) {
             lengthRecoveryCount++;
             const reminder = toolCalls.length > 0
@@ -391,7 +437,7 @@ export class TurnRunner {
           throw new Error('模型达到单次输出上限，回复尚未完成。可发送“继续”接着处理；未执行不完整的工具调用。');
         }
         if (!toolCalls.length) {
-          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, reasoningContent: reasoningText || undefined });
+          if (text.trim()) runtime.history.push({ role: 'assistant', content: text, ...assistantThinkingFields });
           const currentItems = runtime.items.slice(firstItem);
           const assessment = assessTurn(currentItems, displayText ?? input);
           const results = operationAssessments(currentItems);
@@ -412,7 +458,9 @@ export class TurnRunner {
             if (!stopHookActive) {
               stopHookActive = true;
               const reason = stopDecision.reason ?? 'a Stop hook blocked ending this turn';
-              runtime.history.push({ role: 'user', content: `<system-reminder>Stop blocked: ${reason}. Continue working toward completion.</system-reminder>` });
+              const stopReminder = `<system-reminder>Stop blocked: ${reason}. Continue working toward completion.</system-reminder>`;
+              runtime.history.push({ role: 'user', content: stopReminder });
+              this.deps.store.append(threadId, { t: 'verification-reminder', text: stopReminder, at: nowIso() });
               continue;
             }
             // one block per turn only — avoid infinite loop
@@ -426,7 +474,7 @@ export class TurnRunner {
           role: 'assistant',
           content: text || null,
           toolCalls: toolCalls.map((tc) => ({ ...tc })),
-          reasoningContent: reasoningText || undefined,
+          ...assistantThinkingFields,
         });
         for (const tc of toolCalls) {
           this.deps.store.append(threadId, { t: 'tool-call', id: tc.id, tool: tc.name, input: safeJsonParse(tc.arguments), at: nowIso() });

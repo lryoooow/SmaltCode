@@ -138,6 +138,7 @@ export class ResponsesAdapter implements ModelAdapter {
         signal: req.signal,
       });
     } catch (err) {
+      if ((err as { name?: string })?.name === 'AbortError' || req.signal?.aborted) throw err;
       throw new ModelError(
         `Request to ${this.opts.baseUrl} failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -145,11 +146,14 @@ export class ResponsesAdapter implements ModelAdapter {
 
     if (res.status === 400 && ('reasoning' in body || 'prompt_cache_key' in body || 'store' in body)) {
       const errBody = await readErrorBody(res.clone());
-      if (/reasoning|prompt_cache_key|store/i.test(errBody)) {
+      const stripReasoning = 'reasoning' in body && /\breasoning\b/i.test(errBody);
+      const stripCacheKey = 'prompt_cache_key' in body && /\bprompt_cache_key\b/i.test(errBody);
+      const stripStore = 'store' in body && /\bstore\b.*(?:unsupported|unknown|unrecognized|not allowed|invalid|extra|parameter|field)|(?:unsupported|unknown|unrecognized|invalid|extra)\b.*\bstore\b/i.test(errBody);
+      if (stripReasoning || stripCacheKey || stripStore) {
         const retryBody = { ...body };
-        if (/reasoning/i.test(errBody)) delete retryBody.reasoning;
-        if (/prompt_cache_key/i.test(errBody)) delete retryBody.prompt_cache_key;
-        if (/store/i.test(errBody)) delete retryBody.store;
+        if (stripReasoning) delete retryBody.reasoning;
+        if (stripCacheKey) delete retryBody.prompt_cache_key;
+        if (stripStore) delete retryBody.store;
         void res.body?.cancel().catch(() => {});
         res = await doFetch(url, { method: 'POST', redirect: 'error', headers, body: JSON.stringify(retryBody), signal: req.signal });
       }
@@ -263,7 +267,7 @@ export class ResponsesAdapter implements ModelAdapter {
       }
     }
 
-    if (!completed && !sawToolCall) {
+    if (!completed) {
       throw new ModelError('Responses stream ended before response.completed');
     }
     if (usage) yield usage;

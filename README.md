@@ -8,14 +8,14 @@
   <p><strong>从一句需求，到看得见、可核对的工作成果。</strong></p>
   <p>多模型 AI 编程与办公桌面助手 · 中文界面 · 本地保存 · 可控执行</p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.8%20preview-2F4FD0" alt="0.0.8 公开测试版" />
+    <img src="https://img.shields.io/badge/version-0.0.9%20preview-2F4FD0" alt="0.0.9 公开测试版" />
     <img src="https://img.shields.io/badge/platform-Windows%20x64%20%7C%20macOS%2013%2B-5B6475" alt="Windows x64 | macOS 13+" />
     <img src="https://img.shields.io/badge/license-Apache--2.0-23A075" alt="Apache-2.0" />
   </p>
-  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.8">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/releases/v0.0.8.md">本次更新</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a></p>
+  <p><a href="https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.9">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/releases/v0.0.9.md">本次更新</a> · <a href="https://github.com/lryoooow/SmaltCode/issues">反馈与建议</a></p>
 </div>
 
-> **0.0.8 是公开测试版本。** 本次全面升级底层智能体引擎（Prefix Cache 命中率优化、OpenAI `/v1/responses` 协议、多级容错补丁与零执行静态诊断、有界子智能体委派、两阶段微压缩、对话分叉、`AGENTS.md` 自动发现与 `/init`、动态上下文 `@git:diff` / `@terminal`、交互式后台进程输入及技能渐进加载），同时支持 **Windows x64 安装包** 与 **macOS 13+（Apple Silicon / Intel）Ad-hoc 安装包** 构建。
+> **0.0.9 是公开测试版本。** 本次针对全仓底层架构完成 36 项深度审计与稳定性加固（安全边界与权限引擎闭环、项目默认工作目录自动采用与竞态消除、桌面端本机 Hooks 全面恢复、对话分叉完整隔离、Anthropic 签名思考块与多模型断流保护、子智能体检查点归属、`apply_patch` 锚点寻址及 macOS 签名管线修复），支持 **Windows x64 安装包** 与 **macOS 13+（Apple Silicon / Intel）Ad-hoc 安装包** 构建。
 
 ![SmaltCode 0.0.5 首页](docs/images/v0.0.5/home.png)
 
@@ -68,23 +68,23 @@ SmaltCode 将对话、代码执行、文档编辑、终端和任务管理放在�
 
 ## 下载与安装
 
-### Windows x64（v0.0.8 公开测试版）
+### Windows x64（v0.0.9 公开测试版）
 
-1. 下载 [SmaltCode-Setup-0.0.8-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.8/SmaltCode-Setup-0.0.8-SFox.exe)。
+1. 下载 [SmaltCode-Setup-0.0.9-SFox.exe](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.9/SmaltCode-Setup-0.0.9-SFox.exe)。
 2. 升级前从系统托盘退出旧版，并备份已有工作资料；按向导选择安装目录。
 3. 从桌面或开始菜单打开 **SmaltCode**，配置模型即可开始对话。
 
-[Release 与更新说明](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.8) 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.8/SHA256SUMS.txt)。在 PowerShell 中核对：
+[Release 与更新说明](https://github.com/lryoooow/SmaltCode/releases/tag/v0.0.9) 同时提供 [SHA256SUMS.txt](https://github.com/lryoooow/SmaltCode/releases/download/v0.0.9/SHA256SUMS.txt)。在 PowerShell 中核对：
 
 ```powershell
-Get-FileHash .\SmaltCode-Setup-0.0.8-SFox.exe -Algorithm SHA256
+Get-FileHash .\SmaltCode-Setup-0.0.9-SFox.exe -Algorithm SHA256
 ```
 
 当前安装包未做付费商业代码签名，Windows 首次打开可能提示 SmartScreen 未验证发布者（点击“更多信息 → 仍要运行”）。
 
 ### macOS 13+（Apple Silicon `arm64` / Intel `x64` · Ad-hoc 测试版）
 
-1. 根据芯片架构下载对应的 `SmaltCode-0.0.8-macOS-arm64-adhoc.dmg`（M1/M2/M3/M4 系列）或 `SmaltCode-0.0.8-macOS-x64-adhoc.dmg`（Intel Mac），打开后将 **SmaltCode** 拖入 `Applications`（应用程序）。
+1. 根据芯片架构下载对应的 `SmaltCode-0.0.9-macOS-arm64-adhoc.dmg`（M1/M2/M3/M4 系列）或 `SmaltCode-0.0.9-macOS-x64-adhoc.dmg`（Intel Mac），打开后将 **SmaltCode** 拖入 `Applications`（应用程序）。
 2. 由于社区测试版采用 Ad-hoc 本地签名（未使用付费 Apple Developer ID 公证），首次通过浏览器下载打开时若 macOS Gatekeeper 提示“无法验证开发者”或“已损坏”，请在终端执行一次隔离属性清除命令即可正常打开：
 
 ```sh
@@ -134,14 +134,13 @@ DeepSeek Search / Fetch 使用 DeepSeek 开放平台 API Key，可自行填写�
 
 普通对话与 SSH / 容器对话均可使用独立的主机端搜索服务。托管或无人值守任务仍受各自工具白名单限制，全局启用搜索不会自动扩大其工具范围。
 
-## 本次更新（v0.0.8）
+## 本次更新（v0.0.9）
 
-- **底层模型与缓存效率升级**：新增 OpenAI `/v1/responses` 原生适配器（解锁 `gpt-5.3-codex` 等模型）、Anthropic 自动 `cache_control` 前缀断点、DeepSeek 跨轮 `reasoning_content` 清理与可控思考深度（`low` / `medium` / `high` / `max`），并在底栏实时展示前缀缓存命中率。
-- **高稳定工具与执行闭环**：`apply_patch` 四级渐进模糊寻址与自动缩进补偿、写入后毫秒级零执行语法/括号/冲突标记诊断、只读工具并发调度 + 死循环熔断器、流式 SSE 僵死看门狗与超长输出续写恢复。
-- **工程上下文、子智能体与分支体验**：自动层级发现 `AGENTS.md` / `CLAUDE.md` 并支持 `/init` 生成规范草稿；输入框支持 `@git:diff`、`@git:status`、`@terminal` 动态引用与 `/` 快捷指令；新增有界子智能体 `delegate_task`、技能按需渐进加载 `activate_skill`、后台进程标准输入 `process_write`、一键对话分叉（`Fork`）与项目约定记忆提取建议。
-- **Windows + macOS 双平台安装包支持**：本地构建 Windows NSIS 安装包，并提供支持 Apple Silicon (`arm64`) 与 Intel (`x64`) 的 macOS Ad-hoc DMG/ZIP 打包脚本及手动触发（`workflow_dispatch`）构建工作流。
+- **安全边界与权限引擎闭环**：拦截 NTFS `::$DATA` 数据流、悬空软链接越界与 `smaltHome()` 数据目录访问；加固 Shell 转义引号、子 Shell、`sudo`/`env` 包装与 `shell:cmd *` 通配规则匹配；修复文件 `allow` 规则 `..` 规范化与内联解释器 `-c/-e` 规则泛化。
+- **项目体验、Hooks 恢复与分支闭环**：选定项目新建对话自动采用已授权默认目录并消除发送竞态；`resource_read` 支持行级分页、`searchContextFiles` 支持通配符与 5,000 目录队列；全面恢复桌面端本机普通对话 Hooks；`/fork` 完整克隆资料上下文、独立本地空间与远程目标状态。
+- **多模型流式与工具链打磨**：杜绝 Anthropic / Responses 断流伪造完成信号、回放签名 `thinking` 块并动态扩展 `max_tokens`；兼容 OpenRouter 多段模型 ID 与 UTF-16 代理项清理；`apply_patch` 支持 `@@ anchor` 精准寻址与大小写重命名；修复 Windows 休眠时钟漂移、`localhost` IPv6 `[::1]` 回退及 macOS Ad-hoc 签名管线。
 
-详见 [0.0.8 Release 说明](docs/releases/v0.0.8.md)。此前的验收卡、网页批注和恢复预览见 [0.0.7](docs/releases/v0.0.7.md)，联网搜索见 [0.0.6](docs/releases/v0.0.6.md)，工作区、SSH 和 Office 见 [0.0.5](docs/releases/v0.0.5.md)。更早版本见 [GitHub Releases](https://github.com/lryoooow/SmaltCode/releases)。
+详见 [0.0.9 Release 说明](docs/releases/v0.0.9.md)。此前的底层引擎升级见 [0.0.8](docs/releases/v0.0.8.md)，验收卡、网页批注和恢复预览见 [0.0.7](docs/releases/v0.0.7.md)，联网搜索见 [0.0.6](docs/releases/v0.0.6.md)，工作区、SSH 和 Office 见 [0.0.5](docs/releases/v0.0.5.md)。更早版本见 [GitHub Releases](https://github.com/lryoooow/SmaltCode/releases)。
 
 ## 权限与数据
 
@@ -182,7 +181,7 @@ npm run package:desktop
 
 打包流水线验证版本与全部图标、ASAR 文件一致性、文档解析、原生 PTY/SSH 工作线程、启动和托盘退出。设置 `SMALT_TEST_OFFICE_LIBRE` 与 `SMALT_TEST_OFFICE_PYTHON` 后，还会验证打包目录下真实 Office 保存链；组件需自行准备。
 
-日常代码提交不触发远程 CI，测试与 Windows 安装包验证均在本地完成；仅保留 `.github/workflows/package-macos.yml` 手动按需（`workflow_dispatch`）打包 macOS `arm64` / `x64` 安装包。测试范围和实际结果见 [本次发布说明](docs/releases/v0.0.8.md) 及各版本 Release。
+日常代码提交不触发远程 CI，测试与 Windows 安装包验证均在本地完成；仅保留 `.github/workflows/package-macos.yml` 手动按需（`workflow_dispatch`）打包 macOS `arm64` / `x64` 安装包。测试范围和实际结果见 [本次发布说明](docs/releases/v0.0.9.md) 及各版本 Release。
 
 ```text
 packages/kernel/   智能体、模型、工具、权限和任务存储

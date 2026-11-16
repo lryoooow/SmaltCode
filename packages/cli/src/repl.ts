@@ -38,9 +38,13 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   let meta: ThreadMeta = opts.threadId ? activeKernel.threads.resume(opts.threadId).meta : activeKernel.threads.start({
     cwd: opts.cwd ?? process.cwd(),
     model: opts.model,
+    ...(opts.mode ? { permissionMode: opts.mode } : {}),
   }).meta;
   if (opts.threadId) {
     renderer.info(`resumed ${meta.title} (${meta.turnCount} turns)`);
+    if (opts.mode) {
+      meta = ((await activeKernel.handle('thread/settings/update', { threadId: meta.id, permissionMode: opts.mode })) as { meta: ThreadMeta }).meta;
+    }
   }
   if (opts.mode) {
     activeKernel.getPermissions().setMode(opts.mode);
@@ -128,40 +132,47 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         break;
       case 'model': {
         if (!arg) {
-          const cur = activeKernel.currentModelMeta();
+          const rt = activeKernel.threads.get(meta.id);
+          const cur = rt?.modelRef ?? activeKernel.currentModelMeta();
           renderer.info(`current model: ${cur.provider}/${cur.model}`);
           renderer.info('usage: /model <provider/model>  (providers: ' + Object.keys(activeKernel.getSettings().providers).join(', ') + ')');
         } else {
-          const rt = activeKernel.threads.get(meta.id);
-          if (rt) {
-            const ref = await import('@smalt/kernel').then((m) => m.resolveModelRef(arg, activeKernel.getSettings()));
-            rt.modelRef.provider = ref.provider;
-            rt.modelRef.model = ref.model;
-            renderer.info(`model set to ${ref.provider}/${ref.model}`);
+          try {
+            const res = (await activeKernel.handle('thread/settings/update', { threadId: meta.id, model: arg })) as { meta: ThreadMeta };
+            meta = res.meta;
+            renderer.info(`model set to ${meta.provider ?? ''}/${meta.model}`.replace(/\/\//g, '/').replace('set to /', 'set to '));
+          } catch (err) {
+            renderer.error(err instanceof Error ? err.message : String(err));
           }
         }
         break;
       }
       case 'mode': {
+        const curMode = meta.permissionMode ?? activeKernel.getPermissions().mode;
         if (!arg || !(PERMISSION_MODES as readonly string[]).includes(arg)) {
-          renderer.info(`current mode: ${activeKernel.getPermissions().mode}`);
+          renderer.info(`current mode: ${curMode}`);
           renderer.info(`usage: /mode <${PERMISSION_MODES.join('|')}>`);
         } else {
+          const res = (await activeKernel.handle('thread/settings/update', { threadId: meta.id, permissionMode: arg })) as { meta: ThreadMeta };
+          meta = res.meta;
           activeKernel.getPermissions().setMode(arg as PermissionMode);
           renderer.info(`permission mode: ${arg}`);
         }
         break;
       }
-      case 'plan':
+      case 'plan': {
+        const res = (await activeKernel.handle('thread/settings/update', { threadId: meta.id, permissionMode: 'plan' })) as { meta: ThreadMeta };
+        meta = res.meta;
         activeKernel.getPermissions().setMode('plan');
         renderer.info('plan mode ON — only read-only tools run; /mode default to leave');
         break;
+      }
       case 'init': {
         try {
           const overwrite = arg === '--force' || arg === 'force';
-          const res = (await activeKernel.handle('workspace/init', { threadId: meta.id, overwrite })) as { path: string; written: boolean; exists: boolean };
+          const res = (await activeKernel.handle('workspace/init', { threadId: meta.id, overwrite })) as { path: string; written: boolean; existed: boolean };
           if (res.written) renderer.info(`created ${res.path}`);
-          else if (res.exists) renderer.info(`${res.path} already exists (use /init --force to overwrite)`);
+          else if (res.existed) renderer.info(`${res.path} already exists (use /init --force to overwrite)`);
         } catch (err) {
           renderer.error(err instanceof Error ? err.message : String(err));
         }
@@ -245,10 +256,15 @@ async function runOneShot(opts: ReplOptions): Promise<void> {
   const port = new TerminalPort(renderer, ask);
   kernel.setClientPort(port);
 
-  const meta = opts.threadId
+  let meta = opts.threadId
     ? kernel.threads.resume(opts.threadId).meta
-    : kernel.threads.start({ cwd: opts.cwd ?? process.cwd(), model: opts.model }).meta;
-  if (opts.mode) kernel.getPermissions().setMode(opts.mode);
+    : kernel.threads.start({ cwd: opts.cwd ?? process.cwd(), model: opts.model, ...(opts.mode ? { permissionMode: opts.mode } : {}) }).meta;
+  if (opts.mode) {
+    kernel.getPermissions().setMode(opts.mode);
+    if (opts.threadId) {
+      meta = ((await kernel.handle('thread/settings/update', { threadId: meta.id, permissionMode: opts.mode })) as { meta: ThreadMeta }).meta;
+    }
+  }
   let interrupted = false;
   const removeInterrupts = rl ? installInterrupts(rl, () => { if (interrupted) { killAllToolProcesses(); process.exit(130); } interrupted = true; kernel.threads.interrupt(meta.id); }) : () => {};
 

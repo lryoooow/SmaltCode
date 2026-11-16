@@ -93,20 +93,60 @@ export function parseRule(raw: string, source: RuleSource): PermissionRule {
   };
 }
 
-/** Token-prefix match for one simple command: `git status` matches `git status --short`. */
-export function segmentMatches(pattern: string, segment: string): boolean {
+/** Strip leading subshell/grouping tokens and benign command wrappers for deny/ask/danger inspection. */
+function unwrapSegmentPrefix(segment: string): string {
+  let s = segment.trim().replace(/^[({[\s]+/, '').replace(/[\s})\]]+$/, '').trim();
+  for (let i = 0; i < 6; i++) {
+    const envAssign = /^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s]*)\s+([\s\S]+)$/.exec(s);
+    if (envAssign) { s = envAssign[1]!.trim(); continue; }
+    const wrapper = /^(?:sudo|env|command|nohup|nice|time)\s+(?:-[^\s]+\s+)*([\s\S]+)$/i.exec(s);
+    if (wrapper) { s = wrapper[1]!.trim(); continue; }
+    break;
+  }
+  return s;
+}
+
+function singleSegmentMatches(pat: string, candidate: string): boolean {
+  if (pat === candidate || candidate.startsWith(`${pat} `)) return true;
+  if (pat.includes('*')) {
+    const strippedTrailing = pat.replace(/(?:\s+\*)+$/, '');
+    if (strippedTrailing && !strippedTrailing.includes('*')) {
+      if (strippedTrailing === candidate || candidate.startsWith(`${strippedTrailing} `)) return true;
+    } else {
+      const escaped = pat.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      if (new RegExp(`^${escaped}(?:\\s|$)`).test(candidate)) return true;
+    }
+  }
+  return false;
+}
+
+/** Token-prefix match for one simple command: `git status` or `git status *` matches `git status --short`. */
+export function segmentMatches(pattern: string, segment: string, unwrap = false): boolean {
+  if (typeof pattern !== 'string') return false;
   const pat = pattern.trim().replace(/\s+/g, ' ');
-  const cmd = segment.trim().replace(/\s+/g, ' ');
+  const raw = segment.trim().replace(/\s+/g, ' ');
   if (!pat || pat === '*') return true;
-  if (pat === cmd) return true;
-  return cmd.startsWith(`${pat} `);
+  if (singleSegmentMatches(pat, raw)) return true;
+  if (unwrap) {
+    const stripped = unwrapSegmentPrefix(raw).replace(/\s+/g, ' ');
+    if (singleSegmentMatches(pat, stripped)) return true;
+    // Also match executable basename when segment uses full path (e.g. /usr/bin/git push vs git push)
+    const firstSpace = stripped.indexOf(' ');
+    const firstTok = firstSpace === -1 ? stripped : stripped.slice(0, firstSpace);
+    const rest = firstSpace === -1 ? '' : stripped.slice(firstSpace);
+    const base = firstTok.replace(/^["']|["']$/g, '').split(/[\\/]/).at(-1)?.replace(/\.(?:exe|cmd|bat|com)$/i, '');
+    if (base && base !== firstTok) {
+      const normalized = `${base}${rest}`;
+      if (singleSegmentMatches(pat, normalized)) return true;
+    }
+  }
+  return false;
 }
 
 /**
  * Quote-aware command tokenizer: splits on separators && || & | ; and
- * newlines while leaving quoted spans intact. Single `&` counts as a
- * separator (cmd.exe chaining, bash backgrounding) — skipping it let
- * `echo hi & rm -rf x` ride an `allow: echo` rule.
+ * newlines while leaving quoted spans intact, respecting POSIX backslash
+ * escapes (`\"`, `\'`, `\\`) outside single quotes.
  */
 export function splitCommand(command: string): string[] {
   const segments: string[] = [];
@@ -115,9 +155,25 @@ export function splitCommand(command: string): string[] {
 
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!;
-    if (quote) {
+    if (quote === "'") {
       current += ch;
-      if (ch === quote) quote = null;
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '\\' && (command[i + 1] === '"' || command[i + 1] === '\\' || command[i + 1] === '$' || command[i + 1] === '`')) {
+        current += ch + command[i + 1]!;
+        i++;
+        continue;
+      }
+      current += ch;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    // Outside quotes: backslash before quote/operator escapes the character in POSIX sh/bash
+    if (ch === '\\' && i + 1 < command.length && /["'\\;&|()<> \t]/.test(command[i + 1]!)) {
+      current += ch + command[i + 1]!;
+      i++;
       continue;
     }
     if (ch === '"' || ch === "'") {
@@ -145,13 +201,34 @@ export function splitCommand(command: string): string[] {
   return segments.map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
+/** True when unclosed quotes, escaped quotes, or unquoted subshell/brace groups make shell parsing ambiguous across bash/cmd/pwsh. */
+export function hasAmbiguousShellSyntax(command: string): boolean {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote === "'") { if (ch === "'") quote = null; continue; }
+    if (quote === '"') {
+      if (ch === '\\' && command[i + 1] === '"') return true;
+      if (ch === '\\' && command[i + 1] === '\\') { i++; continue; }
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === '\\' && /["'\\;&|()<>]/.test(command[i + 1] ?? '')) return true;
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '(' || ch === ')' || ch === '{' || ch === '}') return true;
+  }
+  return quote !== null;
+}
+
 /** Structures that can smuggle arbitrary code behind an innocuous prefix. */
 export function hasInjection(command: string): boolean {
   return (
     command.includes('$(') ||
     command.includes('`') ||
     command.includes('<(') ||
-    command.includes('>(')
+    command.includes('>(') ||
+    /@\s*\(/.test(command) ||
+    /\$\{[^}]*[:?+=]/.test(command)
   );
 }
 
@@ -168,15 +245,15 @@ export function hasRedirection(segment: string): boolean {
 
 /**
  * ALLOW semantics — every segment of the command must match the pattern.
- * Returns false for empty commands, injection constructs, redirections, or
- * any non-matching segment.
+ * Returns false for empty commands, injection constructs, ambiguous escapes/subshells,
+ * redirections, or any non-matching segment.
  */
 export function commandAllowedBy(pattern: string, command: string): boolean {
-  if (hasInjection(command)) return false;
+  if (hasInjection(command) || hasAmbiguousShellSyntax(command)) return false;
   const segments = splitCommand(command);
   if (!segments.length) return false;
   if (segments.some((seg) => hasRedirection(seg))) return false;
-  return segments.every((seg) => segmentMatches(pattern, seg));
+  return segments.every((seg) => segmentMatches(pattern, seg, false));
 }
 
 /**
@@ -186,13 +263,14 @@ export function commandMatchesAny(pattern: string, command: string, depth = 0): 
   if (depth > 8) return true; // ambiguous nested interpreters never bypass a deny
   const segments = splitCommand(command);
   if (!segments.length) return false;
-  return segments.some((seg) => segmentMatches(pattern, seg) || wrappedCommands(seg).some(inner => commandMatchesAny(pattern, inner, depth + 1)));
+  return segments.some((seg) => segmentMatches(pattern, seg, true) || wrappedCommands(seg).some(inner => commandMatchesAny(pattern, inner, depth + 1)));
 }
 
 /** Inspect common shell wrappers for deny rules; never use this to grant consent. */
 function wrappedCommands(command: string): string[] {
-  const match = /^(?:(?:sudo|env)\s+)?(?:[\w:/\\.-]*[\\/])?(?:ba?sh|zsh|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+(?:-[^\s]+\s+)*?(?:-c|-command|\/c)\s+([\s\S]+)$/i.exec(command.trim());
-  if (!match) return [];
+  const stripped = unwrapSegmentPrefix(command);
+  const match = /^(?:[\w:/\\.-]*[\\/])?(?:ba?sh|zsh|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+(?:-[^\s]+\s+)*?(?:-c|-command|\/c)\s+([\s\S]+)$/i.exec(stripped);
+  if (!match) return stripped !== command.trim() && stripped.length < command.length ? [stripped] : [];
   const body = match[1]!.trim();
   const inner = /^(["'])([\s\S]*)\1$/.exec(body)?.[2] ?? body;
   // Each recursion consumes a wrapper, bounded by the original input length.
@@ -200,7 +278,8 @@ function wrappedCommands(command: string): string[] {
 }
 
 function destructiveRoot(command: string): boolean {
-  const words = command.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g)?.map(word => word.replace(/^(["'])([\s\S]*)\1$/, '$2')) ?? [];
+  const stripped = unwrapSegmentPrefix(command);
+  const words = stripped.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g)?.map(word => word.replace(/^(["'])([\s\S]*)\1$/, '$2')) ?? [];
   const name = (words[0] ?? '').split(/[\\/]/).at(-1)?.toLowerCase().replace(/\.exe$/, '');
   if (name === 'sudo') return destructiveRoot(words.slice(1).join(' '));
   const remove = name === 'rm', windows = ['remove-item', 'ri', 'rd', 'rmdir', 'del', 'erase'].includes(name ?? '');

@@ -22,13 +22,17 @@ export function checkPostEditDiagnostics(absPath: string, displayPath: string): 
     const issues: string[] = [];
 
     // 1. Leftover git conflict markers in code/config files
+    // Require actual <<<<<<< / >>>>>>> markers so standalone ======= section banners never trigger false positives.
     const ext = extname(absPath).toLowerCase();
     if (!['.md', '.txt', '.patch', '.diff'].includes(ext)) {
       const lines = content.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (/^(?:<{7}\s|={7}$|>{7}\s)/.test(lines[i]!)) {
-          issues.push(`${displayPath}:${i + 1}: unresolved merge conflict marker (${lines[i]!.slice(0, 7)})`);
-          break;
+      const hasOpenOrClose = lines.some((l) => /^(?:<{7}\s|>{7}\s)/.test(l));
+      if (hasOpenOrClose) {
+        for (let i = 0; i < lines.length; i++) {
+          if (/^(?:<{7}\s|={7}\r?$|>{7}\s)/.test(lines[i]!)) {
+            issues.push(`${displayPath}:${i + 1}: unresolved merge conflict marker (${lines[i]!.slice(0, 7)})`);
+            break;
+          }
         }
       }
     }
@@ -43,7 +47,7 @@ export function checkPostEditDiagnostics(absPath: string, displayPath: string): 
     }
 
     // 3. Pure JS / CJS syntax compilation check (never executes code!)
-    if (ext === '.cjs' || (ext === '.js' && !/^\s*(?:import|export)\b/m.test(content))) {
+    if (ext === '.cjs' || (ext === '.js' && !/^\s*(?:import|export)\b|\bimport\.meta\b|^\s*await\b/m.test(content))) {
       try {
         new Script(content, { filename: displayPath });
       } catch (err) {
@@ -54,8 +58,9 @@ export function checkPostEditDiagnostics(absPath: string, displayPath: string): 
       }
     }
 
-    // 4. Lightweight brace/paren/bracket balance sanity check for TS/TSX/JS/MJS
-    if (['.ts', '.tsx', '.js', '.jsx', '.mjs'].includes(ext) && !issues.length) {
+    // 4. Lightweight brace/paren/bracket balance sanity check for non-JSX TS/JS/MJS
+    // (.tsx/.jsx are excluded because JSX text nodes can contain raw quotes/parens/angles)
+    if (['.ts', '.js', '.mjs', '.cjs'].includes(ext) && !issues.length) {
       const balanceErr = checkDelimiterBalance(content, displayPath);
       if (balanceErr) issues.push(balanceErr);
     }
@@ -117,12 +122,21 @@ function checkDelimiterBalance(source: string, displayPath: string): string | nu
       i++;
       continue;
     }
-    if (ch === '/' && i > 0) {
+    if (ch === '/') {
       // Potential regex literal: skip heuristic check to ensure zero false positives
       let prevIdx = i - 1;
       while (prevIdx >= 0 && /[ \t\r\n]/.test(source[prevIdx]!)) prevIdx--;
-      const prevCh = source[prevIdx] ?? '';
-      if ('=([{,:;!&|?+-~^%<>'.includes(prevCh)) return null;
+      if (prevIdx < 0) return null;
+      const prevCh = source[prevIdx]!;
+      if ('=([{,:;!&|?+-~^%<>)}'.includes(prevCh)) return null;
+      if (/[a-zA-Z_$]/.test(prevCh)) {
+        let wordStart = prevIdx;
+        while (wordStart > 0 && /[a-zA-Z0-9_$]/.test(source[wordStart - 1]!)) wordStart--;
+        const word = source.slice(wordStart, prevIdx + 1);
+        if (['return', 'case', 'throw', 'typeof', 'void', 'delete', 'yield', 'await', 'in', 'of', 'instanceof', 'new', 'do', 'else'].includes(word)) {
+          return null;
+        }
+      }
     }
     if (ch === '{' || ch === '(' || ch === '[') {
       stack.push({ ch, line });

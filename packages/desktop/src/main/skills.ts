@@ -47,10 +47,12 @@ const builtins = [
 /** Instruction-only skills: no script loading, package install, or permission grant. */
 export class SkillStore {
   private queue: Promise<unknown> = Promise.resolve();
+  private filter?: (skill: Skill) => boolean;
   private cachedCatalogText: string = formatSkillCatalog(
     builtins.map(([id, name, description]) => ({ id: 'builtin-' + id, name, description })),
   );
   constructor(private readonly dir: string) {}
+  setFilter(filter: (skill: Skill) => boolean): void { this.filter = filter; }
   latestCatalogSummary(): string { return this.cachedCatalogText; }
   private file(id: string) { if (!idPattern.test(id)) throw new Error('无效的技能标识'); return join(this.dir, id + '.json'); }
   private async all(): Promise<Array<Skill & { text: string }>> {
@@ -78,7 +80,7 @@ export class SkillStore {
         entries.push({ ...parsed, id: 'builtin-' + id, enabled: true, createdAt: '2026-10-15T00:00:00.000Z' });
       }
     }
-    this.cachedCatalogText = formatSkillCatalog(entries.filter(e => e.enabled));
+    this.cachedCatalogText = formatSkillCatalog(entries.filter(e => e.enabled && (!this.filter || this.filter(e))));
     return entries;
   }
   private serial<T>(operation: () => Promise<T>): Promise<T> {
@@ -94,7 +96,7 @@ export class SkillStore {
     const temporary = join(this.dir, 'index.' + randomUUID() + '.tmp');
     await writeFile(temporary, JSON.stringify(entries.map(({ id, enabled }) => ({ id, enabled }))), { encoding: 'utf8', mode: 0o600 });
     await rename(temporary, join(this.dir, 'index.json'));
-    this.cachedCatalogText = formatSkillCatalog(entries.filter(e => e.enabled));
+    this.cachedCatalogText = formatSkillCatalog(entries.filter(e => e.enabled && (!this.filter || this.filter(e))));
   }
   async list(): Promise<Skill[]> { await this.queue; return (await this.all()).map(({ text: _text, ...entry }) => entry); }
   async read(id: string) { await this.queue; const entry = (await this.all()).find(s => s.id === id); if (!entry) throw new Error('技能不存在'); return entry; }
@@ -136,24 +138,33 @@ function formatSkillCatalog(enabled: Array<{ id: string; name: string; descripti
   return `\n<available-skills>\nEnabled workflow skills (metadata only; call \`activate_skill\` with \`id\` or \`name\` ONLY when a skill directly matches the user's request):\n${items}\n</available-skills>`;
 }
 
+export interface ActivateSkillGuards {
+  /** Ensures the calling thread is a local conversation (blocks cross-boundary host reads in SSH/Container chats). */
+  assertLocal?: (threadId: string) => void;
+  /** Checks whether the skill directory has explicit WorkspaceAccess consent before reading companion files. */
+  canReadDir?: (dir: string) => boolean;
+  /** Validates plugin ownership for plugin-origin skills. */
+  assertSkill?: (id: string, origin: string) => void;
+}
+
 /** Progressive Skill Disclosure tool (`U9a`): loads full SKILL.md + optional companion `references/` file on demand. */
-export function createActivateSkillTool(skills: SkillStore): ToolDefinition {
+export function createActivateSkillTool(skills: SkillStore, guards?: ActivateSkillGuards): ToolDefinition {
   return {
     name: 'activate_skill',
     description:
-      'Load the full instructions of an enabled workflow skill on demand (progressive disclosure), or read a companion file under its local `references/` directory when available. Does not execute scripts or grant permissions.',
+      'Load the full instructions of an enabled workflow skill on demand (progressive disclosure), or read a companion file under its local `references/` directory when the skill directory is an authorized workspace. Does not execute scripts or grant permissions.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string', maxLength: 100, description: 'Skill ID (e.g. builtin-code-review or skill-...) or exact skill name' },
-        referencePath: { type: 'string', maxLength: 240, description: 'Optional relative path inside the skill folder’s references/ directory (file-imported skills only)' },
+        referencePath: { type: 'string', maxLength: 240, description: 'Optional relative path inside the skill folder’s references/ directory (authorized local skill directories only)' },
       },
       required: ['id'],
       additionalProperties: false,
     },
     subject: (input) => `skill:${String((input as { id?: string })?.id ?? '')}`,
     summarize: (input) => `加载技能说明 ${String((input as { id?: string })?.id ?? '')}`,
-    async *run(input) {
+    async *run(input, ctx) {
       const { id: query, referencePath } = input as { id: string; referencePath?: string };
       try {
         const list = await skills.list();
@@ -166,13 +177,19 @@ export function createActivateSkillTool(skills: SkillStore): ToolDefinition {
           yield { type: 'result', text: `Error: skill "${match.name}" (${match.id}) is currently disabled by the user.`, isError: true };
           return;
         }
+        guards?.assertSkill?.(match.id, match.origin);
         const full = await skills.read(match.id);
         let companion = '';
         if (referencePath) {
+          guards?.assertLocal?.(ctx.threadId);
           if (full.source !== 'file' || !isAbsolute(full.origin)) {
             companion = '\n\n[Note: companion referencePath is only supported for local file-imported skills.]';
           } else {
             const skillDir = dirname(full.origin);
+            if (guards?.canReadDir && !guards.canReadDir(skillDir)) {
+              yield { type: 'result', text: `Error: companion referencePath requires "${skillDir}" to be an approved workspace directory.`, isError: true };
+              return;
+            }
             const refsRoot = resolve(skillDir, 'references');
             const cleanRel = referencePath.replace(/^references[\\/]+/i, '');
             const target = resolve(refsRoot, cleanRel);

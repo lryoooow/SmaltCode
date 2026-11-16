@@ -301,7 +301,7 @@ export class DesktopStore {
       if (this.current === id) this.rememberRead(id)
       const liveTurnChanged = s.runningSince !== before?.runningSince || s.status !== before?.status
       const keepLiveError = liveTurnChanged || result.status.lifecycle !== 'idle' || s.error !== before?.error
-      return { ...s, items: [...items.values()], steering: this.mergeSteering(result.steering ?? [], s.steering ?? []), status: s.status !== before?.status ? s.status : result.status, usage: s.usage !== before?.usage ? s.usage : result.usage ?? s.usage, summaries: s.summaries !== before?.summaries ? s.summaries : result.summaries ?? s.summaries, contextNotice: liveTurnChanged || s.contextNotice !== before?.contextNotice ? s.contextNotice : result.contextNotice, error: keepLiveError ? s.error : result.meta.lastOutcome === 'failed' ? result.meta.lastError ?? s.error : undefined, unread: this.current === id ? false : s.unread }
+      return { ...s, items: [...items.values()], steering: this.mergeSteering(result.steering ?? [], s.steering ?? []), status: s.status !== before?.status ? s.status : result.status, usage: s.usage !== before?.usage ? s.usage : result.usage ?? s.usage, summaries: this.mergeSummaries(result.summaries ?? [], s.summaries ?? []), contextNotice: liveTurnChanged || s.contextNotice !== before?.contextNotice ? s.contextNotice : result.contextNotice, error: keepLiveError ? s.error : result.meta.lastOutcome === 'failed' ? result.meta.lastError ?? s.error : undefined, unread: this.current === id ? false : s.unread }
     })
   }
   select(id: string | null) { this.current = id }
@@ -336,11 +336,16 @@ export class DesktopStore {
   }
   async initWorkspace(params: { threadId?: string; cwd?: string; overwrite?: boolean }) {
     if (!this.api || !this.state.connected) throw new Error('内核未连接')
-    return this.api.call<{ path: string; written: boolean; exists: boolean; content: string }>('workspace/init', params)
+    return this.api.call<{ path: string; written: boolean; existed: boolean; exists?: boolean; content: string }>('workspace/init', params)
   }
   async compactThread(threadId: string) {
     if (!this.api || !this.state.connected) throw new Error('内核未连接')
     return this.api.call<{ compacted: boolean; reason?: string }>('thread/compact/start', { threadId })
+  }
+  private mergeSummaries(first: TurnSummary[], second: TurnSummary[]): TurnSummary[] {
+    const map = new Map(first.map(entry => [entry.turnId, entry]))
+    for (const entry of second) map.set(entry.turnId, entry)
+    return [...map.values()]
   }
   private mergeSteering(first: SteeringEntry[], second: SteeringEntry[]): SteeringEntry[] {
     const entries = new Map(first.map(entry => [entry.id, entry]));

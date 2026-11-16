@@ -10,7 +10,7 @@ import { IntegrationVault } from './integration-vault.js';
 import { integrationCwd, integrationDigest, mcpConfig, pluginManifest, discoverTool, boundedSchema, integrationURL } from './integration-policy.js';
 import { integrationFetch } from './integration-network.js';
 import { loginMcp, oauthToken } from './integration-auth.js';
-import { prepareLaunch } from './process-manager.js';
+import { PROCESS_BORN_AT, prepareLaunch } from './process-manager.js';
 import { parseSkill, type SkillStore } from './skills.js';
 import type { ExternalResult, IntegrationState, McpConfig, McpServer, McpState, McpTool, Plugin, PluginPreview } from '../shared/integrations.js';
 
@@ -100,7 +100,7 @@ export class Integrations {
       client.setNotificationHandler('notifications/tools/list_changed', async () => { this.revoke(runtime); runtime.tools = []; runtime.error = '服务工具列表已变化，请刷新并重新核对启用项'; this.changed(); });
       if (launch) {
         const native = join(this.options.runtime, 'native').replace(/([\\/])app\.asar([\\/]|$)/i, '$1app.asar.unpacked$2');
-        const config = { file: launch.file, args: launch.args, parentPid: process.pid, parentStartedAt: Date.now() - process.uptime() * 1000, stdio: true };
+        const config = { file: launch.file, args: launch.args, parentPid: process.pid, parentStartedAt: PROCESS_BORN_AT, stdio: true };
         const env = { ...getDefaultEnvironment(), PYTHONIOENCODING: 'utf-8', ...secret.env };
         const transport = new OwnedStdio({ command: process.platform === 'win32' ? join(native, 'SmaltProcessSupervisor.exe') : launch.file, args: process.platform === 'win32' ? [Buffer.from(JSON.stringify(config)).toString('base64')] : launch.args, env, cwd: launch.cwd, stderr: 'pipe', maxBufferSize: 2 * 1024 * 1024 });
         transport.stderr?.on('data', data => { runtime.log = this.vault.redact(runtime.log + String(data)).slice(-6000); this.changed(); }); runtime.transport = transport;

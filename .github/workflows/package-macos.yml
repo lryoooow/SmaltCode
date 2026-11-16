@@ -14,7 +14,7 @@ on:
           - arm64
           - x64
       release_tag:
-        description: 'Optional existing GitHub Release tag (e.g. v0.0.8) to attach DMG/ZIP assets to'
+        description: 'Optional existing GitHub Release tag (e.g. v0.0.9) to attach DMG/ZIP assets to'
         required: false
         default: ''
         type: string

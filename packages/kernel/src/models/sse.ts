@@ -26,7 +26,7 @@ export async function* parseSseEvents(
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
     while (true) {
-      if (signal?.aborted) break;
+      if (signal?.aborted) throw new DOMException('Interrupted', 'AbortError');
       let timer: ReturnType<typeof setTimeout> | undefined;
       const readPromise = reader.read();
       const result = stallTimeoutMs > 0
@@ -41,10 +41,15 @@ export async function* parseSseEvents(
             }),
           ]).finally(() => { if (timer) clearTimeout(timer); })
         : await readPromise;
-      if (signal?.aborted) break;
+      if (signal?.aborted) throw new DOMException('Interrupted', 'AbortError');
       const { done, value } = result;
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      if (done) {
+        buffer += decoder.decode();
+        if (!buffer) break;
+        buffer += '\n';
+      } else {
+        buffer += decoder.decode(value, { stream: true });
+      }
       let idx: number;
       while ((idx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, idx).replace(/\r$/, '');
@@ -60,6 +65,7 @@ export async function* parseSseEvents(
           if (data !== '[DONE]') yield { event: currentEvent, data };
         }
       }
+      if (done) break;
     }
   } finally {
     signal?.removeEventListener('abort', onAbort);

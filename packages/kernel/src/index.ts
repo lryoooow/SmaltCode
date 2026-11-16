@@ -70,6 +70,7 @@ export {
   type ModelDelta,
   type ModelRequest,
   type ReasoningEffort,
+  type ThinkingBlock,
   type ToolCall,
   type ToolSpec,
   type WireApi,
@@ -107,6 +108,6 @@ export { ensureProjectTrust, isProjectTrusted, hasProjectSettings, trustProject,
 export { Compactor, type CompactOptions, type CompactResult } from './compact/compactor.js';
 export { JsonlThreadStore } from './storage/jsonl.js';
 export { replayEvents, type StoreEvent, type ThreadStore, type ReplayedThread } from './storage/thread-store.js';
-export { newId, nowIso, truncate, unifiedDiff, errorMessage } from './util.js';
+export { newId, nowIso, truncate, budgetToolOutput, unifiedDiff, errorMessage, wellFormedUtf16 } from './util.js';
 
 export type { RunPolicy, RunMetrics } from './core/run-policy.js';

@@ -124,7 +124,10 @@ export class ModelGateway {
       ? 'responses'
       : undefined;
     const adapter = this.adapterFor(ref.provider, wireOverride);
-    const requestedOutput = req.maxOutputTokens ?? (adapter.wire === 'anthropic' ? 8192 : undefined);
+    const anthropicDefault = req.reasoningEffort
+      ? ({ low: 9216, medium: 12288, high: 16384, max: 24576 } as const)[req.reasoningEffort]
+      : 8192;
+    const requestedOutput = req.maxOutputTokens ?? (adapter.wire === 'anthropic' ? anthropicDefault : undefined);
     const maxOutputTokens = model?.maxOutputTokens && requestedOutput ? Math.min(requestedOutput, model.maxOutputTokens) : req.maxOutputTokens;
     yield* adapter.stream({ ...req, ...(maxOutputTokens ? { maxOutputTokens } : {}), model: ref.model });
   }

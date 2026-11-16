@@ -24,7 +24,14 @@ const root = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..'));
 const desktop = join(root, 'packages/desktop'), require = createRequire(import.meta.url);
 const run = (file, args, options = {}) => execFileSync(file, args, { cwd: root, stdio: 'inherit', timeout: 120_000, ...options });
 const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-if (adhoc) env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
+if (adhoc) {
+  env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
+  env.CSC_FOR_PULL_REQUEST = 'true';
+  env.SMALT_OSX_SIGN_PATH = require.resolve('@electron/osx-sign');
+} else if (env.CSC_NAME) {
+  // electron-builder's findIdentity rejects the "Developer ID Application:" prefix that validateMacBuild checks for
+  env.CSC_NAME = env.CSC_NAME.replace(/^Developer ID Application:\s*/i, '').trim();
+}
 if (!adhoc) {
   // Check installed tools and notarization credentials without exposing their values.
   run('/usr/bin/xcrun', ['--find', 'notarytool']);
@@ -37,7 +44,7 @@ const stage = mkdtempSync(join(scratch, 'mac-package-'));
 if (dirname(realpathSync(stage)) !== realpathSync(scratch)) throw new Error('Invalid Mac build staging directory');
 const builderConfig = adhoc ? 'electron-builder.mac-adhoc.yml' : 'electron-builder.mac.yml';
 // Candidates are retained on failure. Previous Windows/Mac artifacts are never removed.
-for (const file of ['dist', 'assets', 'build', 'electron-builder.yml', builderConfig, 'after-pack-mac.cjs']) cpSync(join(desktop, file), join(stage, file), { recursive: true, verbatimSymlinks: true });
+for (const file of ['dist', 'assets', 'build', 'electron-builder.yml', builderConfig, 'after-pack-mac.cjs', ...(adhoc ? ['sign-mac-adhoc.cjs'] : [])]) cpSync(join(desktop, file), join(stage, file), { recursive: true, verbatimSymlinks: true });
 const pkg = JSON.parse(readFileSync(join(desktop, 'package.json'), 'utf8'));
 if (pkg.version !== JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version) throw new Error('Desktop/root version mismatch');
 writeFileSync(join(stage, 'package.json'), JSON.stringify({ name: 'smaltcode-desktop', version: pkg.version, description: pkg.description, author: pkg.author, license: pkg.license, main: pkg.main, devDependencies: { electron: pkg.devDependencies.electron } }, null, 2));

@@ -12,6 +12,7 @@ import {
   type ModelAdapter,
   type ModelDelta,
   type ModelRequest,
+  type ThinkingBlock,
 } from '../types.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -25,10 +26,15 @@ export interface AnthropicAdapterOptions {
   stallTimeoutMs?: number;
 }
 
-export function toAnthropicWire(messages: ChatMessage[]): { system?: string; messages: unknown[] } {
+export function toAnthropicWire(messages: ChatMessage[], includeThinking = false): { system?: string; messages: unknown[] } {
   const systemTexts: string[] = [];
   const out: any[] = [];
-  for (const m of messages) {
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === 'user') { lastUserIdx = i; break; }
+  }
+  for (let idx = 0; idx < messages.length; idx++) {
+    const m = messages[idx]!;
     if (m.role === 'system') {
       systemTexts.push(m.content);
     } else if (m.role === 'user') {
@@ -53,6 +59,15 @@ export function toAnthropicWire(messages: ChatMessage[]): { system?: string; mes
       }
     } else if (m.role === 'assistant') {
       const blocks: any[] = [];
+      if (includeThinking && idx > lastUserIdx && m.thinkingBlocks?.length) {
+        for (const tb of m.thinkingBlocks) {
+          if (tb.type === 'thinking' && tb.signature) {
+            blocks.push({ type: 'thinking', thinking: tb.thinking, signature: tb.signature });
+          } else if (tb.type === 'redacted_thinking' && tb.data) {
+            blocks.push({ type: 'redacted_thinking', data: tb.data });
+          }
+        }
+      }
       if (m.content) blocks.push({ type: 'text', text: m.content });
       for (const tc of m.toolCalls ?? []) {
         blocks.push({
@@ -123,9 +138,11 @@ export class AnthropicAdapter implements ModelAdapter {
   }
 
   async *stream(req: ModelRequest): AsyncIterable<ModelDelta> {
-    const wire = toAnthropicWire(req.messages);
+    const budgetMap = { low: 1024, medium: 4096, high: 8192, max: 16384 } as const;
+    const maxTokens = req.maxOutputTokens ?? (req.reasoningEffort ? budgetMap[req.reasoningEffort] + 8192 : 8192);
+    const useThinking = Boolean(req.reasoningEffort && maxTokens >= 2048);
+    const wire = toAnthropicWire(req.messages, useThinking);
     const cacheEnabled = this.opts.enablePromptCache !== false;
-    const maxTokens = req.maxOutputTokens ?? 8192;
     const body: Record<string, unknown> = {
       model: req.model,
       max_tokens: maxTokens,
@@ -145,8 +162,7 @@ export class AnthropicAdapter implements ModelAdapter {
         ...(cacheEnabled && idx === req.tools.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}),
       }));
     }
-    if (req.reasoningEffort && maxTokens >= 2048) {
-      const budgetMap = { low: 1024, medium: 4096, high: 8192, max: 16384 } as const;
+    if (useThinking && req.reasoningEffort) {
       const budget = Math.min(budgetMap[req.reasoningEffort], Math.max(1024, maxTokens - 1024));
       body.thinking = { type: 'enabled', budget_tokens: budget };
     }
@@ -168,6 +184,7 @@ export class AnthropicAdapter implements ModelAdapter {
         signal: req.signal,
       });
     } catch (err) {
+      if ((err as { name?: string })?.name === 'AbortError' || req.signal?.aborted) throw err;
       throw new ModelError(
         `Request to ${this.opts.baseUrl} failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -177,10 +194,18 @@ export class AnthropicAdapter implements ModelAdapter {
       const errBody = await readErrorBody(res.clone());
       if (/thinking|cache_control/i.test(errBody)) {
         const retryBody: Record<string, unknown> = { ...body };
-        if (/thinking/i.test(errBody)) delete retryBody.thinking;
-        if (/cache_control/i.test(errBody)) {
-          retryBody.messages = wire.messages;
-          if (wire.system) retryBody.system = wire.system;
+        const strippedThinking = /thinking/i.test(errBody);
+        const strippedCache = /cache_control/i.test(errBody);
+        const fallbackWire = strippedThinking ? toAnthropicWire(req.messages, false) : wire;
+        if (strippedThinking) {
+          delete retryBody.thinking;
+          retryBody.messages = cacheEnabled && !strippedCache
+            ? applyAnthropicCacheBreakpoints(fallbackWire.messages as any[])
+            : fallbackWire.messages;
+        }
+        if (strippedCache) {
+          retryBody.messages = fallbackWire.messages;
+          if (fallbackWire.system) retryBody.system = fallbackWire.system;
           if (req.tools.length) {
             retryBody.tools = req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
           }
@@ -207,6 +232,7 @@ export class AnthropicAdapter implements ModelAdapter {
     /** index of the content block currently being assembled */
     let blockIndex = -1;
     const toolIdByBlock = new Map<number, string>();
+    const thinkingByBlock = new Map<number, ThinkingBlock>();
 
     const buildUsageDelta = (): Extract<ModelDelta, { type: 'usage' }> => ({
       type: 'usage',
@@ -238,18 +264,47 @@ export class AnthropicAdapter implements ModelAdapter {
             sawToolUse = true;
             toolIdByBlock.set(blockIndex, block.id);
             yield { type: 'toolCallStart', id: block.id, name: block.name ?? '' };
+          } else if (block?.type === 'thinking') {
+            const initial = typeof block.thinking === 'string' ? block.thinking : '';
+            const sig = typeof block.signature === 'string' ? block.signature : '';
+            thinkingByBlock.set(blockIndex, { type: 'thinking', thinking: initial, signature: sig });
+            if (initial) yield { type: 'reasoning', text: initial };
+          } else if (block?.type === 'redacted_thinking' && typeof block.data === 'string') {
+            thinkingByBlock.set(blockIndex, { type: 'redacted_thinking', data: block.data });
           }
           break;
         }
         case 'content_block_delta': {
+          const idx = ev.index ?? blockIndex;
           const d = ev.delta;
           if (d?.type === 'text_delta' && d.text) {
             yield { type: 'text', text: d.text };
           } else if (d?.type === 'thinking_delta' && d.thinking) {
+            let entry = thinkingByBlock.get(idx);
+            if (!entry || entry.type !== 'thinking') {
+              entry = { type: 'thinking', thinking: '', signature: '' };
+              thinkingByBlock.set(idx, entry);
+            }
+            entry.thinking += d.thinking;
             yield { type: 'reasoning', text: d.thinking };
+          } else if (d?.type === 'signature_delta' && typeof d.signature === 'string') {
+            let entry = thinkingByBlock.get(idx);
+            if (!entry || entry.type !== 'thinking') {
+              entry = { type: 'thinking', thinking: '', signature: '' };
+              thinkingByBlock.set(idx, entry);
+            }
+            entry.signature += d.signature;
           } else if (d?.type === 'input_json_delta' && d.partial_json) {
-            const id = toolIdByBlock.get(ev.index ?? blockIndex);
+            const id = toolIdByBlock.get(idx);
             if (id) yield { type: 'toolCallDelta', id, argsDelta: d.partial_json };
+          }
+          break;
+        }
+        case 'content_block_stop': {
+          const idx = ev.index ?? blockIndex;
+          const tb = thinkingByBlock.get(idx);
+          if (tb && (tb.type === 'redacted_thinking' || tb.signature)) {
+            yield { type: 'thinkingBlock', block: tb };
           }
           break;
         }
@@ -273,7 +328,6 @@ export class AnthropicAdapter implements ModelAdapter {
         }
       }
     }
-    yield buildUsageDelta();
-    yield { type: 'done', finishReason: sawToolUse ? 'toolCalls' : finish };
+    throw new ModelError('Anthropic stream ended before message_stop');
   }
 }

@@ -41,11 +41,11 @@ import {
   type ThreadMeta,
   type UserInputRequest,
 } from '../protocol/types.js';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { smaltHome } from '../config/settings.js';
 import { CheckpointStore } from '../storage/checkpoints.js';
-import { isInsideWorkspace } from '../tools/workspace-guard.js';
+import { isInsideWorkspace, isSensitivePath } from '../tools/workspace-guard.js';
 
 export interface ClientPort {
   notify(method: string, params?: unknown): void;
@@ -83,10 +83,11 @@ export class Kernel {
   private client: ClientPort;
   private settingsRevision = 0;
   private readonly explicitSettings: boolean;
-  private executionContext?: (threadId:string)=>string|undefined;
+  private executionContext?: (threadId: string) => string | { prompt: string; isolateHooks?: boolean } | undefined;
   /** Trusted host target metadata; never populated from RPC/model arguments. */
-  setExecutionContext(value:(threadId:string)=>string|undefined):void { this.executionContext=value; }
+  setExecutionContext(value: (threadId: string) => string | { prompt: string; isolateHooks?: boolean } | undefined): void { this.executionContext = value; }
   markLocalSpace(threadId: string): void { const rt = this.threads.get(threadId) ?? this.threads.resume(threadId); const previous = rt.meta.localSpace; rt.meta.localSpace = true; try { this.store.append(threadId, { t: 'meta', meta: { ...rt.meta } }); } catch (error) { rt.meta.localSpace = previous; throw error; } this.client.notify('thread/updated', { threadId, meta: { ...rt.meta } }); }
+  rebindLocalSpaceCwd(threadId: string, nextCwd: string): ThreadMeta { const rt = this.threads.get(threadId) ?? this.threads.resume(threadId); const previous = { cwd: rt.meta.cwd, localSpace: rt.meta.localSpace }; rt.meta.cwd = resolve(nextCwd); rt.meta.localSpace = true; rt.runner = undefined; try { this.store.append(threadId, { t: 'meta', meta: { ...rt.meta } }); } catch (error) { rt.meta.cwd = previous.cwd; rt.meta.localSpace = previous.localSpace; throw error; } this.client.notify('thread/updated', { threadId, meta: { ...rt.meta } }); return { ...rt.meta }; }
   markSshTarget(threadId:string,target:ThreadMeta['sshTarget']):void {const rt=this.threads.get(threadId)??this.threads.resume(threadId),previous=rt.meta.sshTarget;rt.meta.sshTarget=target;try{this.store.append(threadId,{t:'meta',meta:{...rt.meta}});}catch(error){rt.meta.sshTarget=previous;throw error;}this.client.notify('thread/updated',{threadId,meta:{...rt.meta}});}
   markContainerTarget(threadId:string,target:ThreadMeta['containerTarget']):void {const rt=this.threads.get(threadId)??this.threads.resume(threadId),previous=rt.meta.containerTarget;rt.meta.containerTarget=target;try{this.store.append(threadId,{t:'meta',meta:{...rt.meta}});}catch(error){rt.meta.containerTarget=previous;throw error;}this.client.notify('thread/updated',{threadId,meta:{...rt.meta}});}
 
@@ -121,7 +122,7 @@ export class Kernel {
         const targetCwd = rt?.meta.cwd ?? this.cwd;
         const threadSettings = loadSettings(targetCwd, undefined, this.settings);
         const modelRef = rt ? { ...rt.modelRef } : resolveModelRef(undefined, threadSettings);
-        return { gateway: this.gateway.fork(threadSettings), modelRef, settings: threadSettings };
+        return { gateway: this.gateway.fork(threadSettings), modelRef, settings: threadSettings, reasoningEffort: rt?.meta.reasoningEffort };
       },
       permissionsFor: (threadId) => {
         const rt = this.threads.get(threadId);
@@ -134,6 +135,13 @@ export class Kernel {
       hooks: this.hooks,
       requestApproval: (req) => this.client.requestApproval(req),
       cancelApproval: (id) => this.client.cancelApproval?.(id),
+      onRememberAlways: (rule) => {
+        this.persistAllowRule(rule);
+      },
+      onUsage: (threadId, inTok, outTok) => {
+        const rt = this.threads.get(threadId);
+        if (rt) rt.addUsage(inTok, outTok);
+      },
       log: this.logFn,
     }));
     const orchestrator = new ToolOrchestrator({
@@ -163,6 +171,7 @@ export class Kernel {
       runner,
       runnerFor: (rt) => this.runnerFor(rt),
       permissionsChanged: (rt) => this.updatePermissions(rt),
+      assertWorkspaceReady: (cwd) => this.checkpoints.assertAvailable(cwd),
       settings: () => this.settings,
       contextWindowFor: (ref) => this.gateway.contextWindowFor(ref),
       notify: (method, params) => this.client.notify(method, params),
@@ -220,12 +229,21 @@ export class Kernel {
   private runnerFor(rt: ThreadRuntime): TurnRunner {
     const requestedMode = rt.meta.permissionMode ?? this.permissions.mode;
     const settings = loadSettings(rt.meta.cwd, { permissionMode: requestedMode }, this.settings);
-    const hostTarget=this.executionContext?.(rt.meta.id);
-    const fingerprint = JSON.stringify({ settings, requestedMode, managed: !!rt.executionPolicy,hostTarget });
+    const rawExecCtx = this.executionContext?.(rt.meta.id);
+    const hostTarget = typeof rawExecCtx === 'string' ? rawExecCtx : rawExecCtx?.prompt;
+    const isolateHooks = Boolean(
+      rt.executionPolicy ||
+      rt.meta.sshTarget ||
+      rt.meta.containerTarget ||
+      (typeof rawExecCtx === 'object' && rawExecCtx !== null
+        ? rawExecCtx.isolateHooks
+        : typeof rawExecCtx === 'string' && /^Host-selected execution target:/i.test(rawExecCtx)),
+    );
+    const fingerprint = JSON.stringify({ settings, requestedMode, managed: !!rt.executionPolicy, isolateHooks, hostTarget });
     if (rt.runner && rt.settingsRevision === this.settingsRevision && rt.settingsFingerprint === fingerprint) return rt.runner;
     this.updatePermissions(rt);
     const permissions = rt.permissions!;
-    const hooks = rt.executionPolicy||hostTarget ? new HookBus(this.logFn) : this.hooks.fork(settings.hooks ?? {}, { cwd: rt.meta.cwd, threadId: rt.meta.id });
+    const hooks = isolateHooks ? new HookBus(this.logFn) : this.hooks.fork(settings.hooks ?? {}, { cwd: rt.meta.cwd, threadId: rt.meta.id });
     const gateway = this.gateway.fork(settings);
     const orchestrator = new ToolOrchestrator({
       checkpoints: this.checkpoints,
@@ -243,7 +261,7 @@ export class Kernel {
     rt.runner = new TurnRunner({
       gateway, hooks, orchestrator, tools: this.tools, store: this.store,
       compactor: new Compactor(gateway, hooks, { ...settings.compact, contextWindow: gateway.contextWindowFor(rt.modelRef) }),
-      pipeline: new ContextPipeline([envInterceptor(), repoInstructionsInterceptor(), systemInterceptor(), {name:'execution-target',priority:2100,intercept:async ctx=>{const target=this.executionContext?.(ctx.threadId);if(target)ctx.systemExtras.push(target);}}, {
+      pipeline: new ContextPipeline([envInterceptor(), repoInstructionsInterceptor(), systemInterceptor(), {name:'execution-target',priority:2100,intercept:async ctx=>{const raw=this.executionContext?.(ctx.threadId);const target=typeof raw==='string'?raw:raw?.prompt;if(target)ctx.systemExtras.push(target);}}, {
         name: 'project', priority: 1600,
         intercept: async ctx => {
           if (!rt.meta.projectId) return;
@@ -262,10 +280,10 @@ export class Kernel {
   async handle(method: string, params: unknown): Promise<unknown> {
     if (params !== undefined && params !== null && (typeof params !== 'object' || Array.isArray(params))) throw new RpcError(RpcErrorCode.InvalidParams, 'params must be an object');
     const values = (params ?? {}) as Record<string, unknown>;
-    for (const key of ['cwd', 'model', 'title', 'threadId', 'projectId', 'input', 'displayText', 'checkpointId', 'name', 'instructions', 'upToItemId']) {
+    for (const key of ['cwd', 'model', 'title', 'threadId', 'projectId', 'input', 'message', 'text', 'displayText', 'checkpointId', 'name', 'instructions', 'upToItemId']) {
       const value = values[key];
       if (value === undefined || value === null && (key === 'projectId' || key === 'cwd')) continue;
-      if (typeof value !== 'string' || value.length > (key === 'input' ? 500000 : key === 'instructions' ? 20000 : 10000)) throw new RpcError(RpcErrorCode.InvalidParams, 'Invalid parameter: ' + key);
+      if (typeof value !== 'string' || value.length > (key === 'input' || key === 'message' || key === 'text' ? 500000 : key === 'instructions' ? 20000 : 10000)) throw new RpcError(RpcErrorCode.InvalidParams, 'Invalid parameter: ' + key);
     }
     if (values.includeArchived !== undefined && typeof values.includeArchived !== 'boolean') throw new RpcError(RpcErrorCode.InvalidParams, 'Invalid includeArchived');
     const p = values as Record<string, never>;
@@ -304,7 +322,12 @@ export class Kernel {
             ? resolve(p.cwd)
             : this.cwd;
         const agentsPath = join(targetCwd, 'AGENTS.md');
-        const existed = existsSync(agentsPath);
+        let st: import('node:fs').Stats | undefined;
+        try { st = lstatSync(agentsPath); } catch { /* ENOENT */ }
+        if (st?.isSymbolicLink() || !isInsideWorkspace(targetCwd, agentsPath) || isSensitivePath(targetCwd, agentsPath)) {
+          throw new RpcError(RpcErrorCode.InvalidParams, 'Cannot write AGENTS.md: target is a symbolic link or outside workspace boundaries');
+        }
+        const existed = Boolean(st);
         const content = draftAgentsMd(targetCwd);
         const shouldWrite = p.write !== false && (!existed || Boolean(p.overwrite));
         if (shouldWrite) {

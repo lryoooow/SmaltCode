@@ -49,7 +49,7 @@ class ProcessSupervisor {
       if(Math.Abs(born-config.parentStartedAt)>10000 || parent.HasExited) throw new Exception("Parent process identity changed");
       job=CreateJobObject(IntPtr.Zero,null);
       // 0x2000 = KILL_ON_JOB_CLOSE, 0x0400 = DIE_ON_UNHANDLED_EXCEPTION, 0x0008 = ACTIVE_PROCESS limit (fork-bomb guard).
-      var limits=new ExtendedLimits(); limits.Basic.Flags=0x2408; limits.Basic.ActiveProcessLimit=64;
+      var limits=new ExtendedLimits(); limits.Basic.Flags=0x2408; limits.Basic.ActiveProcessLimit=512;
       if(job==IntPtr.Zero || !SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf(limits)) || !AssignProcessToJobObject(job,Process.GetCurrentProcess().Handle)) throw new Exception("Cannot establish process job: "+Marshal.GetLastWin32Error());
       IntPtr ownedJob=job;
       var monitor=new Thread(()=> { try { parent.WaitForExit(); } finally { TerminateJobObject(ownedJob,126); } });
@@ -58,8 +58,9 @@ class ProcessSupervisor {
       string arguments=String.Join(" ",Array.ConvertAll(config.args,Quote));
       // cmd /s /c parses its final argument itself, rather than CRT backslash escaping.
       if(Path.GetFileName(config.file).Equals("cmd.exe",StringComparison.OrdinalIgnoreCase)) {
-        if(config.args.Length!=4 || config.args[0]!="/d" || config.args[1]!="/s" || config.args[2]!="/c") throw new Exception("Invalid shell wrapper");
-        arguments="/d /s /c "+config.args[3];
+        if(config.args.Length==4 && config.args[0]=="/d" && config.args[1]=="/s" && config.args[2]=="/c") arguments="/d /s /c "+config.args[3];
+        else if(config.args.Length==5 && config.args[0]=="/V:OFF" && config.args[1]=="/d" && config.args[2]=="/s" && config.args[3]=="/c") arguments="/V:OFF /d /s /c "+config.args[4];
+        else throw new Exception("Invalid shell wrapper");
       }
       var info=new ProcessStartInfo(config.file,arguments) { UseShellExecute=false };
       if(config.stdio) { info.RedirectStandardInput=true; info.RedirectStandardOutput=true; info.RedirectStandardError=true; info.CreateNoWindow=true; }

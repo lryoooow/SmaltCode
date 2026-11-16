@@ -12,6 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 
 export type HookEvent =
   | 'PreToolUse'
@@ -111,6 +112,21 @@ export class HookBus {
    * to execute (crash, spawn error, timeout), `anyFailed` is set — callers
    * treating hooks as security guards must degrade to `ask`, not pass through.
    */
+  private allHooks(): RegisteredHook[] {
+    return [...(this.parent ? this.parent.allHooks() : []), ...this.hooks];
+  }
+
+  private allCommandHooks(event: HookEvent): CommandHookConfig[] {
+    const combined = [...(this.parent ? this.parent.allCommandHooks(event) : []), ...(this.commandHooks[event] ?? [])];
+    const seen = new Set<string>();
+    return combined.filter((cfg) => {
+      const key = `${cfg.command}\0${cfg.timeoutMs ?? 10_000}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   async emit(event: HookEvent, payload: HookContext): Promise<HookResult | null> {
     payload = { ...this.context, ...payload };
     let decision: HookResult | null = null;
@@ -121,7 +137,7 @@ export class HookBus {
         : { decision: 'ask', reason: `a hook failed to execute (${why}); degrading to ask`, anyFailed: true };
     };
 
-    for (const { fn, name } of this.parent?.hooks ?? this.hooks) {
+    for (const { fn, name } of this.allHooks()) {
       try {
         const result = await fn(event, payload);
         if (result) decision = mergeDecision(decision, result);
@@ -130,8 +146,8 @@ export class HookBus {
       }
     }
 
-    const commands = this.commandHooks[event];
-    if (commands) {
+    const commands = this.allCommandHooks(event);
+    if (commands.length) {
       for (const cfg of commands) {
         const out = await runCommandHook(cfg, event, payload);
         if (out === 'failed') {
@@ -142,8 +158,11 @@ export class HookBus {
       }
     }
 
-    this.emitter.emit(event, payload);
-    this.parent?.emitter.emit(event, payload);
+    let cur: HookBus | undefined = this;
+    while (cur) {
+      cur.emitter.emit(event, payload);
+      cur = cur.parent;
+    }
     return decision;
   }
 
@@ -182,32 +201,54 @@ async function runCommandHook(
   payload: HookContext,
 ): Promise<HookDecision | 'failed' | null> {
   const isWin = process.platform === 'win32';
-  let child;
+  let child: ReturnType<typeof spawn>;
   try {
     child = spawn(
       isWin ? 'cmd.exe' : 'sh',
       isWin ? ['/d', '/s', '/c', cfg.command] : ['-c', cfg.command],
-      { stdio: ['pipe', 'pipe', 'pipe'], cwd: typeof payload.cwd === 'string' ? payload.cwd : undefined, windowsHide: true },
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: typeof payload.cwd === 'string' ? payload.cwd : undefined,
+        windowsHide: true,
+        detached: !isWin,
+      },
     );
   } catch {
     return 'failed';
   }
   let timedOut = false;
-  const timer = setTimeout(() => {
+  let forceResolve: ((code: number) => void) | undefined;
+  const killHookTree = () => {
     timedOut = true;
-    child.kill();
-  }, cfg.timeoutMs ?? 10_000);
+    try {
+      if (isWin && child.pid) {
+        spawn(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      } else if (child.pid) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+      } else {
+        child.kill('SIGKILL');
+      }
+    } catch { /* already exited */ }
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.stdin?.destroy();
+    setTimeout(() => forceResolve?.(-1), 500).unref();
+  };
+  const timer = setTimeout(killHookTree, cfg.timeoutMs ?? 10_000);
 
   const stdoutChunks: Buffer[] = [];
   let bytes = 0;
-  child.stdout.on('data', (d: Buffer) => { bytes += d.length; if (bytes > 64 * 1024) { timedOut = true; child.kill(); } else stdoutChunks.push(d); });
-  child.stderr.on('data', () => {});
-  child.stdin.on('error', () => {});
-  child.stdin.end(JSON.stringify({ event, ...payload }));
+  child.stdout?.on('data', (d: Buffer) => { bytes += d.length; if (bytes > 64 * 1024) killHookTree(); else stdoutChunks.push(d); });
+  child.stderr?.on('data', () => {});
+  child.stdin?.on('error', () => {});
+  child.stdin?.end(JSON.stringify({ event, ...payload }));
 
   const code = await new Promise<number>((resolve) => {
-    child.on('close', (c) => resolve(c ?? 0));
-    child.on('error', () => resolve(-1));
+    let settled = false;
+    const finish = (c: number) => { if (!settled) { settled = true; resolve(c); } };
+    forceResolve = finish;
+    child.on('close', (c) => finish(c ?? 0));
+    child.on('error', () => finish(-1));
   });
   clearTimeout(timer);
   if (timedOut || code !== 0) return 'failed';

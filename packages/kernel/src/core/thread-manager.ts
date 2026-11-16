@@ -16,13 +16,17 @@ import { displayCommand, itemAssessment } from '../protocol/assessment.js';
 
 export interface ThreadManagerDeps {
   store: ThreadStore;
-  runner: TurnRunner;
+  runner?: TurnRunner;
   runnerFor?: (rt: ThreadRuntime) => TurnRunner;
   permissionsChanged?: (rt: ThreadRuntime) => void;
+  assertWorkspaceReady?: (cwd: string) => void;
   settings: () => Settings;
-  contextWindowFor(ref: ModelRef): number;
+  contextWindowFor?: (ref: ModelRef) => number;
   notify(method: string, params?: unknown): void;
-  log(msg: string): void;
+  log?: (msg: string) => void;
+  defaultCwd?: string;
+  defaultModel?: () => ModelRef;
+  runnerFactory?: () => TurnRunner;
 }
 
 export class ThreadManager {
@@ -69,11 +73,13 @@ export class ThreadManager {
     if (!meta) throw new Error(`thread ${threadId} has no metadata (corrupt file?)`);
     const replayed: Pick<ReplayedThread, 'history' | 'lastUsage'> = replayEvents(events);
     const settings = this.deps.settings();
-    const modelRef = resolveModelRef(meta.model, settings);
-    // prefer stored provider when it exists
-    if (meta.provider && settings.providers[meta.provider]) {
-      modelRef.provider = meta.provider;
-    }
+    const modelRef: ModelRef =
+      meta.provider && settings.providers[meta.provider]
+        ? {
+            provider: meta.provider,
+            model: meta.model.startsWith(`${meta.provider}/`) ? meta.model.slice(meta.provider.length + 1) : meta.model,
+          }
+        : resolveModelRef(meta.model, settings);
     const runtime = new ThreadRuntime(meta, modelRef, replayed.history);
     runtime.usage = { ...replayed.lastUsage };
     runtime.items = replayItems(events, threadId);
@@ -190,12 +196,22 @@ export class ThreadManager {
         return false;
       });
       if (matchIdx === -1) throw new Error(`item not found in thread: ${targetId}`);
-      // Extend to the end of the turn containing matchIdx if a turn-ended follows before the next turn-started,
-      // unless the caller targeted a user-msg specifically and wants to keep through that turn's completion.
+      // Only absorb trailing bookkeeping events (usage / context-notice / turn-ended) when no further
+      // visible conversation/tool events occur after matchIdx; stop right at matchIdx if mid-turn!
       sliceEnd = matchIdx + 1;
       for (let i = matchIdx + 1; i < events.length; i++) {
         const ev = events[i]!;
-        if (ev.t === 'turn-started') break;
+        if (
+          ev.t === 'turn-started' ||
+          ev.t === 'user-msg' ||
+          ev.t === 'agent-msg' ||
+          ev.t === 'reasoning' ||
+          ev.t === 'tool-call' ||
+          ev.t === 'tool-result' ||
+          ev.t === 'plan'
+        ) {
+          break;
+        }
         sliceEnd = i + 1;
         if (ev.t === 'turn-ended') break;
       }
@@ -206,10 +222,15 @@ export class ThreadManager {
     const clonedBody: StoreEvent[] = [];
     const openToolCalls = new Map<string, string>();
     let completedTurns = 0;
+    let activeTurnId: string | null = null;
 
     for (const ev of events.slice(0, sliceEnd)) {
       if (ev.t === 'meta' || ev.t === 'steering') continue;
-      if (ev.t === 'turn-ended') completedTurns++;
+      if (ev.t === 'turn-started') activeTurnId = ev.turnId;
+      if (ev.t === 'turn-ended') {
+        completedTurns++;
+        activeTurnId = null;
+      }
       if (ev.t === 'tool-call') openToolCalls.set(ev.id, ev.tool);
       if (ev.t === 'tool-result') {
         openToolCalls.delete(ev.id);
@@ -231,6 +252,13 @@ export class ThreadManager {
         at: now,
       });
     }
+    if (activeTurnId) {
+      clonedBody.push({ t: 'turn-ended', turnId: activeTurnId, at: now });
+      completedTurns++;
+    }
+
+    const replayedFork = replayEvents(clonedBody);
+    const forkUsage = sliceEnd === events.length && srcMeta.usage ? { ...srcMeta.usage } : replayedFork.lastUsage;
 
     const baseTitle = opts?.title?.trim() || `${srcMeta.title} (分支)`;
     const newMeta: ThreadMeta = {
@@ -248,6 +276,7 @@ export class ThreadManager {
       localSpace: srcMeta.localSpace,
       sshTarget: srcMeta.sshTarget,
       containerTarget: srcMeta.containerTarget,
+      ...(forkUsage.inputTokens || forkUsage.outputTokens ? { usage: forkUsage } : {}),
       forkedFrom: { threadId: sourceThreadId, ...(opts?.upToItemId ? { itemId: opts.upToItemId } : {}) },
     };
 
@@ -317,6 +346,7 @@ export class ThreadManager {
   runManaged(threadId: string, input: import('../protocol/types.js').UserPrompt, policy: import('./run-policy.js').RunPolicy): Promise<import('./turn-runner.js').TurnOutcome> {
     const rt = this.require(threadId);
     if (rt.meta.archived || rt.executionPolicy || rt.stateMachine.isRunning() || this.chains.has(threadId)) throw new Error('对话已归档或仍有任务在运行');
+    this.deps.assertWorkspaceReady?.(rt.meta.cwd);
     for (const key of ['maxRequests', 'maxTokens', 'maxTools', 'deadlineAt'] as const) if (!Number.isSafeInteger(policy[key]) || policy[key] <= 0) throw new Error('无效的托管执行预算');
     rt.executionPolicy = policy;
     return this.enqueueTurn(rt, input).finally(() => { rt.executionPolicy = undefined; rt.runner = undefined; });
@@ -329,7 +359,7 @@ export class ThreadManager {
     if (rt.meta.archived) throw new Error('Restore the archived conversation before continuing it');
     if (rt.stateMachine.isRunning() || this.chains.has(threadId)) {
       rt.turnQueue.push(input);
-      this.deps.log(`thread ${threadId} busy — queued input (${rt.turnQueue.length} waiting)`);
+      this.deps.log?.(`thread ${threadId} busy — queued input (${rt.turnQueue.length} waiting)`);
       return Promise.resolve({
         turnId: 'queued',
         interrupted: false,
@@ -339,6 +369,7 @@ export class ThreadManager {
         error: 'queued behind a running turn',
       });
     }
+    this.deps.assertWorkspaceReady?.(rt.meta.cwd);
     return this.enqueueTurn(rt, input);
   }
 
@@ -347,11 +378,14 @@ export class ThreadManager {
     const rt = this.require(threadId);
     if (rt.executionPolicy) throw new Error('此对话正在执行托管任务，请先在持续任务中暂停后再手动继续');
     if (rt.meta.archived) throw new Error('Restore the archived conversation before continuing it');
-    if (rt.stateMachine.isRunning()) {
+    if (rt.stateMachine.isRunning() || this.chains.has(threadId)) {
       const entry = rt.steering.accept(message);
       return { queued: true, entry };
     }
-    void this.enqueueTurn(rt, message);
+    this.deps.assertWorkspaceReady?.(rt.meta.cwd);
+    void this.enqueueTurn(rt, message).catch((err) =>
+      this.deps.log?.(`steer turn failed: ${err instanceof Error ? err.message : err}`),
+    );
     return { queued: false };
   }
 
@@ -379,8 +413,12 @@ export class ThreadManager {
       rt.contextNotice = undefined;
       rt.stateMachine.transition('RUN_PREPARING');
       if (rt.meta.recovery) { delete rt.meta.recovery; this.deps.store.append(rt.meta.id, { t: 'meta', meta: { ...rt.meta } }); }
-      return Promise.resolve().then(() => (this.deps.runnerFor?.(rt) ?? this.deps.runner)
-        .runTurn(rt.stateMachine, this.runtimeAdapter(rt), input))
+      return Promise.resolve().then(() => {
+        this.deps.assertWorkspaceReady?.(rt.meta.cwd);
+        const runner = this.deps.runnerFor?.(rt) ?? this.deps.runner ?? this.deps.runnerFactory?.();
+        if (!runner) throw new Error('No TurnRunner configured');
+        return runner.runTurn(rt.stateMachine, this.runtimeAdapter(rt), input);
+      })
         .then((outcome) => {
           if (outcome.summary) rt.summaries.push({ ...outcome.summary, turnId: outcome.turnId });
           rt.meta.turnCount++;
@@ -417,10 +455,20 @@ export class ThreadManager {
 
   async compact(threadId: string): Promise<{ compacted: boolean; reason?: string }> {
     const rt = this.require(threadId);
-    if (rt.stateMachine.isRunning()) throw new Error('Stop the task before compacting');
-    rt.abort = new AbortController();
-    try { return await (this.deps.runnerFor?.(rt) ?? this.deps.runner).compact(rt.stateMachine, this.runtimeAdapter(rt)); }
-    finally { rt.abort = null; }
+    if (rt.meta.archived || rt.executionPolicy) throw new Error('对话已归档或正在执行托管任务，无法整理上下文');
+    if (rt.stateMachine.isRunning() || this.chains.has(threadId)) throw new Error('Stop the task before compacting');
+    const controller = new AbortController();
+    rt.abort = controller;
+    const runner = this.deps.runnerFor?.(rt) ?? this.deps.runner ?? this.deps.runnerFactory?.();
+    if (!runner) throw new Error('No TurnRunner configured');
+    const task = runner.compact(rt.stateMachine, this.runtimeAdapter(rt)).finally(() => {
+      if (rt.abort === controller) rt.abort = null;
+      rt.steering.finish();
+      if (this.chains.get(threadId) === task) this.chains.delete(threadId);
+      this.drainIfIdle(rt);
+    });
+    this.chains.set(threadId, task);
+    return task;
   }
 
   /** Drain the queued inputs when the machine came to rest "naturally". */
@@ -428,9 +476,9 @@ export class ThreadManager {
     if (rt.stateMachine.isRunning()) return;
     const next = rt.turnQueue.shift();
     if (next === undefined) return;
-    this.deps.log(`draining queued input for thread ${rt.meta.id}`);
+    this.deps.log?.(`draining queued input for thread ${rt.meta.id}`);
     void this.enqueueTurn(rt, next).catch((err) =>
-      this.deps.log(`drained turn failed: ${err instanceof Error ? err.message : err}`),
+      this.deps.log?.(`drained turn failed: ${err instanceof Error ? err.message : err}`),
     );
   }
 
@@ -453,7 +501,7 @@ export class ThreadManager {
       usageTotals: () => rt.snapshotUsage(),
       cachedUsageTotals: () => ({ lastCachedInputTokens: rt.lastCachedInputTokens, totalCachedInputTokens: rt.cachedInputTokens }),
       reasoningEffort: () => rt.meta.reasoningEffort,
-      contextWindow: () => rt.runner?.contextWindow ?? this.deps.contextWindowFor(rt.modelRef),
+      contextWindow: () => rt.runner?.contextWindow ?? this.deps.contextWindowFor?.(rt.modelRef) ?? 128_000,
     };
   }
 }

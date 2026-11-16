@@ -11,16 +11,18 @@
  * broken guard must fail closed, not open.
  */
 
+import { statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import type { HookBus } from '../hooks/bus.js';
 import type { ApprovalDecision, ApprovalRequest, UserInputRequest } from '../protocol/types.js';
 import type { PermissionService } from '../permissions/service.js';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { newId } from '../util.js';
 import type { ToolRegistry } from './registry.js';
 import type { ToolDefinition, ToolEvent, ToolRunContext } from './types.js';
 import { validateInput } from './types.js';
 import { isInsideWorkspace, isSensitivePath } from './workspace-guard.js';
-import { toolClass } from '../permissions/rules.js';
+import { hasAmbiguousShellSyntax, hasInjection, hasRedirection, splitCommand, toolClass } from '../permissions/rules.js';
 import type { CheckpointStore } from '../storage/checkpoints.js';
 
 export interface OrchestratorDeps {
@@ -55,8 +57,22 @@ export interface ToolRunOutcome {
 
 export class ToolOrchestrator {
   private readonly batches = new Map<string, Map<string, string>>();
+  private readonly batchListeners = new Set<() => void>();
   constructor(private readonly deps: OrchestratorDeps) {}
   endBatch(id: string): void { this.batches.delete(id); }
+
+  private shadowsPathExecutable(toolName: string, input: unknown, cwd: string): boolean {
+    if (process.platform !== 'win32' || toolName !== 'shell') return false;
+    const raw = input as Record<string, unknown> | undefined;
+    const prog = typeof raw?.program === 'string' ? raw.program.trim() : '';
+    if (!prog || /[\\/]/.test(prog)) return false;
+    for (const ext of ['', '.exe', '.com', '.cmd', '.bat']) {
+      try {
+        if (statSync(join(cwd, prog + ext)).isFile()) return true;
+      } catch { /* ignore */ }
+    }
+    return false;
+  }
 
   /** read-type tools targeting outside the workspace (downgraded to ask) */
   private readsOutsideWorkspace(toolName: string, input: unknown, cwd: string): boolean {
@@ -107,6 +123,38 @@ export class ToolOrchestrator {
           reason: `sensitive path: ${targetPath}`,
           message: `Cannot ${toolName} "${targetPath}": credential/config directories are off-limits to the agent.`,
         };
+      }
+    }
+    if (toolName === 'shell') {
+      const raw = input as Record<string, unknown>;
+      if (typeof raw.cwd === 'string' && raw.cwd && isSensitivePath(cwd, raw.cwd)) {
+        return {
+          reason: `sensitive path: ${raw.cwd}`,
+          message: `Cannot run shell in "${raw.cwd}": credential and application data directories are off-limits to the agent.`,
+        };
+      }
+      const tokens: string[] = [];
+      if (typeof raw.program === 'string') {
+        tokens.push(raw.program);
+        if (Array.isArray(raw.args)) {
+          for (const a of raw.args) if (typeof a === 'string') tokens.push(a);
+        }
+      } else if (typeof raw.command === 'string') {
+        for (const m of raw.command.matchAll(/"([^"]+)"|'([^']+)'|([^\s;|&<>()]+)/g)) {
+          tokens.push(m[1] ?? m[2] ?? m[3] ?? '');
+        }
+      }
+      for (const tok of tokens) {
+        if (!tok || tok.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\//i.test(tok) || /[{}();=]/.test(tok)) continue;
+        if (!/[\\/]/.test(tok) && !tok.startsWith('~') && tok !== '.smalt' && tok !== '.ssh' && !tok.startsWith('.env')) continue;
+        const expanded = tok === '~' ? homedir() : tok.startsWith('~/') || tok.startsWith('~\\') ? join(homedir(), tok.slice(2)) : tok;
+        // Allow referencing existing workspace .env only if user explicitly runs scripts? No, sensitivePaths / smaltHome / .ssh / .git/hooks are hard off-limits:
+        if (!tok.startsWith('.env') && isSensitivePath(cwd, expanded)) {
+          return {
+            reason: `sensitive path: ${tok}`,
+            message: `Cannot shell "${tok}": application data, agent configuration, and credential directories are off-limits to tools.`,
+          };
+        }
       }
     }
     return null;
@@ -241,8 +289,13 @@ export class ToolOrchestrator {
 
     // 2b. reads outside the workspace are NEVER silent: an allow (mode, rule,
     const guard = this.deps.permissions.check({ tool: toolName, input, subject: tool.subject(input), subjects: tool.subjects?.(input), cwd: baseCtx.cwd });
-    if (guard.action === 'deny' || (guard.action === 'ask' && guard.reason.startsWith('Dangerous command'))) {
+    if (guard.action === 'deny' || (guard.action === 'ask' && (guard.reason.startsWith('Dangerous command') || guard.reason.startsWith('Matched ask rule')))) {
       permissionAction = guard.action; permissionReason = guard.reason;
+    }
+    const shadowedExe = this.shadowsPathExecutable(toolName, input, baseCtx.cwd);
+    if (shadowedExe && permissionAction === 'allow') {
+      permissionAction = 'ask';
+      permissionReason = 'workspace contains a local executable shadowing a PATH program; explicit approval required';
     }
     //     or hook) is downgraded to an approval so the user sees the target.
     //     dontAsk's deny stands (unattended stays closed).
@@ -254,7 +307,7 @@ export class ToolOrchestrator {
     const batch = baseCtx.approvalBatch;
     const sameCategory = batch?.operations.filter(op => toolClass(op.tool) === toolClass(toolName) && toolClass(op.tool) !== 'other');
     const approvedInput = batch && this.batches.get(batch.id)?.get(toolCallId);
-    const batchEligible = !readOutsideWorkspace && !hookResult?.anyFailed && hookResult?.decision !== 'ask' && !/danger|outside|destructive/i.test(permissionReason);
+    const batchEligible = !readOutsideWorkspace && !shadowedExe && !hookResult?.anyFailed && hookResult?.decision !== 'ask' && !/danger|outside|destructive|Matched ask rule/i.test(permissionReason);
     if (permissionAction === 'ask' && batchEligible && approvedInput === JSON.stringify({ tool: toolName, input })) permissionAction = 'allow';
 
     // 3. ask → PermissionRequest hook may auto-resolve, else ask the human
@@ -311,6 +364,7 @@ export class ToolOrchestrator {
         }
         if (userDecision.scope === 'batch' && batch && req.batch && batchEligible) {
           this.batches.set(batch.id, new Map(req.batch.map(op => [op.id, JSON.stringify({ tool: op.tool, input: op.input })])));
+          for (const notify of this.batchListeners) notify();
         } else if (userDecision.scope === 'category' && req.riskLevel !== 'high' && !readOutsideWorkspace) {
           this.deps.permissions.allowCategory(toolName);
           this.deps.onRememberCategory?.(toolName);
@@ -330,8 +384,11 @@ export class ToolOrchestrator {
       ...baseCtx,
       canReadPath: (path) => {
         try {
-          if (baseCtx.signal.aborted || baseCtx.policy?.check?.(toolName, { ...(input as object), path }, [path])) return false;
-          return this.deps.permissions.check({ tool: toolName, input: { ...(input as object), path }, subject: path, subjects: [path], cwd: baseCtx.cwd }).action === 'allow';
+          if (baseCtx.signal.aborted || isSensitivePath(baseCtx.cwd, path) || baseCtx.policy?.check?.(toolName, { ...(input as object), path }, [path])) return false;
+          const dec = this.deps.permissions.check({ tool: toolName, input: { ...(input as object), path }, subject: path, subjects: [path], cwd: baseCtx.cwd });
+          if (dec.action === 'deny') return false;
+          if (dec.action === 'ask' && dec.reason.startsWith('Matched ask rule') && dec.reason.includes(':')) return false;
+          return true;
         } catch { return false; }
       },
       emitItem: async (item) => {
@@ -405,15 +462,24 @@ export class ToolOrchestrator {
 
   private async waitForApproval(req: ApprovalRequest, tool: ToolDefinition, input: unknown, ctx: Omit<ToolRunContext, 'emitItem' | 'askUser'>, canAutoAllow: boolean): Promise<ApprovalDecision> {
     let unsubscribe = () => {};
+    let unsubBatch = () => {};
     const policyChanged = new Promise<ApprovalDecision>(resolve => {
       unsubscribe = this.deps.permissions.subscribe(() => {
         const next = this.deps.permissions.check({ tool: req.tool, input, subject: tool.subject(input), subjects: tool.subjects?.(input), cwd: ctx.cwd });
         if (next.action === 'deny') resolve({ decision: 'deny', reason: next.reason });
         else if (next.action === 'allow' && canAutoAllow) resolve({ decision: 'allow' });
       });
+      if (canAutoAllow && ctx.approvalBatch && ctx.itemId) {
+        const onBatch = () => {
+          const approved = this.batches.get(ctx.approvalBatch!.id)?.get(ctx.itemId!);
+          if (approved === JSON.stringify({ tool: req.tool, input })) resolve({ decision: 'allow' });
+        };
+        this.batchListeners.add(onBatch);
+        unsubBatch = () => { this.batchListeners.delete(onBatch); };
+      }
     });
     try { return await abortable(Promise.race([this.deps.requestApproval(req), policyChanged]), ctx.signal); }
-    finally { unsubscribe(); this.deps.cancelApproval?.(req.itemId); }
+    finally { unsubscribe(); unsubBatch(); this.deps.cancelApproval?.(req.itemId); }
   }
 }
 
@@ -430,10 +496,32 @@ function ruleStringFor(toolName: string, input: unknown, tool: ToolDefinition): 
   return ruleStringsFor(toolName, input, tool)[0] ?? toolName;
 }
 function ruleStringsFor(toolName: string, input: unknown, tool: ToolDefinition): string[] {
-  const subject = tool.subject(input);
-  if (toolName === 'shell') return [`shell:${subject.split(/\s+/).slice(0, 3).join(' ')}`];
-  if (['write', 'read', 'apply_patch'].includes(toolName) && subject) {
-    return (tool.subjects?.(input) ?? [subject]).map(path => `${toolName === 'apply_patch' ? 'edit' : toolName}:${path}`);
+  const cls = toolClass(toolName);
+  const subjects = (tool.subjects?.(input) ?? [tool.subject(input)]).filter(Boolean);
+  if (cls === 'shell') {
+    const out: string[] = [];
+    for (const cmd of subjects) {
+      if (hasInjection(cmd) || hasAmbiguousShellSyntax(cmd)) {
+        out.push(`${toolName}:${cmd.trim()}`);
+        continue;
+      }
+      const segments = splitCommand(cmd);
+      for (const seg of segments) {
+        const trimmed = seg.trim();
+        if (!trimmed) continue;
+        // Never generalize inline interpreter invocations (-c/-e/--eval) into 3-token wildcards.
+        if (hasRedirection(trimmed) || /(?:^|\s)(?:-[ce]|--eval|\/c|-command|-enc|-encodedcommand)(?:\s|$)/i.test(trimmed)) {
+          out.push(`${toolName}:${trimmed}`);
+        } else {
+          out.push(`${toolName}:${trimmed.split(/\s+/).slice(0, 3).join(' ')}`);
+        }
+      }
+    }
+    return out.length ? [...new Set(out)] : [toolName];
+  }
+  if ((cls === 'edit' || toolName === 'read') && subjects.length) {
+    const prefix = toolName === 'apply_patch' ? 'edit' : toolName;
+    return [...new Set(subjects.map((p) => `${prefix}:${p}`))];
   }
   return [toolName];
 }

@@ -23,6 +23,7 @@ function cachedModel(value:unknown):ModelInfo|undefined{
  for(const key of ['resolvedVersion','canonicalId','compatibilityNote','unavailableReason']as const){const v=string(raw[key]);if(v)model[key]=v;}
  if(string(raw.reference,2048))try{const u=new URL(raw.reference);if(u.protocol==='https:'&&!u.username&&!u.password)model.reference=u.href;}catch{}
  if(['active','deprecated','retired'].includes(raw.lifecycle))model.lifecycle=raw.lifecycle;
+ if(raw.preferredWire==='responses')model.preferredWire='responses';
  if(Array.isArray(raw.reasoningEfforts)){const values=raw.reasoningEfforts.filter((v:unknown)=>typeof v==='string'&&/^[a-z][a-z0-9_-]{0,30}$/.test(v)).slice(0,12);if(values.length){model.reasoningEfforts=values;if(values.includes(raw.defaultReasoningEffort))model.defaultReasoningEffort=raw.defaultReasoningEffort;}}
  return model;
 }

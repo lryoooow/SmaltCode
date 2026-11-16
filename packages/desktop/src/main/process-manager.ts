@@ -10,6 +10,8 @@ import type { ManagedProcess, ProcessEvent, ProcessLaunch, ProcessOutput } from 
 const ACTIVE = new Set(['starting', 'running', 'stopping']);
 const TAIL = 64 * 1024;
 const READY = '\x1b]777;smalt-ready\x07';
+/** Captured once at main-process boot so Windows hibernation (which pauses process.uptime()) never causes drift vs Win32 parent.StartTime. */
+export const PROCESS_BORN_AT = Date.now() - process.uptime() * 1000;
 export function interactiveShell(platform = process.platform) {
   if (platform === 'win32') return { file: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'), args: ['-NoLogo', '-NoProfile'], command: 'PowerShell · 交互式终端' };
   if (platform === 'darwin') return { file: '/bin/zsh', args: ['-f'], command: 'zsh · 交互式终端' };
@@ -41,20 +43,24 @@ export function prepareLaunch(workspace: string, input: ProcessLaunch): { file: 
   const command = structured ? [file, ...args.map(arg => JSON.stringify(arg))].join(' ') : input.command!;
   if (!command.trim() || command.includes('\0') || Buffer.byteLength(command, 'utf8') > 8192) throw new Error('命令不能为空，且 UTF-8 长度不能超过 8192 字节');
   if (!structured) {
-    if (process.platform === 'win32') { file = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/cmd.exe'); argv = ['/d', '/s', '/c', '"chcp 65001 >nul & ' + input.command + '"']; }
+    if (process.platform === 'win32') {
+      if (/[\r\n]/.test(input.command!.trim())) throw new Error('Windows 命令模式不支持多行换行，请使用 && 串联或运行脚本文件');
+      file = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/cmd.exe'); argv = ['/d', '/s', '/c', '"chcp 65001 >nul & ' + input.command + '"'];
+    }
     else { file = '/bin/sh'; argv = ['-c', input.command!]; }
   } else {
     if (isNetworkPath(file) || /^(?:cmd|powershell|pwsh|bash|sh|zsh|fish|wscript|cscript)(?:\.exe)?$/i.test(basename(file))) throw new Error('结构化程序模式不接受 shell 解释器，请使用命令模式');
     const explicit = isAbsolute(file) || /[\\/]/.test(file);
     if (explicit && (!isInsideWorkspace(workspace, file) && !isAbsolute(file) || isSensitivePath(workspace, file))) throw new Error('程序路径超出工作区或属于敏感路径');
-    const extensions = process.platform === 'win32' && !extname(file) ? ['.exe', '.com', '.cmd', '.bat'] : [''];
-    const directories = explicit ? [''] : (process.env.PATH ?? '').split(delimiter);
+    const hasWinExeExt = /\.(?:exe|com|cmd|bat)$/i.test(file);
+    const extensions = process.platform === 'win32' ? (hasWinExeExt ? [''] : extname(file) ? ['', '.exe', '.com', '.cmd', '.bat'] : ['.exe', '.com', '.cmd', '.bat']) : [''];
+    const directories = explicit ? [''] : (process.env.PATH ?? '').split(delimiter).filter(Boolean);
     const found = directories.flatMap(dir => extensions.map(ext => resolve(dir || cwd, file + ext))).find(path => { try { return statSync(path).isFile(); } catch { return false; } });
     if (!found) throw new Error('找不到程序：' + file);
     file = found;
     if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(file)) {
-      if (/["%!\r\n&|<>^()]/.test(file) || args.some(arg => /["%!\r\n&|<>^()]/.test(arg))) throw new Error('批处理包装器参数含 shell 语法，请改用原生程序');
-      argv = ['/d', '/s', '/c', '"' + [file, ...args].map(arg => '"' + arg + '"').join(' ') + '"'];
+      if (/["%!\r\n&|<>^]/.test(file) || args.some(arg => /["%!\r\n&|<>^()]/.test(arg))) throw new Error('批处理包装器参数含 shell 语法，请改用原生程序');
+      argv = ['/V:OFF', '/d', '/s', '/c', '"' + [file, ...args].map(arg => '"' + arg + '"').join(' ') + '"'];
       file = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/cmd.exe');
     }
   }
@@ -138,7 +144,7 @@ export class ProcessManager {
       const native = join(this.options.runtime, 'native').replace(/([\\/])app\.asar([\\/]|$)/i, '$1app.asar.unpacked$2');
       const driver = this.options.spawn ?? (require(join(native, 'node-pty')) as typeof import('node-pty')).spawn;
       const supervisor = join(native, 'SmaltProcessSupervisor.exe');
-      const config = { file: launch.file, args: launch.args, parentPid: process.pid, parentStartedAt: Date.now() - process.uptime() * 1000 };
+      const config = { file: launch.file, args: launch.args, parentPid: process.pid, parentStartedAt: PROCESS_BORN_AT };
       const args = process.platform === 'win32' && !this.options.spawn ? [Buffer.from(JSON.stringify(config)).toString('base64')] : launch.args;
       const file = process.platform === 'win32' && !this.options.spawn ? supervisor : launch.file;
       const ptyOptions: IWindowsPtyForkOptions = { cwd: launch.cwd, env: processEnvironment(), name: 'xterm-256color', cols: meta.columns, rows: meta.rows, ...(process.platform === 'win32' ? { useConpty: true, useConptyDll: true } : {}) };

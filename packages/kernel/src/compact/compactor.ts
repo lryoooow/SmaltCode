@@ -11,7 +11,7 @@
 
 import type { ModelStreamer } from '../models/types.js';
 import { estimateHistoryTokens, estimateTokens, ModelError, type ChatMessage } from '../models/types.js';
-import { budgetToolOutput } from '../util.js';
+import { budgetToolOutput, wellFormedUtf16 } from '../util.js';
 import type { HookBus } from '../hooks/bus.js';
 import type { ModelRef } from '../config/settings.js';
 
@@ -152,13 +152,14 @@ export class Compactor {
     try {
       summary = await this.summarize(old, ref, contextWindow, signal);
     } catch (err) {
-      if (signal?.aborted) throw new DOMException('Interrupted', 'AbortError');
+      if (signal?.aborted || (err as { name?: string })?.name === 'AbortError') throw new DOMException('Interrupted', 'AbortError');
       let reason = err instanceof Error ? err.message : String(err);
       if (err instanceof ModelError && err.body) {
         try { const body = JSON.parse(err.body); const detail = body.error?.message ?? body.message; if (typeof detail === 'string') reason += ': ' + detail.slice(0, 500); } catch { /* HTML/error body is not a user-facing diagnostic. */ }
       }
       return this.failed(history, cut, reason, contextWindow, requestTokens);
     }
+    if (signal?.aborted) throw new DOMException('Interrupted', 'AbortError');
 
     const anchor = extractPinnedAnchor(old);
     const fullSummary = anchor ? `${anchor}\n\n${summary}` : summary;
@@ -238,10 +239,12 @@ export class Compactor {
 
 function snippet(m: Extract<ChatMessage, { role: 'user' }>): string {
   if (typeof m.content === 'string') return budgetToolOutput(m.content, 8000);
-  return m.content
-    .map((p) => (p.type === 'text' ? p.text : '[image]'))
-    .join(' ')
-    .slice(0, 8000);
+  return wellFormedUtf16(
+    m.content
+      .map((p) => (p.type === 'text' ? p.text : '[image]'))
+      .join(' ')
+      .slice(0, 8000),
+  );
 }
 
 /** Preserves initial goal (head) and latest context (tail) when transcript exceeds budget. */
@@ -254,7 +257,7 @@ function budgetTranscriptHeadTail(lines: string[], maxChars: number, maxTokens: 
     const headChars = Math.floor(targetChars * 0.3);
     const marker = '\n… [earlier intermediate steps omitted; initial goal and latest pre-cut steps preserved] …\n';
     const tailChars = Math.max(16, targetChars - headChars - marker.length);
-    joined = joined.slice(0, headChars) + marker + joined.slice(-tailChars);
+    joined = wellFormedUtf16(joined.slice(0, headChars)) + marker + wellFormedUtf16(joined.slice(-tailChars));
     if (targetChars <= 64) break;
   }
   return joined;

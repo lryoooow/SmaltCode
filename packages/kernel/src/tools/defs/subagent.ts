@@ -21,7 +21,7 @@ import { ContextPipeline, envInterceptor, repoInstructionsInterceptor, systemInt
 import { Compactor } from '../../compact/compactor.js';
 import { ToolOrchestrator } from '../orchestrator.js';
 import { ToolRegistry } from '../registry.js';
-import type { ModelStreamer } from '../../models/types.js';
+import type { ModelStreamer, ReasoningEffort } from '../../models/types.js';
 import type { ModelRef, Settings } from '../../config/settings.js';
 import type { PermissionService } from '../../permissions/service.js';
 import type { HookBus } from '../../hooks/bus.js';
@@ -36,7 +36,30 @@ export type SubagentRole = 'explorer' | 'verifier' | 'worker';
 
 const EXPLORER_TOOLS = ['read', 'glob', 'grep', 'web_search', 'web_fetch'];
 const VERIFIER_TOOLS = ['read', 'glob', 'grep', 'shell'];
-const WORKER_EXCLUDED = new Set(['delegate_task', 'ask_user', 'plan']);
+const WORKER_EXCLUDED = new Set([
+  'delegate_task',
+  'ask_user',
+  'plan',
+  'task_checkpoint',
+  'process_read',
+  'process_stop',
+  'process_write',
+  'resource_list',
+  'resource_search',
+  'resource_read',
+  'resource_write',
+  'ssh_connections',
+  'ssh_read',
+  'ssh_write',
+  'ssh_exec',
+  'ssh_process_read',
+  'ssh_process_stop',
+  'container_read',
+  'container_write',
+  'container_exec',
+  'container_process_read',
+  'container_process_stop',
+]);
 
 class EphemeralSubagentStore implements ThreadStore {
   private readonly events = new Map<string, StoreEvent[]>();
@@ -63,13 +86,15 @@ const ROLE_INSTRUCTIONS: Record<SubagentRole, string> = {
 };
 
 export interface SubagentToolDeps {
-  gatewayFor(threadId: string): { gateway: ModelStreamer; modelRef: ModelRef; settings: Settings };
+  gatewayFor(threadId: string): { gateway: ModelStreamer; modelRef: ModelRef; settings: Settings; reasoningEffort?: ReasoningEffort };
   permissionsFor(threadId: string): PermissionService;
   tools: ToolRegistry;
   checkpoints: CheckpointStore;
   hooks: HookBus;
   requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
   cancelApproval?(id: string): void;
+  onRememberAlways?(rule: string): void;
+  onUsage?(threadId: string, inputTokens: number, outputTokens: number): void;
   log(msg: string): void;
 }
 
@@ -156,7 +181,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
 
       yield { type: 'output', text: `[${role}] Starting subtask: ${description}\n` };
 
-      const { gateway, modelRef, settings } = deps.gatewayFor(ctx.threadId);
+      const { gateway, modelRef, settings, reasoningEffort } = deps.gatewayFor(ctx.threadId);
       const childTools = new ToolRegistry([]);
       for (const spec of deps.tools.specs({ cwd: ctx.cwd, threadId: ctx.threadId })) {
         if (WORKER_EXCLUDED.has(spec.name)) continue;
@@ -165,23 +190,47 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
         const def = deps.tools.get(spec.name);
         if (def) childTools.register(def);
       }
+      childTools.cloneGuardsFrom(deps.tools);
+      const allowedToolNames = childTools.specs({ cwd: ctx.cwd, threadId: ctx.threadId }).map((s) => s.name);
+      if (!allowedToolNames.length) {
+        yield {
+          type: 'result',
+          text: 'Error: no local subagent tools are available in this execution scope (e.g., remote SSH/container target). Use direct target tools instead.',
+          isError: true,
+        };
+        return;
+      }
+
+      const parentScopedCheckpoints: CheckpointStore = Object.assign(
+        Object.create(Object.getPrototypeOf(deps.checkpoints)),
+        deps.checkpoints,
+        {
+          capture: (_th: string, _turn: string, cwd: string, title: string, paths: string[], operationId?: string) =>
+            deps.checkpoints.capture(ctx.threadId, ctx.turnId, cwd, `[${role}] ${title}`, paths, operationId),
+        },
+      );
 
       const childStore = new EphemeralSubagentStore();
       const childHooks = deps.hooks.fork({}, { cwd: ctx.cwd, threadId: subId, parentThreadId: ctx.threadId });
       const childOrchestrator = new ToolOrchestrator({
-        checkpoints: deps.checkpoints,
+        checkpoints: parentScopedCheckpoints,
         tools: childTools,
         permissions: parentPerms,
         hooks: childHooks,
         // Route approval requests under parent threadId so the Desktop UI displays them on the active conversation!
         requestApproval: (req) => deps.requestApproval({ ...req, threadId: ctx.threadId, title: `[子智能体 · ${description}] ${req.title}` }),
         cancelApproval: (id) => deps.cancelApproval?.(id),
+        onRememberAlways: deps.onRememberAlways,
         askUser: async () => 'Subagents cannot ask interactive questions; report any ambiguity in your final summary.',
         onOutput: (_th, _item, delta) => { void delta; },
         log: deps.log,
       });
 
       const contextWindow = gateway.prepare ? await gateway.prepare(modelRef, ctx.signal).catch(() => 128_000) : 128_000;
+      if (ctx.signal.aborted) {
+        yield { type: 'result', text: 'Interrupted', isError: true };
+        return;
+      }
       const compactor = new Compactor(gateway, childHooks, {
         ...settings.compact,
         contextWindow,
@@ -214,8 +263,8 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
       const childAbort = new AbortController();
       const onParentAbort = () => childAbort.abort();
       ctx.signal.addEventListener('abort', onParentAbort, { once: true });
+      if (ctx.signal.aborted) childAbort.abort();
 
-      const allowedToolNames = childTools.specs({ cwd: ctx.cwd, threadId: subId }).map((s) => s.name);
       const runPolicy: RunPolicy = {
         maxRequests: role === 'explorer' ? 10 : 14,
         maxTokens: 180_000,
@@ -244,6 +293,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
             threadId: subId,
             cwd: ctx.cwd,
             modelRef,
+            reasoningEffort: () => reasoningEffort,
             history,
             items,
             steerQueue: [],
@@ -255,6 +305,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
             addUsage: (i, o) => {
               totalIn += i;
               totalOut += o;
+              deps.onUsage?.(ctx.threadId, i, o);
             },
             usageTotals: () => ({ inputTokens: totalIn, outputTokens: totalOut }),
             contextWindow: () => contextWindow,

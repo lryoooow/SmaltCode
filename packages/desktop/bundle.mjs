@@ -40,7 +40,15 @@ const closeLine = '_this.emit(\'exit\', _this._agent.exitCode);';
 if (terminalSource.split(closeLine).length !== 2) throw new Error('PTY lifecycle patch no longer matches');
 writeFileSync(terminalPath, terminalSource.replace(closeLine, '_this._agent.inSocket.destroy();\n                _this._agent._conoutSocketWorker.dispose();\n                ' + closeLine));
 const ptyPlatform = process.platform + '-' + process.arch;
-cpSync(join(ptyRoot, 'prebuilds', ptyPlatform), join(native, 'node-pty/prebuilds', ptyPlatform), { recursive: true, filter: path => !path.endsWith('.pdb') });
+const ptyPrebuildDir = join(ptyRoot, 'prebuilds', ptyPlatform);
+const ptyReleaseDir = join(ptyRoot, 'build/Release');
+if (existsSync(ptyPrebuildDir)) {
+  cpSync(ptyPrebuildDir, join(native, 'node-pty/prebuilds', ptyPlatform), { recursive: true, filter: path => !path.endsWith('.pdb') });
+} else if (existsSync(ptyReleaseDir)) {
+  cpSync(ptyReleaseDir, join(native, 'node-pty/build/Release'), { recursive: true, filter: path => !path.endsWith('.pdb') });
+} else {
+  throw new Error(`Missing node-pty native binary for ${ptyPlatform} (checked prebuilds/${ptyPlatform} and build/Release)`);
+}
 if (process.platform === 'win32') {
   const compiler = join(process.env.SystemRoot ?? 'C:\\Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
   const hash = bytes => createHash('sha256').update(bytes).digest('hex');
